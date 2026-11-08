@@ -5,4 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-nom = "8"
+hcl-rs = "0.19"
+serde = { version = "1", features = ["derive"] }

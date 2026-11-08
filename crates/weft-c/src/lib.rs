@@ -3,6 +3,7 @@
 use std::ffi::c_char;
 use std::ptr;
 
+use weft_draw::Theme;
 use weft_parse::{Diagram, Verdict};
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -23,8 +24,9 @@ pub enum weft_result_t {
 use weft_result_t::*;
 #[repr(C)]
 pub enum weft_format_t {
-    WEFT_FORMAT_SVG = 0,
-    WEFT_FORMAT_ASCII = 1,
+    WEFT_FORMAT_SVG_LIGHT = 0,
+    WEFT_FORMAT_SVG_DARK = 1,
+    WEFT_FORMAT_ASCII = 2,
 }
 #[repr(C)]
 pub enum weft_status_t {
@@ -113,9 +115,10 @@ pub unsafe extern "C" fn weft_render(
         Ok(d) => d,
         Err(rc) => return rc,
     };
-    let draw: fn(&Diagram) -> Result<String, String> = match format {
-        f if f == weft_format_t::WEFT_FORMAT_SVG as u32 => weft_draw::svg,
-        f if f == weft_format_t::WEFT_FORMAT_ASCII as u32 => weft_draw::ascii,
+    let drawn = match format {
+        f if f == weft_format_t::WEFT_FORMAT_SVG_LIGHT as u32 => weft_draw::svg(&d, Theme::Light),
+        f if f == weft_format_t::WEFT_FORMAT_SVG_DARK as u32 => weft_draw::svg(&d, Theme::Dark),
+        f if f == weft_format_t::WEFT_FORMAT_ASCII as u32 => weft_draw::ascii(&d),
         _ => {
             set_error(ctx, "weft_render: format is not a weft_format_t");
             return WEFT_E_INVALID_ARG;
@@ -125,7 +128,7 @@ pub unsafe extern "C" fn weft_render(
         set_error(ctx, "weft_render: out_result is NULL");
         return WEFT_E_INVALID_ARG;
     };
-    let mut bytes = match draw(&d) {
+    let mut bytes = match drawn {
         Ok(drawn) => drawn.into_bytes(),
         Err(e) => {
             set_error(ctx, &e);

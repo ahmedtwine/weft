@@ -1,60 +1,107 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use nom::{
-    IResult, Parser,
-    branch::alt,
-    bytes::complete::{escaped_transform, is_not, tag, take_while1},
-    character::complete::{char, multispace0, none_of, not_line_ending, space0, space1},
-    combinator::{all_consuming, map, opt, recognize, value},
-    multi::{many0, separated_list1},
-    sequence::{delimited, preceded},
-};
+use hcl::expr::{BinaryOperator, Operation, TemplateExpr, UnaryOperator};
+use hcl::{BlockLabel, Body, Expression, ObjectKey, Structure};
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Default)]
 pub struct Diagram {
     pub title: String,
     pub objects: Vec<Object>,
-    pub init: Vec<Assign>,
+    pub init: Vec<(String, Data)>,
     pub steps: Vec<Step>,
-    pub check: Option<Check>,
+    pub checks: Vec<Check>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum Method {
+    #[serde(rename = "GET")]
+    Get,
+    #[serde(rename = "POST")]
+    Post,
+    #[serde(rename = "PUT")]
+    Put,
+    #[serde(rename = "PATCH")]
+    Patch,
+    #[serde(rename = "DELETE")]
+    Delete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum Store {
+    S3,
+    #[serde(rename = "disk")]
+    Disk,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum Storage {
+    #[serde(rename = "history.state")]
+    HistoryState,
+    #[serde(rename = "localStorage")]
+    LocalStorage,
+    #[serde(rename = "sessionStorage")]
+    SessionStorage,
+    #[serde(rename = "cookie")]
+    Cookie,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Person {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Api {
+    pub method: Method,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Db {
+    pub table: String,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct File {
+    pub store: Store,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Page {
+    pub element: String,
+    pub page: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Code {
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Browser {
+    pub storage: Storage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
-    Person { name: String },
-    Api { method: String, path: String },
-    Db { table: String, key: String },
-    File { store: String, path: String },
-    Page { element: String, page: String },
-    Code { symbol: String },
-    Browser { storage: String },
-}
-
-impl Type {
-    pub fn label(&self) -> String {
-        match self {
-            Type::Person { name } => name.clone(),
-            Type::Api { method, path } => format!("{method} {path}"),
-            Type::Db { table, key } => format!("{table} {key}"),
-            Type::File { path, .. } => path.clone(),
-            Type::Page { element, .. } => element.clone(),
-            Type::Code { symbol } => symbol.clone(),
-            Type::Browser { storage } => storage.clone(),
-        }
-    }
-
-    pub fn tag(&self) -> String {
-        match self {
-            Type::Person { .. } => String::new(),
-            Type::Api { .. } => "api".into(),
-            Type::Db { .. } => "db row".into(),
-            Type::File { store, .. } => format!("{store} file"),
-            Type::Page { page, .. } => page.clone(),
-            Type::Code { .. } => "code".into(),
-            Type::Browser { .. } => "browser".into(),
-        }
-    }
+    Person(Person),
+    Api(Api),
+    Db(Db),
+    File(File),
+    Page(Page),
+    Code(Code),
+    Browser(Browser),
 }
 
 #[derive(Debug, Clone)]
@@ -64,23 +111,24 @@ pub struct Object {
     pub machine: Vec<(String, String)>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Assign {
-    pub object: String,
-    pub value: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Data {
+    Text(String),
+    List(Vec<Data>),
+    Record(Vec<(String, Data)>),
 }
 
 #[derive(Debug, Clone)]
 pub struct Step {
     pub from: String,
     pub to: String,
-    pub text: String,
-    pub sets: Vec<Assign>,
+    pub send: Option<Data>,
+    pub set: Vec<(String, Data)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Check {
-    pub title: String,
+    pub name: String,
     pub when: Option<Cond>,
     pub then: Cond,
 }
@@ -88,21 +136,18 @@ pub struct Check {
 #[derive(Debug, Clone)]
 pub enum Cond {
     From(String),
+    Changed(String),
     Equal(Term, Term),
     Differ(Term, Term),
+    And(Box<Cond>, Box<Cond>),
+    Or(Box<Cond>, Box<Cond>),
+    Not(Box<Cond>),
 }
 
 #[derive(Debug, Clone)]
 pub enum Term {
-    Now(String),
-    Next(String),
+    State(String),
     Text(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Record {
-    pub caption: String,
-    pub fields: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,23 +161,94 @@ pub enum Verdict {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Error {
-    pub line: usize,
-    pub message: String,
-}
+pub struct Error(pub String);
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.line {
-            0 => write!(f, "{}", self.message),
-            n => write!(f, "line {n}: {}", self.message),
-        }
+        f.write_str(&self.0)
     }
 }
 
 impl std::error::Error for Error {}
 
-type State<'a> = HashMap<&'a str, &'a str>;
+impl Method {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Patch => "PATCH",
+            Method::Delete => "DELETE",
+        }
+    }
+}
+
+impl Store {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Store::S3 => "S3",
+            Store::Disk => "disk",
+        }
+    }
+}
+
+impl Storage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Storage::HistoryState => "history.state",
+            Storage::LocalStorage => "localStorage",
+            Storage::SessionStorage => "sessionStorage",
+            Storage::Cookie => "cookie",
+        }
+    }
+}
+
+impl Type {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Type::Person(_) => "person",
+            Type::Api(_) => "api",
+            Type::Db(_) => "db",
+            Type::File(_) => "file",
+            Type::Page(_) => "page",
+            Type::Code(_) => "code",
+            Type::Browser(_) => "browser",
+        }
+    }
+
+    pub fn fields(&self) -> Vec<(&'static str, &str)> {
+        match self {
+            Type::Person(p) => vec![("name", &p.name)],
+            Type::Api(a) => vec![("method", a.method.as_str()), ("path", &a.path)],
+            Type::Db(d) => vec![("table", &d.table), ("key", &d.key)],
+            Type::File(f) => vec![("store", f.store.as_str()), ("path", &f.path)],
+            Type::Page(p) => vec![("element", &p.element), ("page", &p.page)],
+            Type::Code(c) => vec![("symbol", &c.symbol)],
+            Type::Browser(b) => vec![("storage", b.storage.as_str())],
+        }
+    }
+}
+
+impl Data {
+    pub fn flat(&self) -> String {
+        match self {
+            Data::Text(t) => t.clone(),
+            Data::List(items) => format!(
+                "[{}]",
+                items.iter().map(Data::flat).collect::<Vec<_>>().join(", ")
+            ),
+            Data::Record(fields) => {
+                let inner: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {}", v.flat()))
+                    .collect();
+                format!("{{{}}}", inner.join(", "))
+            }
+        }
+    }
+}
+
+type State = HashMap<String, String>;
 
 impl Diagram {
     pub fn verdict(&self) -> Option<Verdict> {
@@ -141,23 +257,27 @@ impl Diagram {
             .iter()
             .filter(|o| !o.machine.is_empty())
             .collect();
-        if self.check.is_none() && machines.is_empty() {
+        if self.checks.is_empty() && machines.is_empty() {
             return None;
         }
         let mut now: State = self
             .init
             .iter()
-            .map(|a| (a.object.as_str(), a.value.as_str()))
+            .map(|(k, v)| (k.clone(), v.flat()))
             .collect();
         for (step, s) in self.steps.iter().enumerate() {
             let mut next = now.clone();
-            next.extend(s.sets.iter().map(|a| (a.object.as_str(), a.value.as_str())));
+            next.extend(s.set.iter().map(|(k, v)| (k.clone(), v.flat())));
             for o in &machines {
-                if let (Some(a), Some(b)) = (now.get(o.name.as_str()), next.get(o.name.as_str()))
+                if let (Some(a), Some(b)) = (now.get(&o.name), next.get(&o.name))
                     && a != b
                     && !o.machine.iter().any(|(x, y)| x == a && y == b)
                 {
-                    let reason = format!("{} has no transition {a} → {b}", o.ty.label());
+                    let reason = format!(
+                        "{} {} has no transition from {a} to {b}",
+                        o.ty.kind(),
+                        o.name
+                    );
                     return Some(Verdict::Fails {
                         step,
                         objects: vec![s.from.clone(), o.name.clone()],
@@ -165,19 +285,21 @@ impl Diagram {
                     });
                 }
             }
-            if let Some(c) = &self.check
-                && c.when
+            for c in &self.checks {
+                if c.when
                     .as_ref()
                     .is_none_or(|w| w.holds(&now, &next, &s.from))
-                && !c.then.holds(&now, &next, &s.from)
-            {
-                let mut objects: Vec<String> = c.objects().into_iter().map(String::from).collect();
-                objects.extend([s.from.clone(), s.to.clone()]);
-                return Some(Verdict::Fails {
-                    step,
-                    objects,
-                    reason: c.title.clone(),
-                });
+                    && !c.then.holds(&now, &next, &s.from)
+                {
+                    let mut objects: Vec<String> =
+                        c.objects().into_iter().map(String::from).collect();
+                    objects.extend([s.from.clone(), s.to.clone()]);
+                    return Some(Verdict::Fails {
+                        step,
+                        objects,
+                        reason: c.name.clone(),
+                    });
+                }
             }
             now = next;
         }
@@ -187,11 +309,12 @@ impl Diagram {
 
 impl Check {
     pub fn objects(&self) -> Vec<&str> {
+        let mut out = Vec::new();
         self.when
             .iter()
             .chain([&self.then])
-            .flat_map(Cond::objects)
-            .collect()
+            .for_each(|c| c.objects(&mut out));
+        out
     }
 }
 
@@ -199,396 +322,283 @@ impl Cond {
     fn holds(&self, now: &State, next: &State, from: &str) -> bool {
         match self {
             Cond::From(o) => o == from,
-            Cond::Equal(a, b) => a.value(now, next) == b.value(now, next),
-            Cond::Differ(a, b) => a.value(now, next) != b.value(now, next),
+            Cond::Changed(o) => now.get(o) != next.get(o),
+            Cond::Equal(a, b) => a.value(next) == b.value(next),
+            Cond::Differ(a, b) => a.value(next) != b.value(next),
+            Cond::And(a, b) => a.holds(now, next, from) && b.holds(now, next, from),
+            Cond::Or(a, b) => a.holds(now, next, from) || b.holds(now, next, from),
+            Cond::Not(a) => !a.holds(now, next, from),
         }
     }
 
-    fn objects(&self) -> Vec<&str> {
+    fn objects<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
-            Cond::From(o) => vec![o.as_str()],
+            Cond::From(o) | Cond::Changed(o) => out.push(o),
             Cond::Equal(a, b) | Cond::Differ(a, b) => {
-                [a, b].into_iter().filter_map(Term::object).collect()
+                out.extend([a, b].into_iter().filter_map(Term::object))
             }
+            Cond::And(a, b) | Cond::Or(a, b) => {
+                a.objects(out);
+                b.objects(out);
+            }
+            Cond::Not(a) => a.objects(out),
         }
     }
 }
 
 impl Term {
-    fn value<'a>(&'a self, now: &State<'a>, next: &State<'a>) -> &'a str {
+    fn value<'a>(&'a self, state: &'a State) -> &'a str {
         match self {
-            Term::Now(o) => now.get(o.as_str()).copied().unwrap_or(""),
-            Term::Next(o) => next.get(o.as_str()).copied().unwrap_or(""),
+            Term::State(o) => state.get(o).map_or("", String::as_str),
             Term::Text(t) => t,
         }
     }
 
     fn object(&self) -> Option<&str> {
         match self {
-            Term::Now(o) | Term::Next(o) => Some(o),
+            Term::State(o) => Some(o),
             Term::Text(_) => None,
         }
     }
 }
 
-type Res<'a, T> = IResult<&'a str, T>;
-
-enum Item {
-    Title(String),
-    Objects(Vec<Object>),
-    Init(Vec<Assign>),
-    Run(Vec<Line>),
-    Check(Check),
+fn text(e: &Expression) -> Result<String, String> {
+    match e {
+        Expression::String(s) => Ok(s.clone()),
+        Expression::TemplateExpr(t) => match t.as_ref() {
+            TemplateExpr::QuotedString(s) => Ok(s.clone()),
+            TemplateExpr::Heredoc(h) => Ok(h.template.clone()),
+        },
+        Expression::Number(n) => Ok(n.to_string()),
+        Expression::Bool(b) => Ok(b.to_string()),
+        other => Err(format!("expected a string, got `{other}`")),
+    }
 }
 
-enum Line {
-    Set(Assign),
-    Step(Step),
+fn name(e: &Expression) -> Result<String, String> {
+    match e {
+        Expression::Variable(v) => Ok(v.as_str().to_string()),
+        other => Err(format!("expected an object name, got `{other}`")),
+    }
 }
 
-fn name(i: &str) -> Res<'_, String> {
-    map(
-        take_while1(|c: char| c.is_alphanumeric() || c == '_'),
-        String::from,
-    )
-    .parse(i)
+fn key(k: &ObjectKey) -> Result<String, String> {
+    match k {
+        ObjectKey::Identifier(id) => Ok(id.as_str().to_string()),
+        ObjectKey::Expression(e) => text(e),
+        other => Err(format!("`{other:?}` is not an object key")),
+    }
 }
 
-fn string(i: &str) -> Res<'_, String> {
-    let escape = alt((
-        value("\\", tag("\\")),
-        value("\"", tag("\"")),
-        value("\n", tag("n")),
-    ));
-    map(
-        delimited(
-            char('"'),
-            opt(escaped_transform(none_of("\\\""), '\\', escape)),
-            char('"'),
-        ),
-        Option::unwrap_or_default,
-    )
-    .parse(i)
+fn data(e: &Expression) -> Result<Data, String> {
+    match e {
+        Expression::Array(items) => items
+            .iter()
+            .map(data)
+            .collect::<Result<_, _>>()
+            .map(Data::List),
+        Expression::Object(fields) => pairs(fields.iter()).map(Data::Record),
+        other => text(other).map(Data::Text),
+    }
 }
 
-fn rest(i: &str) -> Res<'_, String> {
-    map(not_line_ending, |s: &str| s.trim().replace("\\n", "\n")).parse(i)
+fn pairs<'a>(
+    fields: impl Iterator<Item = (&'a ObjectKey, &'a Expression)>,
+) -> Result<Vec<(String, Data)>, String> {
+    fields.map(|(k, v)| Ok((key(k)?, data(v)?))).collect()
 }
 
-fn ty(i: &str) -> Res<'_, (String, Type)> {
-    let words = |options: &'static [&'static str]| {
-        move |i| -> Res<'_, String> {
-            let (rest, w) = take_while1(|c: char| !c.is_whitespace() && c != '{')(i)?;
-            match options.contains(&w) {
-                true => Ok((rest, w.to_string())),
-                false => Err(nom::Err::Error(nom::error::Error::new(
-                    i,
-                    nom::error::ErrorKind::Tag,
-                ))),
+fn object_pairs(e: &Expression) -> Result<Vec<(String, Data)>, String> {
+    match e {
+        Expression::Object(fields) => pairs(fields.iter()),
+        other => Err(format!("expected an object, got `{other}`")),
+    }
+}
+
+fn term(e: &Expression) -> Result<Term, String> {
+    match e {
+        Expression::Variable(v) => Ok(Term::State(v.as_str().to_string())),
+        Expression::Parenthesis(inner) => term(inner),
+        other => text(other).map(Term::Text),
+    }
+}
+
+fn cond(e: &Expression) -> Result<Cond, String> {
+    match e {
+        Expression::Parenthesis(inner) => cond(inner),
+        Expression::FuncCall(f) => match (f.name.name.as_str(), f.args.as_slice()) {
+            ("from", [arg]) => name(arg).map(Cond::From),
+            ("changed", [arg]) => name(arg).map(Cond::Changed),
+            (other, _) => Err(format!(
+                "`{other}` is not `from(object)` or `changed(object)`"
+            )),
+        },
+        Expression::Operation(op) => match op.as_ref() {
+            Operation::Unary(u) if u.operator == UnaryOperator::Not => {
+                Ok(Cond::Not(Box::new(cond(&u.expr)?)))
+            }
+            Operation::Binary(b) => {
+                let (l, r) = (&b.lhs_expr, &b.rhs_expr);
+                match b.operator {
+                    BinaryOperator::Eq => Ok(Cond::Equal(term(l)?, term(r)?)),
+                    BinaryOperator::NotEq => Ok(Cond::Differ(term(l)?, term(r)?)),
+                    BinaryOperator::And => Ok(Cond::And(Box::new(cond(l)?), Box::new(cond(r)?))),
+                    BinaryOperator::Or => Ok(Cond::Or(Box::new(cond(l)?), Box::new(cond(r)?))),
+                    other => Err(format!("`{other:?}` is not ==, !=, && or ||")),
+                }
+            }
+            other => Err(format!("`{other:?}` is not a condition")),
+        },
+        other => Err(format!("`{other}` is not a condition")),
+    }
+}
+
+fn attributes(body: &Body, allowed: &[&str]) -> Result<HashMap<String, Expression>, String> {
+    let mut out = HashMap::new();
+    for s in &body.0 {
+        match s {
+            Structure::Attribute(a) if allowed.contains(&a.key.as_str()) => {
+                out.insert(a.key.as_str().to_string(), a.expr.clone());
+            }
+            Structure::Attribute(a) => {
+                return Err(format!(
+                    "`{}` is not one of {}",
+                    a.key.as_str(),
+                    allowed.join(", ")
+                ));
+            }
+            Structure::Block(b) => {
+                return Err(format!(
+                    "the block `{}` is not allowed here",
+                    b.identifier.as_str()
+                ));
             }
         }
-    };
-    let methods: &'static [&'static str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
-    let stores: &'static [&'static str] = &["S3", "disk"];
-    let storages: &'static [&'static str] =
-        &["history.state", "localStorage", "sessionStorage", "cookie"];
-    alt((
-        map(
-            (tag("person"), space1, name, space1, string),
-            |(.., n, _, name)| (n, Type::Person { name }),
-        ),
-        map(
-            (
-                tag("api"),
-                space1,
-                name,
-                space1,
-                words(methods),
-                space1,
-                string,
-            ),
-            |(.., n, _, method, _, path)| (n, Type::Api { method, path }),
-        ),
-        map(
-            (tag("db"), space1, name, space1, name, space1, string),
-            |(.., n, _, table, _, key)| (n, Type::Db { table, key }),
-        ),
-        map(
-            (
-                tag("file"),
-                space1,
-                name,
-                space1,
-                words(stores),
-                space1,
-                string,
-            ),
-            |(.., n, _, store, _, path)| (n, Type::File { store, path }),
-        ),
-        map(
-            (
-                tag("page"),
-                space1,
-                name,
-                space1,
-                string,
-                space1,
-                tag("on"),
-                space1,
-                string,
-            ),
-            |(.., n, _, element, _, _, _, page)| (n, Type::Page { element, page }),
-        ),
-        map(
-            (tag("code"), space1, name, space1, string),
-            |(.., n, _, symbol)| (n, Type::Code { symbol }),
-        ),
-        map(
-            (tag("browser"), space1, name, space1, words(storages)),
-            |(.., n, _, storage)| (n, Type::Browser { storage }),
-        ),
-    ))
-    .parse(i)
-}
-
-fn state(i: &str) -> Res<'_, String> {
-    alt((string, map(is_not(" \t\r\n{}"), String::from))).parse(i)
-}
-
-fn transition(i: &str) -> Res<'_, (String, String)> {
-    map((state, space0, tag("->"), space0, state), |(a, .., b)| {
-        (a, b)
-    })
-    .parse(i)
-}
-
-fn object(i: &str) -> Res<'_, Object> {
-    let machine = delimited(
-        (space0, char('{')),
-        many0(preceded(multispace0, transition)),
-        (multispace0, char('}')),
-    );
-    map((ty, opt(machine)), |((name, ty), machine)| Object {
-        name,
-        ty,
-        machine: machine.unwrap_or_default(),
-    })
-    .parse(i)
-}
-
-fn assign(i: &str) -> Res<'_, Assign> {
-    map(
-        (name, char('\''), space0, char('='), space0, rest),
-        |(object, .., value)| Assign { object, value },
-    )
-    .parse(i)
-}
-
-fn step(i: &str) -> Res<'_, Step> {
-    map(
-        (
-            name,
-            space0,
-            tag("->"),
-            space0,
-            name,
-            space0,
-            opt(preceded(char(':'), rest)),
-        ),
-        |(from, _, _, _, to, _, text)| Step {
-            from,
-            to,
-            text: text.unwrap_or_default(),
-            sets: Vec::new(),
-        },
-    )
-    .parse(i)
-}
-
-fn line(i: &str) -> Res<'_, Line> {
-    alt((map(assign, Line::Set), map(step, Line::Step))).parse(i)
-}
-
-fn block<'a, T>(
-    keyword: &'static str,
-    item: fn(&'a str) -> Res<'a, T>,
-) -> impl Parser<&'a str, Output = Vec<T>, Error = nom::error::Error<&'a str>> {
-    delimited(
-        (tag(keyword), multispace0, char('{')),
-        many0(preceded(multispace0, item)),
-        (multispace0, char('}')),
-    )
-}
-
-fn term(i: &str) -> Res<'_, Term> {
-    alt((
-        map(string, Term::Text),
-        map((name, opt(char('\''))), |(o, p)| {
-            if p.is_some() {
-                Term::Next(o)
-            } else {
-                Term::Now(o)
-            }
-        }),
-    ))
-    .parse(i)
-}
-
-fn cond(i: &str) -> Res<'_, Cond> {
-    alt((
-        map(preceded((tag("from"), space1), name), Cond::From),
-        map(
-            (
-                term,
-                delimited(multispace0, alt((tag("!="), tag("="))), multispace0),
-                term,
-            ),
-            |(a, op, b)| {
-                if op == "=" {
-                    Cond::Equal(a, b)
-                } else {
-                    Cond::Differ(a, b)
-                }
-            },
-        ),
-    ))
-    .parse(i)
-}
-
-fn check(i: &str) -> Res<'_, Check> {
-    map(
-        (
-            (tag("check"), space1),
-            string,
-            (multispace0, char('{'), multispace0),
-            cond,
-            opt(preceded(
-                delimited(multispace0, tag("=>"), multispace0),
-                cond,
-            )),
-            (multispace0, char('}')),
-        ),
-        |(_, title, _, first, second, _)| match second {
-            Some(then) => Check {
-                title,
-                when: Some(first),
-                then,
-            },
-            None => Check {
-                title,
-                when: None,
-                then: first,
-            },
-        },
-    )
-    .parse(i)
-}
-
-fn item(i: &str) -> Res<'_, Item> {
-    alt((
-        map(preceded((tag("title"), space1), string), Item::Title),
-        map(block("objects", object), Item::Objects),
-        map(block("init", assign), Item::Init),
-        map(block("run", line), Item::Run),
-        map(check, Item::Check),
-    ))
-    .parse(i)
-}
-
-fn field(i: &str) -> Res<'_, (String, String)> {
-    let quoted = recognize((char('"'), opt(is_not("\"")), char('"')));
-    let list = recognize((char('['), opt(is_not("]")), char(']')));
-    map(
-        (
-            delimited(
-                multispace0,
-                take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '-'),
-                multispace0,
-            ),
-            char(':'),
-            delimited(multispace0, alt((quoted, list, is_not(",}"))), multispace0),
-        ),
-        |(k, _, v): (&str, char, &str)| (k.to_string(), v.trim().to_string()),
-    )
-    .parse(i)
-}
-
-pub fn record(s: &str) -> Option<Record> {
-    let fields = delimited(char('{'), separated_list1(char(','), field), char('}'));
-    all_consuming(map(
-        (opt(is_not("{")), fields),
-        |(caption, fields): (Option<&str>, _)| Record {
-            caption: caption.unwrap_or_default().trim().to_string(),
-            fields,
-        },
-    ))
-    .parse(s.trim())
-    .ok()
-    .map(|(_, r)| r)
-}
-
-pub fn parse(src: &str) -> Result<Diagram, Error> {
-    let (rest, items) = many0(preceded(multispace0, item))
-        .parse(src)
-        .map_err(|_| Error {
-            line: 1,
-            message: "cannot parse".into(),
-        })?;
-    let rest = rest.trim_start();
-    if !rest.is_empty() {
-        let line = src[..src.len() - rest.len()].matches('\n').count() + 1;
-        let text = rest.lines().next().unwrap_or_default();
-        return Err(Error {
-            line,
-            message: format!("cannot parse `{text}`"),
-        });
     }
-    let fail = |message: String| Error { line: 0, message };
-    let mut d = Diagram::default();
-    for item in items {
-        match item {
-            Item::Title(t) => d.title = t,
-            Item::Objects(o) => d.objects.extend(o),
-            Item::Init(a) => d.init.extend(a),
-            Item::Run(lines) => {
-                for l in lines {
-                    match l {
-                        Line::Step(s) => d.steps.push(s),
-                        Line::Set(a) => d
-                            .steps
-                            .last_mut()
-                            .ok_or_else(|| fail(format!("`{}'` needs a step before it", a.object)))?
-                            .sets
-                            .push(a),
+    Ok(out)
+}
+
+fn label(labels: &[BlockLabel]) -> Result<String, String> {
+    match labels {
+        [l] => Ok(l.as_str().to_string()),
+        _ => Err("a block needs exactly one label".into()),
+    }
+}
+
+fn object(kind: &str, labels: &[BlockLabel], body: &Body) -> Result<Object, String> {
+    let object_name = label(labels)?;
+    let (states, rest): (Vec<&Structure>, Vec<&Structure>) = body
+        .0
+        .iter()
+        .partition(|s| matches!(s, Structure::Attribute(a) if a.key.as_str() == "states"));
+    let rest = Body(rest.into_iter().cloned().collect());
+    let typed = |e: hcl::Error| format!("{kind} \"{object_name}\": {e}");
+    let ty = match kind {
+        "person" => Type::Person(hcl::from_body(rest).map_err(typed)?),
+        "api" => Type::Api(hcl::from_body(rest).map_err(typed)?),
+        "db" => Type::Db(hcl::from_body(rest).map_err(typed)?),
+        "file" => Type::File(hcl::from_body(rest).map_err(typed)?),
+        "page" => Type::Page(hcl::from_body(rest).map_err(typed)?),
+        "code" => Type::Code(hcl::from_body(rest).map_err(typed)?),
+        "browser" => Type::Browser(hcl::from_body(rest).map_err(typed)?),
+        other => {
+            return Err(format!(
+                "`{other}` is not person, api, db, file, page, code, browser, step or check"
+            ));
+        }
+    };
+    let mut machine = Vec::new();
+    for s in states {
+        if let Structure::Attribute(a) = s {
+            for (state, next) in object_pairs(&a.expr)? {
+                match next {
+                    Data::List(items) => {
+                        machine.extend(items.iter().map(|b| (state.clone(), b.flat())))
                     }
+                    other => machine.push((state, other.flat())),
                 }
             }
-            Item::Check(c) => d.check = Some(c),
+        }
+    }
+    Ok(Object {
+        name: object_name,
+        ty,
+        machine,
+    })
+}
+
+fn step(body: &Body) -> Result<Step, String> {
+    let attrs = attributes(body, &["from", "to", "send", "set"])?;
+    let get = |k: &str| attrs.get(k).ok_or_else(|| format!("a step needs `{k}`"));
+    Ok(Step {
+        from: name(get("from")?)?,
+        to: name(get("to")?)?,
+        send: attrs.get("send").map(data).transpose()?,
+        set: attrs
+            .get("set")
+            .map(object_pairs)
+            .transpose()?
+            .unwrap_or_default(),
+    })
+}
+
+fn check(labels: &[BlockLabel], body: &Body) -> Result<Check, String> {
+    let attrs = attributes(body, &["when", "then"])?;
+    let then = attrs
+        .get("then")
+        .ok_or_else(|| "a check needs `then`".to_string())?;
+    Ok(Check {
+        name: label(labels)?,
+        when: attrs.get("when").map(cond).transpose()?,
+        then: cond(then)?,
+    })
+}
+
+fn build(body: &Body) -> Result<Diagram, String> {
+    let mut d = Diagram::default();
+    for s in &body.0 {
+        match s {
+            Structure::Attribute(a) => match a.key.as_str() {
+                "title" => d.title = text(&a.expr)?,
+                "init" => d.init = object_pairs(&a.expr)?,
+                other => return Err(format!("`{other}` is not title or init")),
+            },
+            Structure::Block(b) => match b.identifier.as_str() {
+                "step" => d.steps.push(step(&b.body)?),
+                "check" => d.checks.push(check(&b.labels, &b.body)?),
+                kind => d.objects.push(object(kind, &b.labels, &b.body)?),
+            },
         }
     }
     if d.objects.is_empty() {
-        return Err(fail("no objects".into()));
+        return Err("no objects".into());
     }
     let mut known = HashSet::new();
     for o in &d.objects {
         if !known.insert(o.name.as_str()) {
-            return Err(fail(format!("`{}` is declared twice", o.name)));
+            return Err(format!("`{}` is declared twice", o.name));
         }
     }
+    let steps = d.steps.iter().flat_map(|s| {
+        [s.from.as_str(), s.to.as_str()]
+            .into_iter()
+            .chain(s.set.iter().map(|(k, _)| k.as_str()))
+    });
     let used = d
         .init
         .iter()
-        .map(|a| a.object.as_str())
-        .chain(d.steps.iter().flat_map(|s| {
-            [s.from.as_str(), s.to.as_str()]
-                .into_iter()
-                .chain(s.sets.iter().map(|a| a.object.as_str()))
-        }))
-        .chain(d.check.iter().flat_map(Check::objects));
-    for name in used {
-        if !known.contains(name) {
-            return Err(fail(format!("unknown object `{name}`")));
+        .map(|(k, _)| k.as_str())
+        .chain(steps)
+        .chain(d.checks.iter().flat_map(Check::objects));
+    for n in used {
+        if !known.contains(n) {
+            return Err(format!("unknown object `{n}`"));
         }
     }
     Ok(d)
+}
+
+pub fn parse(src: &str) -> Result<Diagram, Error> {
+    let body = hcl::parse(src).map_err(|e| Error(e.to_string()))?;
+    build(&body).map_err(Error)
 }

@@ -9,5 +9,9 @@ name = "weft"
 path = "src/main.rs"
 
 [dependencies]
-weft-parse = { path = "../weft-parse" }
+globset = "0.4"
+hcl-rs = "0.19"
+ignore = "0.4"
+serde = { version = "1", features = ["derive"] }
 weft-draw = { path = "../weft-draw" }
+weft-parse = { path = "../weft-parse" }

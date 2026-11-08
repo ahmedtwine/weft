@@ -1,7 +1,7 @@
 # weft
 
-Invariant diagrams: typed objects, steps, state notes, state machines and checks, drawn by [merman](https://github.com/Latias94/merman).
+Invariant diagrams in HCL: typed objects, steps, state machines and checks, laid out by [merman](https://github.com/Latias94/merman) in Pele styling.
 
-`cargo install --git https://github.com/ahmedtwine/weft weft-cli --locked`, then `weft <dir> [--visualize] [--format ascii|html]`.
+Put `include = ["**/*.weft.hcl"]` in a root `weft.hcl`, then run `weft [--visualize] [--format ascii|html]`.
 
-MIT. merman is MIT OR Apache-2.0, used with its sequence, SVG and text features only.
+MIT. merman is MIT OR Apache-2.0. Icons are Lucide, ISC, in `crates/weft-draw/src/vendor`.

@@ -11,8 +11,9 @@ typedef enum {
 } weft_result_t;
 
 typedef enum {
-  WEFT_FORMAT_SVG = 0,
-  WEFT_FORMAT_ASCII = 1,
+  WEFT_FORMAT_SVG_LIGHT = 0,
+  WEFT_FORMAT_SVG_DARK = 1,
+  WEFT_FORMAT_ASCII = 2,
 } weft_format_t;
 
 typedef enum {
