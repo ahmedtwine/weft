@@ -1,64 +1,42 @@
-#![allow(non_camel_case_types)]
+#![allow(non_camel_case_types, clippy::missing_safety_doc)]
 
 use std::ffi::c_char;
 use std::ptr;
 
 use weft_parse::{Diagram, Verdict};
-
-/// A UTF-8 string with an explicit length.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct weft_string_t {
     pub data: *const c_char,
     pub len: usize,
 }
-
-/// A string that libweft allocated. Release it with `weft_owned_string_free`.
 pub type weft_owned_string_t = weft_string_t;
-
-/// The result of a libweft call.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum weft_result_t {
-    /// Success.
     WEFT_OK = 0,
-    /// The source does not parse. See `weft_context_last_error`.
     WEFT_E_PARSE = -1,
-    /// An argument was not valid.
     WEFT_E_INVALID_ARG = -2,
-    /// merman could not draw the diagram. See `weft_context_last_error`.
     WEFT_E_RENDER = -3,
 }
 
 use weft_result_t::*;
-
-/// The output format of `weft_render`, passed as a uint32_t.
 #[repr(C)]
 pub enum weft_format_t {
     WEFT_FORMAT_SVG = 0,
     WEFT_FORMAT_ASCII = 1,
 }
-
-/// The status of a `weft_verdict_t`.
 #[repr(C)]
 pub enum weft_status_t {
-    /// The diagram has no check.
     WEFT_STATUS_NO_CHECK = 0,
-    /// The run does not break the check.
     WEFT_STATUS_HOLDS = 1,
-    /// The run breaks the check at `step`.
     WEFT_STATUS_FAILS = 2,
 }
-
-/// The result of `weft_check`. `status` is a `weft_status_t`. `step` is the
-/// zero-based index of the step that breaks the check.
 #[repr(C)]
 pub struct weft_verdict_t {
     pub status: u32,
     pub step: usize,
 }
-
-/// Holds the message of the last failed call.
 pub struct WeftContext {
     last_error: Box<[u8]>,
 }
@@ -74,20 +52,12 @@ fn set_error(ctx: *mut WeftContext, message: &str) {
         c.last_error = terminated(message);
     }
 }
-
-/// Returns a new context. Never returns NULL. Release it with
-/// `weft_context_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn weft_context_new() -> *mut WeftContext {
     Box::into_raw(Box::new(WeftContext {
         last_error: terminated(""),
     }))
 }
-
-/// Releases `ctx`. NULL is a no-op.
-///
-/// # Safety
-/// `ctx` is NULL or a context from `weft_context_new` that is not released.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_context_free(ctx: *mut WeftContext) -> weft_result_t {
     if !ctx.is_null() {
@@ -95,11 +65,6 @@ pub unsafe extern "C" fn weft_context_free(ctx: *mut WeftContext) -> weft_result
     }
     WEFT_OK
 }
-
-/// Returns the message of the last failed call on `ctx`, or the empty string.
-///
-/// # Safety
-/// `ctx` is NULL or a live context.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_context_last_error(ctx: *const WeftContext) -> weft_string_t {
     match unsafe { ctx.as_ref() } {
@@ -137,12 +102,6 @@ unsafe fn diagram(
         WEFT_E_PARSE
     })
 }
-
-/// Draws `source` in `format`, a `weft_format_t`, into `out_result`.
-///
-/// # Safety
-/// `ctx` is NULL or a live context. `source` points to `len` readable bytes.
-/// `out_result` points to writable memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_render(
     ctx: *mut WeftContext,
@@ -155,8 +114,8 @@ pub unsafe extern "C" fn weft_render(
         Err(rc) => return rc,
     };
     let draw: fn(&Diagram) -> Result<String, String> = match format {
-        0 => weft_draw::svg,
-        1 => weft_draw::ascii,
+        f if f == weft_format_t::WEFT_FORMAT_SVG as u32 => weft_draw::svg,
+        f if f == weft_format_t::WEFT_FORMAT_ASCII as u32 => weft_draw::ascii,
         _ => {
             set_error(ctx, "weft_render: format is not a weft_format_t");
             return WEFT_E_INVALID_ARG;
@@ -181,12 +140,6 @@ pub unsafe extern "C" fn weft_render(
     };
     WEFT_OK
 }
-
-/// Runs the steps of `source` and checks its invariant after each step.
-///
-/// # Safety
-/// `ctx` is NULL or a live context. `source` points to `len` readable bytes.
-/// `out_verdict` points to writable memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_check(
     ctx: *mut WeftContext,
@@ -217,12 +170,6 @@ pub unsafe extern "C" fn weft_check(
     };
     WEFT_OK
 }
-
-/// Releases a string from `weft_render` and resets it to `{NULL, 0}`. NULL
-/// and a reset string are no-ops.
-///
-/// # Safety
-/// `result` is NULL or a string from `weft_render` that is not released.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_owned_string_free(
     ctx: *mut WeftContext,
