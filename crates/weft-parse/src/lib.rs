@@ -546,7 +546,7 @@ fn check(labels: &[BlockLabel], body: &Body) -> Result<Check, String> {
     let attrs = attributes(body, &["when", "then"])?;
     let then = attrs
         .get("then")
-        .ok_or_else(|| "a check needs `then`".to_string())?;
+        .ok_or_else(|| "an invariant needs `then`".to_string())?;
     Ok(Check {
         name: label(labels)?,
         when: attrs.get("when").map(cond).transpose()?,
@@ -556,18 +556,43 @@ fn check(labels: &[BlockLabel], body: &Body) -> Result<Check, String> {
 
 fn build(body: &Body) -> Result<Diagram, String> {
     let mut d = Diagram::default();
+    let mut seen = HashSet::new();
     for s in &body.0 {
-        match s {
-            Structure::Attribute(a) => match a.key.as_str() {
-                "title" => d.title = text(&a.expr)?,
-                "init" => d.init = object_pairs(&a.expr)?,
-                other => return Err(format!("`{other}` is not title or init")),
-            },
-            Structure::Block(b) => match b.identifier.as_str() {
-                "step" => d.steps.push(step(&b.body)?),
-                "check" => d.checks.push(check(&b.labels, &b.body)?),
-                kind => d.objects.push(object(kind, &b.labels, &b.body)?),
-            },
+        let b = match s {
+            Structure::Attribute(a) if a.key.as_str() == "title" => {
+                d.title = text(&a.expr)?;
+                continue;
+            }
+            Structure::Attribute(a) => return Err(format!("`{}` is not title", a.key)),
+            Structure::Block(b) => b,
+        };
+        let parent = b.identifier.as_str();
+        let holds = match parent {
+            "setup" => "objects and `init`",
+            "action" => "`step` blocks",
+            "check" => "`invariant` blocks",
+            other => return Err(format!("`{other}` is not setup, action or check")),
+        };
+        if !b.labels.is_empty() || !seen.insert(parent) {
+            return Err(format!("`{parent}` is one block with no label"));
+        }
+        for c in &b.body.0 {
+            match (parent, c) {
+                ("setup", Structure::Attribute(a)) if a.key.as_str() == "init" => {
+                    d.init = object_pairs(&a.expr)?
+                }
+                ("setup", Structure::Block(o)) => {
+                    d.objects
+                        .push(object(o.identifier.as_str(), &o.labels, &o.body)?)
+                }
+                ("action", Structure::Block(o)) if o.identifier.as_str() == "step" => {
+                    d.steps.push(step(&o.body)?)
+                }
+                ("check", Structure::Block(o)) if o.identifier.as_str() == "invariant" => {
+                    d.checks.push(check(&o.labels, &o.body)?)
+                }
+                _ => return Err(format!("`{parent}` holds {holds}")),
+            }
         }
     }
     if d.objects.is_empty() {
