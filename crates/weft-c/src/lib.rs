@@ -81,25 +81,33 @@ pub unsafe extern "C" fn weft_context_last_error(ctx: *const WeftContext) -> wef
     }
 }
 
+unsafe fn text<'a>(
+    ctx: *mut WeftContext,
+    call: &str,
+    what: &str,
+    s: weft_string_t,
+) -> Result<&'a str, weft_result_t> {
+    if s.data.is_null() && s.len != 0 {
+        set_error(ctx, &format!("{call}: {what} data is NULL"));
+        return Err(WEFT_E_INVALID_ARG);
+    }
+    let bytes = match s.len {
+        0 => &[][..],
+        len => unsafe { std::slice::from_raw_parts(s.data.cast::<u8>(), len) },
+    };
+    std::str::from_utf8(bytes).map_err(|_| {
+        set_error(ctx, &format!("{call}: {what} is not UTF-8"));
+        WEFT_E_INVALID_ARG
+    })
+}
+
 unsafe fn diagram(
     ctx: *mut WeftContext,
     call: &str,
     source: weft_string_t,
 ) -> Result<Diagram, weft_result_t> {
     set_error(ctx, "");
-    if source.data.is_null() && source.len != 0 {
-        set_error(ctx, &format!("{call}: source data is NULL"));
-        return Err(WEFT_E_INVALID_ARG);
-    }
-    let bytes = match source.len {
-        0 => &[][..],
-        len => unsafe { std::slice::from_raw_parts(source.data.cast::<u8>(), len) },
-    };
-    let text = std::str::from_utf8(bytes).map_err(|_| {
-        set_error(ctx, &format!("{call}: source is not UTF-8"));
-        WEFT_E_INVALID_ARG
-    })?;
-    weft_parse::parse(text).map_err(|e| {
+    weft_parse::parse(unsafe { text(ctx, call, "source", source) }?).map_err(|e| {
         set_error(ctx, &e.to_string());
         WEFT_E_PARSE
     })
@@ -107,6 +115,7 @@ unsafe fn diagram(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_render(
     ctx: *mut WeftContext,
+    config: weft_string_t,
     source: weft_string_t,
     format: u32,
     out_result: *mut weft_owned_string_t,
@@ -115,9 +124,22 @@ pub unsafe extern "C" fn weft_render(
         Ok(d) => d,
         Err(rc) => return rc,
     };
+    let styles = match unsafe { text(ctx, "weft_render", "config", config) }.and_then(|c| {
+        weft_parse::config(c).map_err(|e| {
+            set_error(ctx, &format!("weft_render: config: {e}"));
+            WEFT_E_PARSE
+        })
+    }) {
+        Ok(c) => c.styles,
+        Err(rc) => return rc,
+    };
     let drawn = match format {
-        f if f == weft_format_t::WEFT_FORMAT_SVG_LIGHT as u32 => weft_draw::svg(&d, Theme::Light),
-        f if f == weft_format_t::WEFT_FORMAT_SVG_DARK as u32 => weft_draw::svg(&d, Theme::Dark),
+        f if f == weft_format_t::WEFT_FORMAT_SVG_LIGHT as u32 => {
+            weft_draw::svg(&d, &styles, Theme::Light)
+        }
+        f if f == weft_format_t::WEFT_FORMAT_SVG_DARK as u32 => {
+            weft_draw::svg(&d, &styles, Theme::Dark)
+        }
         f if f == weft_format_t::WEFT_FORMAT_ASCII as u32 => weft_draw::ascii(&d),
         _ => {
             set_error(ctx, "weft_render: format is not a weft_format_t");

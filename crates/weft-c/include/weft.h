@@ -43,6 +43,7 @@ weft_result_t weft_context_free(weft_context_t *ctx);
 weft_string_t weft_context_last_error(const weft_context_t *ctx);
 
 weft_result_t weft_render(weft_context_t *ctx,
+                          weft_string_t config,
                           weft_string_t source,
                           uint32_t format,
                           weft_owned_string_t *out_result);

@@ -5,5 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-hcl-rs = "0.19"
-serde = { version = "1", features = ["derive"] }
+kdl = { version = "6.7.1", default-features = false }
+miette = { version = "7.6", default-features = false }

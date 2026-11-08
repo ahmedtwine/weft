@@ -2,19 +2,12 @@ use std::{env, fs, path::PathBuf, process::ExitCode};
 
 use globset::{Glob, GlobSetBuilder};
 use ignore::WalkBuilder;
-use serde::Deserialize;
 use weft_draw::Theme;
-use weft_parse::{Diagram, Verdict};
+use weft_parse::{Config, Diagram, Verdict};
 
 const USAGE: &str = "usage: weft [--visualize] [--format ascii|html]";
-const CONFIG: &str = "weft.hcl";
-const SUFFIX: &str = ".weft.hcl";
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Config {
-    include: Vec<String>,
-}
+const CONFIG: &str = "weft.kdl";
+const SUFFIX: &str = ".weft.kdl";
 
 #[derive(PartialEq)]
 enum Format {
@@ -22,10 +15,13 @@ enum Format {
     Html,
 }
 
-fn files() -> Result<Vec<PathBuf>, String> {
+fn files() -> Result<(Vec<PathBuf>, Config, Theme), String> {
     let source =
         fs::read_to_string(CONFIG).map_err(|_| format!("{CONFIG} is not in this directory"))?;
-    let config: Config = hcl::from_str(&source).map_err(|e| format!("{CONFIG}: {e}"))?;
+    let at = |e: String| format!("{CONFIG}: {e}");
+    let config = weft_parse::config(&source).map_err(|e| at(e.to_string()))?;
+    let theme = Theme::parse(&config.theme).map_err(at)?;
+    weft_draw::styled(&config.styles).map_err(at)?;
     let mut set = GlobSetBuilder::new();
     for pattern in &config.include {
         if !pattern.ends_with(SUFFIX) {
@@ -46,7 +42,7 @@ fn files() -> Result<Vec<PathBuf>, String> {
             "{CONFIG}: no file matches {}",
             config.include.join(", ")
         )),
-        false => Ok(found),
+        false => Ok((found, config, theme)),
     }
 }
 
@@ -58,49 +54,69 @@ fn escape(s: &str) -> String {
 
 fn summary(path: &str, d: &Diagram) -> String {
     match d.verdict() {
-        Some(Verdict::Fails { step, reason, .. }) => {
+        Some(Verdict::Fails {
+            statement,
+            step,
+            evidence,
+            ..
+        }) => {
+            let s = &d.steps[step];
             format!(
-                "✓ {path} · {reason} · the run breaks it at step {}",
-                step + 1
+                "✓ {path} · {statement} · step {} {} from={} to={} · {}",
+                step + 1,
+                s.send.name,
+                s.from,
+                s.to,
+                evidence.join(" · ")
             )
         }
-        Some(Verdict::Holds) => format!("✕ {path} · the run breaks no check and no state machine"),
+        Some(Verdict::Holds) if d.checks.is_empty() => format!("✓ {path} · holds"),
+        Some(Verdict::Holds) => format!("✕ {path} · the run breaks no invariant"),
         None => format!("✓ {path} · no check"),
     }
 }
 
-fn section(path: &str, src: &str, d: &Diagram) -> Result<String, String> {
+fn section(
+    path: &str,
+    src: &str,
+    d: &Diagram,
+    config: &Config,
+    theme: Theme,
+) -> Result<String, String> {
+    let statements: String = d
+        .checks
+        .iter()
+        .map(|c| format!(r#"<p class="s">{}</p>"#, escape(&c.statement)))
+        .collect();
     Ok(format!(
-        r#"<section><h2>{}</h2><div class="d light">{}</div><div class="d dark">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
-        escape(&d.title),
-        weft_draw::svg(d, Theme::Light)?,
-        weft_draw::svg(d, Theme::Dark)?,
+        r#"<section><h2>{}</h2>{statements}<div class="d">{}</div><details><summary>source</summary><pre>{}</pre></details></section>"#,
         escape(path),
+        weft_draw::svg(d, &config.styles, theme)?,
         escape(src)
     ))
 }
 
-fn page(sections: &str, lines: &[String]) -> String {
+fn page(sections: &str, lines: &[String], theme: Theme) -> String {
     let wrong = lines.iter().filter(|l| l.starts_with('✕')).count();
-    let dark =
-        "--bg:#161616;--fg:#e6e6e6;--muted:#9a9a9a;--line:#333333;--code:#1f1f1f;color-scheme:dark";
+    let p = theme.palette();
     format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Weft Report</title><style>
-:root{{--bg:#ffffff;--fg:#1f1f1f;--muted:#6e6e6e;--line:#e6e6e6;--code:#f3f3f3;color-scheme:light}}
-@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{{dark}}}:root:not([data-theme="light"]) .light{{display:none}}:root:not([data-theme="light"]) .dark{{display:block}}}}
-:root[data-theme="dark"]{{{dark}}}:root[data-theme="dark"] .light{{display:none}}:root[data-theme="dark"] .dark{{display:block}}
-body{{margin:0;background:var(--bg);color:var(--fg);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;padding:24px max(16px,env(safe-area-inset-right)) 24px max(16px,env(safe-area-inset-left))}}
+body{{margin:0;background:{bg};color:{fg};font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;padding:24px max(16px,env(safe-area-inset-right)) 24px max(16px,env(safe-area-inset-left))}}
 h1{{font-size:22px;margin:0 0 6px}}
-h2{{font-size:16px;margin:0 0 12px}}
-p{{margin:0 0 8px;color:var(--muted)}}
-section{{border-top:1px solid var(--line);padding:20px 0}}
+h2{{font-size:13px;margin:0 0 6px;color:{muted};font-weight:500}}
+.s{{font-size:17px;font-weight:600;color:{fg};margin:0 0 14px}}
+p{{margin:0 0 8px;color:{muted}}}
+section{{border-top:1px solid {surface};padding:20px 0}}
 .d{{overflow-x:auto}}
 .d svg{{display:block}}
-.dark{{display:none}}
-details{{margin-top:8px;color:var(--muted)}}
-pre{{font:12px/1.5 ui-monospace,Menlo,monospace;background:var(--code);color:var(--fg);padding:12px;border-radius:6px;overflow-x:auto}}
+details{{margin-top:8px;color:{muted}}}
+pre{{font:12px/1.5 ui-monospace,Menlo,monospace;background:{surface};color:{fg};padding:12px;border-radius:6px;overflow-x:auto}}
 </style></head><body><h1>Weft Report</h1><p>{} files · {wrong} wrong</p>{sections}</body></html>"#,
-        lines.len()
+        lines.len(),
+        bg = p.bg,
+        fg = p.fg,
+        muted = p.muted,
+        surface = p.surface
     )
 }
 
@@ -125,7 +141,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    let files = match files() {
+    let (files, config, theme) = match files() {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{e}");
@@ -149,7 +165,13 @@ fn main() -> ExitCode {
                     .map(|d| (src, d))
                     .map_err(|e| e.to_string())
             });
-        let (src, d) = match parsed {
+        let (src, d) = match parsed.and_then(|(src, d)| match d.unstyled(&config.styles) {
+            Some(o) => Err(format!(
+                "`{}` has no `style {}` in {CONFIG}",
+                o.name, o.kind
+            )),
+            None => Ok((src, d)),
+        }) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("✕ {path} · {e}");
@@ -160,11 +182,11 @@ fn main() -> ExitCode {
         let line = summary(&path, &d);
         failed |= line.starts_with('✕');
         let drawn = match (visualize, html) {
-            (true, true) => section(&path, &src, &d).map(|s| {
+            (true, true) => section(&path, &src, &d, &config, theme).map(|s| {
                 sections.push_str(&s);
                 eprintln!("{line}");
             }),
-            (true, false) => weft_draw::ascii(&d).map(|text| println!("{}\n\n{text}", d.title)),
+            (true, false) => weft_draw::ascii(&d).map(|text| println!("{path}\n\n{text}")),
             (false, _) => {
                 println!("{line}");
                 Ok(())
@@ -177,7 +199,7 @@ fn main() -> ExitCode {
         lines.push(line);
     }
     if html {
-        print!("{}", page(&sections, &lines));
+        print!("{}", page(&sections, &lines, theme));
     }
     if failed {
         ExitCode::FAILURE
