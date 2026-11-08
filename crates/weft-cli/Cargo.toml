@@ -1,0 +1,13 @@
+[package]
+name = "weft-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "weft"
+path = "src/main.rs"
+
+[dependencies]
+weft-parse = { path = "../weft-parse" }
+weft-draw = { path = "../weft-draw" }
