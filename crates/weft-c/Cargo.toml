@@ -1,0 +1,16 @@
+[package]
+name = "weft-c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "weft"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+weft-parse = { path = "../weft-parse" }
+weft-draw = { path = "../weft-draw" }
+
+[dev-dependencies]
+cbindgen = "0.29.2"

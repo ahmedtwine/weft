@@ -1,6 +1,5 @@
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
-use weft_draw::escape;
 use weft_parse::{Diagram, Verdict};
 
 const USAGE: &str = "usage: weft <file.weft|dir>... [--visualize] [--format ascii|html]";
@@ -28,17 +27,22 @@ fn files(paths: Vec<PathBuf>) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn summary(path: &str, d: &Diagram) -> String {
-    match (d.verdict(), &d.check) {
-        (Some(Verdict::Fails(k)), Some(c)) => format!(
-            "✓ {path} · {} · the run breaks it at step {}",
-            c.title,
-            k + 1
-        ),
-        (Some(Verdict::Holds), Some(c)) => {
-            format!("✕ {path} · {} · the run does not break it", c.title)
+    match d.verdict() {
+        Some(Verdict::Fails { step, reason, .. }) => {
+            format!(
+                "✓ {path} · {reason} · the run breaks it at step {}",
+                step + 1
+            )
         }
-        _ => format!("✓ {path} · no check"),
+        Some(Verdict::Holds) => format!("✕ {path} · the run breaks no check and no state machine"),
+        None => format!("✓ {path} · no check"),
     }
 }
 
@@ -49,6 +53,7 @@ fn page(sections: &str, lines: &[String]) -> String {
 :root{{--bg:#ffffff;--fg:#1b2230;--muted:#5b6474;--line:#e3e7ee;--code:#f6f7f9;color-scheme:light}}
 body{{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,"Segoe UI",system-ui,sans-serif;padding:24px max(16px,env(safe-area-inset-right)) 24px max(16px,env(safe-area-inset-left))}}
 h1{{font-size:22px;margin:0 0 6px}}
+h2{{font-size:16px;margin:0 0 12px}}
 p{{margin:0 0 8px;color:var(--muted)}}
 section{{border-top:1px solid var(--line);padding:20px 0}}
 .d{{overflow-x:auto}}
@@ -117,18 +122,25 @@ fn main() -> ExitCode {
         };
         let line = summary(&path, &d);
         failed |= line.starts_with('✕');
-        match (visualize, html) {
-            (true, true) => {
+        let drawn = match (visualize, html) {
+            (true, true) => weft_draw::svg(&d).map(|svg| {
                 sections.push_str(&format!(
-                    r#"<section><div class="d">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
-                    weft_draw::svg(&d),
+                    r#"<section><h2>{}</h2><div class="d">{svg}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
+                    escape(&d.title),
                     escape(&path),
                     escape(&src)
                 ));
                 eprintln!("{line}");
+            }),
+            (true, false) => weft_draw::ascii(&d).map(|text| println!("{}\n\n{text}", d.title)),
+            (false, _) => {
+                println!("{line}");
+                Ok(())
             }
-            (true, false) => println!("{}", weft_draw::ascii(&d)),
-            (false, _) => println!("{line}"),
+        };
+        if let Err(e) = drawn {
+            eprintln!("✕ {path} · {e}");
+            failed = true;
         }
         lines.push(line);
     }

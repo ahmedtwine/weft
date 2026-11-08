@@ -1,0 +1,44 @@
+language = "C"
+header = """
+/*
+ * libweft — C bindings for weft, the invariant diagram language.
+ *
+ * Generated from crates/weft-c/src/lib.rs by cbindgen. Do not edit it.
+ * Run `WEFT_C_HEADER_WRITE=1 cargo test -p weft-c` after a change.
+ *
+ * Calling convention
+ * ------------------
+ * Every function takes a weft_context_t* as its first argument and returns
+ * a weft_result_t, except weft_context_new and weft_context_last_error.
+ * WEFT_OK is zero and every error is negative. Outputs go through a trailing
+ * out_* parameter. A NULL context opts out of error messages.
+ *
+ * Strings
+ * -------
+ * weft_string_t is UTF-8 with an explicit length. Inputs need no NUL.
+ * Outputs have a trailing NUL that the length excludes.
+ *
+ * Ownership
+ * ---------
+ *     weft_context_new  ->  weft_context_free
+ *     weft_render       ->  weft_owned_string_free
+ *
+ * weft_context_last_error is borrowed and valid until the next call on the
+ * same context. A context must not be used from two threads at once.
+ */"""
+include_guard = "WEFT_H"
+cpp_compat = true
+sys_includes = ["stddef.h", "stdint.h"]
+no_includes = true
+documentation_style = "c"
+style = "type"
+usize_is_size_t = true
+
+[export]
+include = ["weft_format_t", "weft_status_t"]
+
+[export.rename]
+"WeftContext" = "weft_context_t"
+
+[enum]
+prefix_with_name = false

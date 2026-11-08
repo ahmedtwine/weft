@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 weft-parse = { path = "../weft-parse" }
+merman = { version = "=0.10.0-alpha.2", default-features = false, features = ["diagram-sequence", "svg", "ascii"] }
