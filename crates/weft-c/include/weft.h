@@ -35,10 +35,6 @@ typedef struct {
   size_t step;
 } weft_verdict_t;
 
-#ifdef __cplusplus
-extern "C" {
-#endif // __cplusplus
-
 weft_context_t *weft_context_new(void);
 
 weft_result_t weft_context_free(weft_context_t *ctx);
@@ -53,7 +49,3 @@ weft_result_t weft_render(weft_context_t *ctx,
 weft_result_t weft_check(weft_context_t *ctx, weft_string_t source, weft_verdict_t *out_verdict);
 
 weft_result_t weft_owned_string_free(weft_context_t *ctx, weft_owned_string_t *result);
-
-#ifdef __cplusplus
-}  // extern "C"
-#endif  // __cplusplus
