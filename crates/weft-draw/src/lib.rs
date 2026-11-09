@@ -6,13 +6,9 @@ use merman::ascii::AsciiRenderOptions;
 use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest};
 use serde_json::Value;
 use vendor::lucide::ICONS;
-use weft_parse::{Data, Diagram, Verdict};
+use weft_parse::{Diagram, Verdict};
 
-const VALUE: usize = 36;
 const WRAP: usize = 24;
-const LINE: f64 = 17.6;
-const INDENT: f64 = 12.0;
-const GAP: f64 = 14.0;
 const PAD: f64 = 10.0;
 const RESERVE: usize = 2;
 const FONT: &str = "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif";
@@ -55,13 +51,6 @@ const DARK: Palette = Palette {
     fail: "#3d2222",
 };
 
-struct Field {
-    depth: usize,
-    bullet: bool,
-    key: String,
-    value: String,
-}
-
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Initial,
@@ -77,7 +66,6 @@ struct Note {
 struct Plan {
     source: String,
     heads: Vec<Vec<String>>,
-    payloads: Vec<Vec<Field>>,
     notes: Vec<Note>,
     initial: Vec<(usize, String)>,
     rects: usize,
@@ -111,95 +99,6 @@ fn wrap(s: &str, max: usize) -> Vec<String> {
         (true, Some(k)) => vec![line(&words[..k]), line(&words[k..])],
         _ => vec![s.trim_end().to_string()],
     }
-}
-
-fn field(out: &mut Vec<Field>, depth: usize, key: &str, value: &str) {
-    for (i, line) in wrap(value, VALUE).into_iter().enumerate() {
-        out.push(Field {
-            depth,
-            bullet: false,
-            key: if i == 0 {
-                key.to_string()
-            } else {
-                String::new()
-            },
-            value: line,
-        });
-    }
-}
-
-fn fields(all: &[(String, Data)], depth: usize, out: &mut Vec<Field>) {
-    for (k, v) in all {
-        let (mut k, mut v) = (k.clone(), v);
-        while let Data::Record(f) = v
-            && let [(inner, one)] = f.as_slice()
-        {
-            k = format!("{k}.{inner}");
-            v = one;
-        }
-        let k = k.as_str();
-        let texts: Option<Vec<&str>> = match v {
-            Data::List(items) => items
-                .iter()
-                .map(|i| match i {
-                    Data::Text(t) => Some(t.as_str()),
-                    _ => None,
-                })
-                .collect(),
-            _ => None,
-        };
-        match (v, texts) {
-            (Data::Text(t), _) => field(out, depth, k, t),
-            (_, Some(texts)) => field(out, depth, k, &texts.join(", ")),
-            (Data::Record(f), _) => {
-                field(out, depth, k, "");
-                fields(f, depth + 1, out);
-            }
-            (Data::List(items), _) => {
-                field(out, depth, k, "");
-                items.iter().for_each(|i| item(i, depth + 1, out));
-            }
-        }
-    }
-}
-
-fn item(d: &Data, depth: usize, out: &mut Vec<Field>) {
-    let start = out.len();
-    match d {
-        Data::Text(t) => field(out, depth + 1, "", t),
-        Data::Record(f) => fields(f, depth + 1, out),
-        Data::List(items) => items.iter().for_each(|i| item(i, depth + 1, out)),
-    }
-    if let Some(f) = out.get_mut(start) {
-        f.bullet = true;
-    }
-}
-
-fn payload(all: &[(String, Data)]) -> Vec<Field> {
-    let mut out = Vec::new();
-    fields(all, 0, &mut out);
-    out
-}
-
-fn column(rows: &[Field], key: impl Fn(&Field) -> f64) -> f64 {
-    rows.iter()
-        .filter(|f| !f.value.is_empty())
-        .map(key)
-        .fold(0.0, f64::max)
-}
-
-fn plain(rows: &[Field]) -> Vec<String> {
-    let width = column(rows, |f| (f.depth * 2 + count(&f.key)) as f64) as usize;
-    rows.iter()
-        .map(|f| {
-            let lead = match f.bullet {
-                true => format!("{}- ", "  ".repeat(f.depth - 1)),
-                false => "  ".repeat(f.depth),
-            };
-            let key = format!("{lead}{}", f.key);
-            format!("{key:width$}  {}", f.value).trim_end().to_string()
-        })
-        .collect()
 }
 
 fn mermaid_text(lines: &[String]) -> String {
@@ -262,7 +161,6 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
     let mut p = Plan {
         source: String::new(),
         heads: Vec::new(),
-        payloads: Vec::new(),
         notes: Vec::new(),
         initial: Vec::new(),
         rects: 0,
@@ -273,11 +171,11 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
         p.source.push_str(DIRECTIVE);
     }
     p.source.push_str("sequenceDiagram\n  autonumber\n");
-    p.heads = d.objects.iter().map(|o| wrap(&o.label, WRAP)).collect();
+    p.heads = d.objects.iter().map(|o| wrap(&o.name, WRAP)).collect();
     let order = order(d);
     for &i in &order {
         let head = &p.heads[i];
-        let label = match svg {
+        let lines = match svg {
             true => {
                 let mut reserve = vec![String::new(); RESERVE];
                 reserve[0] = d
@@ -287,7 +185,7 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
             }
             false => head.clone(),
         };
-        let _ = writeln!(p.source, "  participant o{i} as {}", mermaid_text(&label));
+        let _ = writeln!(p.source, "  participant o{i} as {}", mermaid_text(&lines));
         p.initial
             .extend(d.initial(&d.objects[i].name).map(|s| (i, s.to_string())));
     }
@@ -313,28 +211,13 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
             let _ = writeln!(p.source, "  rect rgb(0, 0, 0)");
             p.rects += 1;
         }
-        let rows = payload(&s.send.fields);
-        let text: Vec<String> = match svg {
-            true => plain(&rows)
-                .into_iter()
-                .chain([format!("«{}»", s.send.name)])
-                .collect(),
-            false => vec![
-                [format!("«{}»", s.send.name)]
-                    .into_iter()
-                    .chain(plain(&rows).iter().map(|r| r.trim().to_string()))
-                    .collect::<Vec<_>>()
-                    .join(" · "),
-            ],
-        };
         let _ = writeln!(
             p.source,
             "  o{}->>o{}: {}",
             col(d, &s.from),
             col(d, &s.to),
-            mermaid_text(&text)
+            mermaid_text(&[format!("«{}»", s.verb)])
         );
-        p.payloads.push(rows);
         for (object, value) in s
             .set
             .iter()
@@ -404,18 +287,10 @@ pub fn styled(styles: &[(weft_parse::Kind, String)]) -> Result<(), String> {
     }
 }
 
-fn label(out: &mut String, x: f64, y: f64, text: &str, color: &str, weight: u16, size: f64) {
+fn write_text(out: &mut String, x: f64, y: f64, text: &str, color: &str, weight: u16, size: f64) {
     let _ = write!(
         out,
         r#"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="{size}" font-weight="{weight}" fill="{color}">{}</text>"#,
-        escape(text)
-    );
-}
-
-fn text(out: &mut String, x: f64, y: f64, text: &str, color: &str) {
-    let _ = write!(
-        out,
-        r#"<text x="{x:.1}" y="{y:.1}" font-size="12.5" fill="{color}" style="white-space:pre">{}</text>"#,
         escape(text)
     );
 }
@@ -428,7 +303,7 @@ fn tag(out: &mut String, (x, y): (f64, f64), text: &str, ink: &str, bg: &str) {
         x - w / 2.0,
         y - 9.5
     );
-    label(out, x, y + 4.3, text, ink, 400, 12.0);
+    write_text(out, x, y + 4.3, text, ink, 400, 12.0);
 }
 
 fn node(
@@ -459,9 +334,9 @@ fn node(
         p.surface
     );
     let top_y = y - h / 2.0;
-    label(out, x, top_y + 17.0, top, p.muted, 400, 11.5);
+    write_text(out, x, top_y + 17.0, top, p.muted, 400, 11.5);
     for (i, line) in lines.iter().enumerate() {
-        label(out, x, top_y + 34.0 + i as f64 * 16.0, line, ink, 700, 13.0);
+        write_text(out, x, top_y + 34.0 + i as f64 * 16.0, line, ink, 700, 13.0);
     }
 }
 
@@ -493,34 +368,6 @@ fn points(e: &Value) -> Vec<(f64, f64)> {
         .as_array()
         .map(|a| a.iter().map(|q| (num(q, "x"), num(q, "y"))).collect())
         .unwrap_or_default()
-}
-
-fn paint_fields(out: &mut String, at: &Value, rows: &[Field], p: &Palette) {
-    let key = |f: &Field| f.depth as f64 * INDENT + width(&f.key, 12.5);
-    let column = column(rows, key);
-    let w = PAD * 2.0
-        + rows
-            .iter()
-            .map(|f| key(f).max(column + GAP + width(&f.value, 12.5)))
-            .fold(0.0, f64::max);
-    let h = rows.len() as f64 * LINE + 12.0;
-    let (x0, top) = (num(at, "x") - w / 2.0, num(at, "y") - 2.0);
-    let _ = write!(
-        out,
-        r#"<rect x="{x0:.1}" y="{top:.1}" width="{w:.1}" height="{h:.1}" rx="4" fill="{}" stroke="{}"/>"#,
-        p.surface, p.border
-    );
-    for (k, f) in rows.iter().enumerate() {
-        let (x, y) = (
-            x0 + PAD + f.depth as f64 * INDENT,
-            top + 19.0 + LINE * k as f64,
-        );
-        if f.bullet {
-            text(out, x - INDENT, y, "–", p.muted);
-        }
-        text(out, x, y, &f.key, p.muted);
-        text(out, x0 + PAD + column + GAP, y, &f.value, p.fg);
-    }
 }
 
 pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
@@ -626,14 +473,8 @@ pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
             r#"<path d="{path}" fill="none" stroke="{ink}" stroke-width="1.25"/>"#
         );
         arrow(&mut out, prev, end, ink);
-        if let Some(rows) = plan.payloads.get(k)
-            && !rows.is_empty()
-            && e["label"].is_object()
-        {
-            paint_fields(&mut out, &e["label"], rows, p);
-        }
         let ink_tag = if failed { p.critical } else { p.muted };
-        tag(&mut out, mid, &format!("«{}»", s.send.name), ink_tag, p.bg);
+        tag(&mut out, mid, &format!("«{}»", s.verb), ink_tag, p.bg);
         let _ = write!(
             out,
             r#"<circle cx="{ax:.1}" cy="{ay:.1}" r="8.5" fill="{ink}"/><text x="{ax:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="700" fill="{}">{}</text>"#,
@@ -682,7 +523,7 @@ pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
             continue;
         };
         let (x, top) = (num(n, "x"), heads);
-        label(
+        write_text(
             &mut out,
             x,
             top + 12.0,
@@ -703,7 +544,7 @@ pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
             p.fg
         );
         for (k, line) in head.iter().enumerate() {
-            label(
+            write_text(
                 &mut out,
                 x,
                 top + 76.0 + k as f64 * 16.0,
@@ -755,41 +596,41 @@ impl Theme {
 mod tests {
     use super::*;
 
-    const LABELS: [&str; 6] = [
-        "/sandbox/www.google.com/R9HTtq0IEYLMLIPOdYMMr",
-        "input[aria-label^=\"Where from?\"]",
-        "POST /api/correlation",
-        "refunded jordan the full $125 on #102, copper downgraded to starter before the renewal so they shouldnt have been charged. closing it out",
-        "Agent",
-        "R9HTtq0IEYLMLIPOdYMMrR9HTtq0IEYLMLIPOdYMMr",
+    const LINE: f64 = 17.6;
+
+    const STATES: [&str; 4] = [
+        "search form",
+        "Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan",
+        "San Diego",
+        "Lahore, Pakistan",
     ];
 
     const DIAGRAM: &str = r#"
 setup {
-  person agent Agent
-  browser page "/sandbox/www.google.com/R9HTtq0IEYLMLIPOdYMMr" {
-    state "search form"
+  person agent
+  browser page initial="search form" {
+    state "search form" {
+      on click "Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
+    }
     state "Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
-    initial "search form"
-    on click from=agent to=origin next="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
   }
-  element origin "input[aria-label^=\"Where from?\"] input[aria-label^=\"Where to?\"]" value=place {
-    state "San Diego"
+  element origin initial="San Diego" {
+    state "San Diego" {
+      on type "Lahore, Pakistan"
+    }
     state "Lahore, Pakistan"
-    initial "San Diego"
   }
 }
 action {
-  click from=agent to=origin origin="Lahore, Pakistan" {
-    message "refunded jordan the full $125 on #102, copper downgraded to starter before the renewal so they shouldnt have been charged. closing it out"
-  }
+  type from=agent to=origin
+  click from=agent to=page origin="San Diego"
 }
 check {
   invariant {
-    forall place origin {
+    forall element origin {
       implies {
         in step click
-        eq (next)place place
+        eq (next)element element
       }
     }
   }
@@ -806,19 +647,17 @@ check {
     }
 
     #[test]
-    fn each_label_wraps_to_two_lines_and_keeps_each_word() {
-        for s in LABELS {
-            for max in [VALUE, WRAP] {
-                let lines = wrap(s, max);
-                assert!(lines.len() <= 2, "{s} wraps to {} lines", lines.len());
-                let joined = lines.iter().fold(String::new(), |all, l| {
-                    match all.is_empty() || all.ends_with('/') {
-                        true => all + l,
-                        false => all + " " + l,
-                    }
-                });
-                assert_eq!(joined, s, "{s} loses text");
-            }
+    fn each_state_wraps_to_two_lines_and_keeps_each_word() {
+        for s in STATES {
+            let lines = wrap(s, WRAP);
+            assert!(lines.len() <= 2, "{s} wraps to {} lines", lines.len());
+            let joined = lines.iter().fold(String::new(), |all, l| {
+                match all.is_empty() || all.ends_with('/') {
+                    true => all + l,
+                    false => all + " " + l,
+                }
+            });
+            assert_eq!(joined, s, "{s} loses text");
         }
     }
 

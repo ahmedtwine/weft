@@ -22,11 +22,9 @@ pub struct Node {
 
 #[derive(Debug, Clone)]
 pub struct Move {
-    pub actor: String,
     pub verb: String,
-    pub target: String,
-    pub from: Option<String>,
-    pub to: Option<String>,
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,38 +81,23 @@ pub struct Object {
     pub name: String,
     pub kind: Kind,
     pub icon: String,
-    pub label: String,
-    pub value: Option<String>,
     pub initial: Option<String>,
     pub nodes: Vec<Node>,
     pub moves: Vec<Move>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Data {
-    Text(String),
-    List(Vec<Data>),
-    Record(Vec<(String, Data)>),
-}
-
-#[derive(Debug, Clone)]
-pub struct Class {
-    pub name: String,
-    pub fields: Vec<(String, Data)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Step {
     pub from: String,
     pub to: String,
-    pub send: Class,
+    pub verb: String,
     pub shows: Vec<(String, String)>,
     pub set: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Check {
-    pub name: String,
+    pub kind: Kind,
     pub objects: Vec<String>,
     pub steps: Vec<String>,
     pub expected: Expected,
@@ -153,8 +136,6 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-type Event<'a> = (&'a str, &'a str, &'a str);
-
 struct Ctx<'a> {
     cur: &'a State,
     nxt: &'a State,
@@ -175,20 +156,25 @@ impl Check {
         self.steps.iter().any(|s| s == verb)
     }
 
-    fn right(&self) -> String {
+    fn right(&self, bound: &str) -> String {
         match &self.expected {
-            Expected::Before => self.name.clone(),
+            Expected::Before => bound.to_string(),
             Expected::State(s) => format!("\"{s}\""),
         }
     }
 
-    fn guard(&self) -> String {
+    fn set(&self) -> String {
         let verbs: Vec<String> = self.steps.iter().map(|s| format!("\"{s}\"")).collect();
-        format!("in(step, Set({}))", verbs.join(", "))
+        format!("Set({})", verbs.join(", "))
+    }
+
+    fn guard(&self) -> String {
+        format!("in(step, {})", self.set())
     }
 
     fn compare(&self) -> String {
-        format!("eq(next({}), {})", self.name, self.right())
+        let bound = self.kind.to_string();
+        format!("eq(next({bound}), {})", self.right(&bound))
     }
 
     fn broken(&self, d: &Diagram, c: &Ctx) -> Vec<Broken> {
@@ -220,33 +206,22 @@ impl Check {
             .iter()
             .flat_map(|(o, after, want)| {
                 [
-                    format!("{} = {o}", self.name),
-                    format!("{} = true · {verb}", self.guard()),
-                    format!("{} = false · {after} · {want}", self.compare()),
+                    format!("{} = {o}", self.kind),
+                    format!("in(\"{verb}\", {}) = true", self.set()),
+                    format!(
+                        "eq(next({o}), {}) = eq(\"{after}\", \"{want}\") = false",
+                        self.right(o)
+                    ),
                 ]
             })
             .collect()
     }
 
     pub fn statement(&self, d: &Diagram) -> String {
-        let k = kind(d, &self.objects);
-        let named = match k.trim_end() == self.name {
-            true => self.name.clone(),
-            false => format!("{k}{}", self.name),
-        };
-        let moves: Vec<&Move> = d
-            .objects
-            .iter()
-            .flat_map(|o| &o.moves)
-            .filter(|m| self.taken(&m.verb))
-            .collect();
-        let place = match moves.split_first() {
-            Some((m, rest))
-                if rest
-                    .iter()
-                    .all(|r| r.actor == m.actor && r.target == m.target) =>
-            {
-                format!(" by the {} on the {}", m.actor, m.target)
+        let sent: Vec<&Step> = d.steps.iter().filter(|s| self.taken(&s.verb)).collect();
+        let place = match sent.split_first() {
+            Some((s, rest)) if rest.iter().all(|r| r.from == s.from && r.to == s.to) => {
+                format!(" by the {} on the {}", s.from, s.to)
             }
             _ => String::new(),
         };
@@ -254,16 +229,10 @@ impl Check {
             [one] => format!("each {one}{place}"),
             all => format!("any combination of {}{place}", list(all)),
         };
-        let value = self
-            .objects
-            .first()
-            .and_then(|o| d.object(o))
-            .and_then(|o| o.value.clone())
-            .unwrap_or_default();
-        let owned = format!("the {value} of the {}", self.name);
+        let owned = format!("the state of the {}", self.kind);
         let words = match &self.expected {
-            Expected::Before => format!("for any {named}, {steps} persists {owned}"),
-            Expected::State(s) => format!("for any {named}, after {steps}, {owned} is {s}"),
+            Expected::Before => format!("for any {}, {steps} persists {owned}", self.kind),
+            Expected::State(s) => format!("for any {}, after {steps}, {owned} is {s}", self.kind),
         };
         let mut chars = words.chars();
         chars
@@ -275,32 +244,10 @@ impl Check {
         format!(
             "always(forall(Set({}), {} => implies({}, {})))",
             self.objects.join(", "),
-            self.name,
+            self.kind,
             self.guard(),
             self.compare()
         )
-    }
-}
-
-fn kind(d: &Diagram, objects: &[String]) -> String {
-    let kinds: HashSet<Kind> = objects
-        .iter()
-        .filter_map(|o| d.object(o))
-        .map(|o| o.kind)
-        .collect();
-    match kinds.into_iter().collect::<Vec<_>>().as_slice() {
-        [one] => format!("{one} "),
-        _ => String::new(),
-    }
-}
-
-impl Move {
-    fn takes(&self, (actor, verb, target): Event) -> bool {
-        self.actor == actor && self.verb == verb && self.target == target
-    }
-
-    fn event(&self) -> String {
-        format!("on {} {} {}", self.actor, self.verb, self.target)
     }
 }
 
@@ -327,13 +274,13 @@ impl Diagram {
             let ctx = Ctx {
                 cur: &now,
                 nxt: &next,
-                verb: &s.send.name,
+                verb: &s.verb,
             };
             let broken = c.broken(self, &ctx);
             if !broken.is_empty() {
                 return Some(Verdict::Fails {
                     step,
-                    evidence: c.evidence(&broken, &s.send.name),
+                    evidence: c.evidence(&broken, &s.verb),
                     marks: broken
                         .iter()
                         .map(|(o, after, want)| note(o, format!("{after} ≠ {want}")))
@@ -372,33 +319,17 @@ impl Object {
             (false, _) => Ok(name.to_string()),
             (true, Some(inner)) => self.leaf(inner),
             (true, None) => Err(format!(
-                "the state `{name}` of `{}` holds states and no `initial`",
+                "the state `{name}` of `{}` holds states and no `initial=`",
                 self.name
             )),
         }
-    }
-
-    fn values(&self) -> Vec<String> {
-        self.nodes
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !self.nodes.iter().any(|n| n.parent == Some(*i)))
-            .map(|(_, n)| n.name.clone())
-            .collect()
     }
 
     fn within(&self, leaf: &str, name: &str) -> bool {
         self.path(leaf).iter().any(|n| n.name == name)
     }
 
-    fn overlap(&self, a: &Option<String>, b: &Option<String>) -> bool {
-        match (a, b) {
-            (Some(a), Some(b)) => self.within(a, b) || self.within(b, a),
-            _ => true,
-        }
-    }
-
-    fn validate(&self, objects: &[Object]) -> Result<(), String> {
+    fn validate(&self, steps: &[Step]) -> Result<(), String> {
         let o = &self.name;
         let mut names = HashSet::new();
         for n in &self.nodes {
@@ -411,54 +342,67 @@ impl Object {
                 && self.node(inner).and_then(|j| self.nodes[j].parent) != Some(i)
             {
                 return Err(format!(
-                    "the `initial` of the state `{}` of `{o}` is not one of its states",
+                    "the `initial=` of the state `{}` of `{o}` is not one of its states",
                     n.name
                 ));
             }
             self.leaf(&n.name)?;
         }
-        match (&self.initial, self.nodes.is_empty()) {
-            (None, false) => return Err(format!("`{o}` has states and no `initial`")),
-            (Some(_), true) => return Err(format!("`{o}` has `initial` and no states")),
-            (Some(i), false) if self.node(i).is_none_or(|j| self.nodes[j].parent.is_some()) => {
+        let initial = match (&self.initial, self.nodes.is_empty(), self.kind) {
+            (_, false, Kind::Person) => {
+                return Err(format!("`{o}` is a person, and a person has no states"));
+            }
+            (None, true, _) => return Ok(()),
+            (None, false, _) => return Err(format!("`{o}` has states and no `initial=`")),
+            (Some(_), true, _) => return Err(format!("`{o}` has `initial=` and no states")),
+            (Some(i), false, _) if self.node(i).is_none_or(|j| self.nodes[j].parent.is_some()) => {
                 return Err(format!(
-                    "the `initial` of `{o}` is not one of its top states"
+                    "the `initial=` of `{o}` is not one of its top states"
                 ));
             }
-            _ => {}
-        }
-        if !self.moves.is_empty() && self.nodes.is_empty() {
-            return Err(format!("`{o}` has `on` lines and no states"));
-        }
+            (Some(i), false, _) => self.leaf(i)?,
+        };
         for (k, m) in self.moves.iter().enumerate() {
-            for x in [&m.actor, &m.target] {
-                if !objects.iter().any(|y| &y.name == x) {
-                    return Err(format!(
-                        "`{o}` has `{}` with unknown object `{x}`",
-                        m.event()
-                    ));
-                }
-            }
-            let copies = |s: &String| objects.iter().any(|y| &y.name == s && y.value.is_some());
-            for s in m.from.iter().chain(m.to.iter().filter(|s| !copies(s))) {
-                if self.node(s).is_none() {
-                    return Err(format!(
-                        "`{o}` has `{}` with `{s}`, which is not a state of `{o}`",
-                        m.event()
-                    ));
-                }
-            }
-            if self.moves[..k]
-                .iter()
-                .any(|p| p.event() == m.event() && self.overlap(&p.from, &m.from))
-            {
+            if self.node(&m.to).is_none() {
                 return Err(format!(
-                    "`{o}` has two `{}` lines that start from the same state",
-                    m.event()
+                    "the state `{}` of `{o}` has `on {} {}`, and `{}` is not a state of `{o}`",
+                    m.from, m.verb, m.to, m.to
+                ));
+            }
+            if self.moves[..k].iter().any(|p| {
+                p.verb == m.verb && (self.within(&p.from, &m.from) || self.within(&m.from, &p.from))
+            }) {
+                return Err(format!(
+                    "`{o}` has two `on {}` lines that start from the state `{}`",
+                    m.verb, m.from
                 ));
             }
         }
-        Ok(())
+        let mut reached = vec![initial];
+        let mut k = 0;
+        while k < reached.len() {
+            let at = reached[k].clone();
+            for m in self.moves.iter().filter(|m| {
+                self.within(&at, &m.from) && steps.iter().any(|s| &s.to == o && s.verb == m.verb)
+            }) {
+                let next = self.leaf(&m.to)?;
+                if !reached.contains(&next) {
+                    reached.push(next);
+                }
+            }
+            k += 1;
+        }
+        match self
+            .nodes
+            .iter()
+            .find(|n| !reached.iter().any(|r| self.within(r, &n.name)))
+        {
+            Some(n) => Err(format!(
+                "no `action` reaches the state `{}` of `{o}`",
+                n.name
+            )),
+            None => Ok(()),
+        }
     }
 }
 
@@ -500,6 +444,13 @@ fn keys(n: &KdlNode) -> Vec<&str> {
 }
 
 fn shape(n: &KdlNode, count: usize, allowed: &[&str], block: bool) -> Result<Vec<String>, String> {
+    if let Some(e) = n
+        .entries()
+        .iter()
+        .find(|e| !matches!(e.value(), KdlValue::String(_)))
+    {
+        return Err(format!("`{}` takes names, not `{}`", name(n), e.value()));
+    }
     let given = args(n);
     if given.len() != count {
         return Err(format!(
@@ -527,32 +478,21 @@ fn lines(n: &KdlNode) -> &[KdlNode] {
     n.children().map_or(&[], KdlDocument::nodes)
 }
 
-fn first(n: &KdlNode) -> Result<String, String> {
-    shape(n, 1, &[], false).map(|mut a| a.remove(0))
-}
-
-fn initial(slot: &mut Option<String>, n: &KdlNode) -> Result<(), String> {
-    match slot.replace(first(n)?) {
-        Some(_) => Err("`initial` is set twice".into()),
-        None => Ok(()),
-    }
-}
-
-fn state(n: &KdlNode, parent: Option<usize>, nodes: &mut Vec<Node>) -> Result<(), String> {
-    let at = nodes.len();
-    nodes.push(Node {
-        name: shape(n, 1, &[], true)?.remove(0),
+fn state(n: &KdlNode, parent: Option<usize>, o: &mut Object) -> Result<(), String> {
+    let at = o.nodes.len();
+    o.nodes.push(Node {
+        name: shape(n, 1, &["initial"], true)?.remove(0),
         parent,
-        initial: None,
+        initial: n.get("initial").map(text),
     });
     for c in n.iter_children() {
         match name(c) {
-            "state" => state(c, Some(at), nodes)?,
-            "initial" => initial(&mut nodes[at].initial, c)?,
+            "state" => state(c, Some(at), o)?,
+            "on" => o.moves.push(on(c, &o.nodes[at].name)?),
             other => {
                 return Err(format!(
-                    "the state `{}` holds `state` and `initial`, not `{other}`",
-                    nodes[at].name
+                    "the state `{}` holds `state` and `on`, not `{other}`",
+                    o.nodes[at].name
                 ));
             }
         }
@@ -560,14 +500,14 @@ fn state(n: &KdlNode, parent: Option<usize>, nodes: &mut Vec<Node>) -> Result<()
     Ok(())
 }
 
-fn on(n: &KdlNode) -> Result<Move, String> {
-    let verb = shape(n, 1, &["from", "to", "state", "next"], false)?.remove(0);
+fn on(n: &KdlNode, from: &str) -> Result<Move, String> {
+    let [verb, to]: [String; 2] = shape(n, 2, &[], false)?
+        .try_into()
+        .map_err(|_| "`on` takes a verb and a state".to_string())?;
     Ok(Move {
-        actor: need(n, "from")?,
         verb,
-        target: need(n, "to")?,
-        from: n.get("state").map(text),
-        to: n.get("next").map(text),
+        from: from.to_string(),
+        to,
     })
 }
 
@@ -580,71 +520,24 @@ fn object(n: &KdlNode, config: &Config) -> Result<Object, String> {
         .map(|(_, i)| i.clone())
         .ok_or_else(|| format!("`{kind}` has no `style {kind}` in the config"))?;
     let at = |e: String| format!("{kind}: {e}");
-    let [object_name, label]: [String; 2] = shape(n, 2, &["value"], true)
-        .map_err(at)?
-        .try_into()
-        .map_err(|_| at("takes a name and a label".into()))?;
+    let object_name = shape(n, 1, &["initial"], true).map_err(at)?.remove(0);
     let at = |e: String| format!("{kind} {object_name}: {e}");
     let mut o = Object {
         name: object_name.clone(),
         kind,
         icon,
-        label,
-        value: n.get("value").map(text),
-        initial: None,
+        initial: n.get("initial").map(text),
         nodes: Vec::new(),
         moves: Vec::new(),
     };
     for c in n.iter_children() {
         match name(c) {
-            "state" => state(c, None, &mut o.nodes),
-            "initial" => initial(&mut o.initial, c),
-            "on" => on(c).map(|m| o.moves.push(m)),
-            other => Err(format!("holds `state`, `initial` and `on`, not `{other}`")),
+            "state" => state(c, None, &mut o),
+            other => Err(format!("holds `state`, not `{other}`")),
         }
         .map_err(at)?;
     }
     Ok(o)
-}
-
-fn data(n: &KdlNode) -> Result<Data, String> {
-    let (given, named, held) = (args(n), keys(n), lines(n));
-    match (given.as_slice(), named.is_empty(), held.is_empty()) {
-        ([one], true, true) => Ok(Data::Text(one.clone())),
-        ([_, _, ..], true, true) => Ok(Data::List(given.into_iter().map(Data::Text).collect())),
-        ([], false, true) => Ok(Data::Record(
-            named
-                .into_iter()
-                .map(|k| {
-                    (
-                        k.to_string(),
-                        Data::Text(n.get(k).map(text).unwrap_or_default()),
-                    )
-                })
-                .collect(),
-        )),
-        ([], true, false) if held.iter().all(|c| name(c) == "-") => held
-            .iter()
-            .map(data)
-            .collect::<Result<_, _>>()
-            .map(Data::List),
-        ([], true, false) => record(held).map(Data::Record),
-        _ => Err(format!(
-            "`{}` holds one value, a list of values, fields, or lines",
-            name(n)
-        )),
-    }
-}
-
-fn record(held: &[KdlNode]) -> Result<Vec<(String, Data)>, String> {
-    let mut out: Vec<(String, Data)> = Vec::new();
-    for c in held {
-        if out.iter().any(|(k, _)| k == name(c)) {
-            return Err(format!("`{}` is set twice", name(c)));
-        }
-        out.push((name(c).to_string(), data(c)?));
-    }
-    Ok(out)
 }
 
 fn step(n: &KdlNode) -> Result<Step, String> {
@@ -654,20 +547,17 @@ fn step(n: &KdlNode) -> Result<Step, String> {
         .map(|k| (k.to_string(), need(n, k).unwrap_or_default()))
         .collect();
     let allowed: Vec<&str> = keys(n);
-    shape(n, 0, &allowed, true)?;
+    shape(n, 0, &allowed, false)?;
     Ok(Step {
         from: need(n, "from")?,
         to: need(n, "to")?,
-        send: Class {
-            name: name(n).to_string(),
-            fields: record(lines(n))?,
-        },
+        verb: name(n).to_string(),
         shows,
         set: Vec::new(),
     })
 }
 
-const CHECK: &str = "`invariant` holds `forall <name> <object>… { implies { in step <verb>…; eq (next)<name> <name> } }`, or a state of each object in place of the last `<name>`";
+const CHECK: &str = "`invariant` holds `forall <kind> <object>… { implies { in step <verb>…; eq (next)<kind> <kind> } }`, or a state of each object in place of the last `<kind>`";
 
 fn only<'a>(n: &'a KdlNode, node: &str) -> Result<&'a KdlNode, String> {
     match lines(n) {
@@ -679,8 +569,8 @@ fn only<'a>(n: &'a KdlNode, node: &str) -> Result<&'a KdlNode, String> {
 fn plain(n: &KdlNode) -> Result<Vec<String>, String> {
     n.entries()
         .iter()
-        .map(|e| match (e.name(), e.ty()) {
-            (None, None) => Ok(text(e.value())),
+        .map(|e| match (e.name(), e.ty(), e.value()) {
+            (None, None, KdlValue::String(s)) => Ok(s.clone()),
             _ => Err(format!(
                 "`{}` takes plain names, not `{e}`: {CHECK}",
                 name(n)
@@ -735,7 +625,7 @@ fn invariant(n: &KdlNode) -> Result<Check, String> {
         }
     };
     Ok(Check {
-        name: bound,
+        kind: Kind::parse(&bound)?,
         objects,
         steps,
         expected,
@@ -743,18 +633,12 @@ fn invariant(n: &KdlNode) -> Result<Check, String> {
 }
 
 fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
-    if d.object(&c.name).is_some() {
-        return Err(format!(
-            "`forall {}` names an object, and needs a new name",
-            c.name
-        ));
-    }
     if let Expected::State(s) = &c.expected
         && d.object(s).is_some()
     {
         return Err(format!(
             "`eq` compares `(next){}` with `{}` or a state, not with the object `{s}`",
-            c.name, c.name
+            c.kind, c.kind
         ));
     }
     let verbs: Vec<&str> = d
@@ -778,11 +662,15 @@ fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
         if c.objects[..i].contains(o) {
             return Err(format!("`forall` names `{o}` twice"));
         }
-        if x.nodes.is_empty() {
-            return Err(format!("`{o}` has no states"));
-        }
-        if x.value.is_none() {
-            return Err(format!("`{o}` needs `value=` to be checked"));
+        match (x.kind == c.kind, x.nodes.is_empty()) {
+            (false, _) => {
+                return Err(format!(
+                    "`forall {}` takes the kind of its objects, and `{o}` is of kind `{}`",
+                    c.kind, x.kind
+                ));
+            }
+            (true, true) => return Err(format!("`{o}` has no states")),
+            (true, false) => {}
         }
         if let Expected::State(s) = &c.expected
             && x.node(s).is_none()
@@ -806,7 +694,7 @@ fn build(doc: &KdlDocument, config: &Config) -> Result<Diagram, String> {
         let parent = name(n);
         let holds = match parent {
             "setup" => "objects",
-            "action" => "steps",
+            "action" => "`<verb> from=<object> to=<object>` lines",
             "check" => "one `invariant`",
             other => return Err(format!("`{other}` is not setup, action or check")),
         };
@@ -832,128 +720,83 @@ fn build(doc: &KdlDocument, config: &Config) -> Result<Diagram, String> {
         if !known.insert(o.name.as_str()) {
             return Err(format!("`{}` is declared twice", o.name));
         }
-        if let Some(same) = d
-            .objects
-            .iter()
-            .find(|x| x.name != o.name && x.kind == o.kind && x.label == o.label)
-        {
-            return Err(format!(
-                "`{}` and `{}` are the same {}",
-                o.name, same.name, o.kind
-            ));
-        }
-        o.validate(&d.objects)?;
+        o.validate(&d.steps)?;
         if let Some(i) = &o.initial {
             d.init.push((o.name.clone(), o.leaf(i)?));
         }
     }
-    run(&d.objects, &d.init, &mut d.steps)?;
-    let c = d.check.as_ref().ok_or("needs `check`")?;
-    checked(&d, c)?;
-    explore(&d, c)?;
+    let c = d.check.clone().ok_or("needs `check`")?;
+    checked(&d, &c)?;
+    run(&d.objects, &d.init, &mut d.steps, &c)?;
+    explore(&d, &c)?;
     let last = d.steps.len();
     match d.verdict() {
         Some(Verdict::Fails { step, .. }) if step + 1 == last => Ok(d),
         Some(Verdict::Fails { step, .. }) => Err(format!(
-            "the run breaks `{}` at step {}, before its last step",
+            "the run breaks `{}` at `action` line {}, before its last line",
             c.statement(&d),
             step + 1
         )),
-        _ => Err(format!("the run keeps `{}` at each step", c.statement(&d))),
+        _ => Err(format!(
+            "the run keeps `{}` at each `action` line",
+            c.statement(&d)
+        )),
     }
 }
 
-fn choices(
+fn moved(o: &Object, now: &State, verb: &str) -> Result<String, String> {
+    let at = now.get(&o.name).cloned().unwrap_or_default();
+    match o
+        .moves
+        .iter()
+        .find(|m| m.verb == verb && o.within(&at, &m.from))
+    {
+        Some(m) => o.leaf(&m.to),
+        None if o.moves.iter().any(|m| m.verb == verb) => Err(format!(
+            "`{}` is `{at}`, and no `on {verb}` line starts from `{at}`",
+            o.name
+        )),
+        None => Err(format!("`{}` has no `on {verb}` line", o.name)),
+    }
+}
+
+fn run(
     objects: &[Object],
-    now: &State,
-    e: Event,
-) -> Result<Vec<(String, Vec<String>)>, String> {
-    let mut out = Vec::new();
-    for o in objects {
-        let lines: Vec<&Move> = o.moves.iter().filter(|m| m.takes(e)).collect();
-        let Some(first) = lines.first() else {
-            continue;
-        };
-        let at = now.get(&o.name).cloned().unwrap_or_default();
-        let m = lines
-            .iter()
-            .find(|m| m.from.as_ref().is_none_or(|f| o.within(&at, f)))
-            .ok_or_else(|| {
-                format!(
-                    "`{}` is `{at}`, and no `{}` line starts from `{at}`",
-                    o.name,
-                    first.event()
-                )
-            })?;
-        let copied = m.to.as_ref().and_then(|t| now.get(t));
-        match (&m.to, copied, &o.value) {
-            (Some(_), Some(v), _) => out.push((o.name.clone(), vec![o.leaf(v)?])),
-            (Some(t), None, _) => out.push((o.name.clone(), vec![o.leaf(t)?])),
-            (None, _, Some(_)) => out.push((o.name.clone(), o.values())),
-            (None, _, None) => {}
-        }
-    }
-    Ok(out)
-}
-
-fn run(objects: &[Object], init: &[(String, String)], steps: &mut [Step]) -> Result<(), String> {
+    init: &[(String, String)],
+    steps: &mut [Step],
+    c: &Check,
+) -> Result<(), String> {
     let mut now: State = init.iter().cloned().collect();
     let last = steps.len();
     for (k, s) in steps.iter_mut().enumerate() {
-        let at = |e: String| format!("step {}: {e}", k + 1);
-        for x in [&s.from, &s.to]
-            .into_iter()
-            .chain(s.shows.iter().map(|(o, _)| o))
-        {
-            if !objects.iter().any(|o| &o.name == x) {
-                return Err(at(format!("unknown object `{x}`")));
-            }
-        }
-        let given = choices(objects, &now, (&s.from, &s.send.name, &s.to)).map_err(at)?;
-        let mut set = Vec::new();
-        for (name_of, options) in &given {
-            let o = objects
+        let at = |e: String| format!("`action` line {}: {e}", k + 1);
+        let find = |x: &String| {
+            objects
                 .iter()
-                .find(|o| &o.name == name_of)
-                .ok_or("unknown object")?;
-            match (
-                s.shows.iter().find(|(x, _)| x == name_of),
-                options.as_slice(),
-            ) {
-                (Some((_, v)), _) => {
-                    let shown = o.leaf(v).map_err(at)?;
-                    if !options.contains(&shown) && k + 1 < last {
-                        return Err(at(format!(
-                            "`{name_of}` shows `{shown}`, and the setup gives it only {}",
-                            list(options)
-                        )));
-                    }
-                    set.push((name_of.clone(), shown));
-                }
-                (None, [one]) => set.push((name_of.clone(), one.clone())),
-                (None, _) => {
+                .find(|o| &o.name == x)
+                .ok_or_else(|| at(format!("unknown object `{x}`")))
+        };
+        find(&s.from)?;
+        let target = find(&s.to)?;
+        let mut set = vec![(
+            target.name.clone(),
+            moved(target, &now, &s.verb).map_err(at)?,
+        )];
+        for (x, v) in &s.shows {
+            let o = find(x)?;
+            match (k + 1 == last, c.objects.contains(x)) {
+                (false, _) => {
                     return Err(at(format!(
-                        "`{name_of}` takes any of {}, so the step names one with `{name_of}=`",
-                        list(options)
+                        "`{x}={v}` is on a line before the last, and only the last line sets a state"
                     )));
                 }
+                (true, false) => {
+                    return Err(at(format!(
+                        "`{x}` is not an object of `forall`, and the last line sets only their states"
+                    )));
+                }
+                (true, true) => set.push((x.clone(), o.leaf(v).map_err(at)?)),
             }
-        }
-        for (name_of, v) in &s.shows {
-            if given.iter().any(|(x, _)| x == name_of) {
-                continue;
-            }
-            if k + 1 < last {
-                return Err(at(format!(
-                    "`{name_of}` has no `{}` line, so only the last step changes it",
-                    s.send.name
-                )));
-            }
-            let o = objects
-                .iter()
-                .find(|o| &o.name == name_of)
-                .ok_or("unknown object")?;
-            set.push((name_of.clone(), o.leaf(v).map_err(at)?));
         }
         now.extend(set.iter().cloned());
         s.set = set;
@@ -962,59 +805,43 @@ fn run(objects: &[Object], init: &[(String, String)], steps: &mut [Step]) -> Res
 }
 
 fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
-    let mut events: Vec<Event> = Vec::new();
-    for m in d.objects.iter().flat_map(|o| &o.moves) {
-        let e = (m.actor.as_str(), m.verb.as_str(), m.target.as_str());
-        if !events.contains(&e) {
-            events.push(e);
+    let mut events: Vec<(&Object, &str)> = Vec::new();
+    for o in &d.objects {
+        for m in &o.moves {
+            if !events.iter().any(|(x, v)| x.name == o.name && *v == m.verb) {
+                events.push((o, &m.verb));
+            }
         }
     }
     let start: State = d.init.iter().cloned().collect();
     let mut seen = HashSet::from([start.clone()]);
     let mut queue = VecDeque::from([(start, Vec::<String>::new())]);
     while let Some((now, trace)) = queue.pop_front() {
-        for e in &events {
-            let Ok(given) = choices(&d.objects, &now, *e) else {
+        for (o, verb) in &events {
+            let Ok(v) = moved(o, &now, verb) else {
                 continue;
             };
-            let mut nexts = vec![now.clone()];
-            for (o, options) in &given {
-                nexts = nexts
-                    .iter()
-                    .flat_map(|n| {
-                        options.iter().map(move |v| {
-                            let mut x = n.clone();
-                            x.insert(o.clone(), v.clone());
-                            x
-                        })
-                    })
-                    .collect();
+            let mut next = now.clone();
+            next.insert(o.name.clone(), v.clone());
+            let ctx = Ctx {
+                cur: &now,
+                nxt: &next,
+                verb,
+            };
+            let path = [
+                trace.clone(),
+                vec![format!("{verb} to={} ({}={v})", o.name, o.name)],
+            ]
+            .concat();
+            if !c.broken(d, &ctx).is_empty() {
+                return Err(format!(
+                    "`{}` fails in the setup after {}",
+                    c.statement(d),
+                    path.join(", ")
+                ));
             }
-            for next in nexts {
-                let ctx = Ctx {
-                    cur: &now,
-                    nxt: &next,
-                    verb: e.1,
-                };
-                let shown: Vec<String> = given
-                    .iter()
-                    .filter_map(|(o, _)| next.get(o).map(|v| format!("{o}={v}")))
-                    .collect();
-                let path = [
-                    trace.clone(),
-                    vec![format!("{} {} {} ({})", e.0, e.1, e.2, shown.join(", "))],
-                ]
-                .concat();
-                if !c.broken(d, &ctx).is_empty() {
-                    return Err(format!(
-                        "`{}` fails in the setup after {}",
-                        c.statement(d),
-                        path.join(", ")
-                    ));
-                }
-                if seen.insert(next.clone()) {
-                    queue.push_back((next, path));
-                }
+            if seen.insert(next.clone()) {
+                queue.push_back((next, path));
             }
         }
     }
