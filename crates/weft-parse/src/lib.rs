@@ -10,7 +10,7 @@ pub struct Diagram {
     pub objects: Vec<Object>,
     pub init: Vec<(String, String)>,
     pub steps: Vec<Step>,
-    pub checks: Vec<Check>,
+    pub check: Option<Check>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,33 +159,29 @@ impl Diagram {
     }
 
     pub fn verdict(&self) -> Option<Verdict> {
-        if self.checks.is_empty() {
-            return None;
-        }
+        let c = self.check.as_ref()?;
         let mut now: State = self.init.iter().cloned().collect();
         for (step, s) in self.steps.iter().enumerate() {
             let mut next = now.clone();
             next.extend(s.set.iter().cloned());
-            for c in &self.checks {
-                if c.when
-                    .as_ref()
-                    .is_none_or(|w| w.holds(self, &now, &next, s))
-                    && !c.then.holds(self, &now, &next, s)
-                {
-                    let mut evidence = Vec::new();
-                    c.when
-                        .iter()
-                        .chain([&c.then])
-                        .for_each(|x| x.explain(self, &now, &next, s, &mut evidence));
-                    let mut marks = Vec::new();
-                    c.then.marks(self, &now, &next, s, &mut marks);
-                    return Some(Verdict::Fails {
-                        statement: c.statement.clone(),
-                        step,
-                        evidence,
-                        marks,
-                    });
-                }
+            if c.when
+                .as_ref()
+                .is_none_or(|w| w.holds(self, &now, &next, s))
+                && !c.then.holds(self, &now, &next, s)
+            {
+                let mut evidence = Vec::new();
+                c.when
+                    .iter()
+                    .chain([&c.then])
+                    .for_each(|x| x.explain(self, &now, &next, s, &mut evidence));
+                let mut marks = Vec::new();
+                c.then.marks(self, &now, &next, s, &mut marks);
+                return Some(Verdict::Fails {
+                    statement: c.statement.clone(),
+                    step,
+                    evidence,
+                    marks,
+                });
             }
             now = next;
         }
@@ -430,7 +426,11 @@ fn name(n: &KdlNode) -> &str {
 }
 
 fn text(v: &KdlValue) -> String {
-    v.as_string().map_or_else(|| v.to_string(), str::to_string)
+    match v {
+        KdlValue::String(s) => s.clone(),
+        KdlValue::Bool(b) => b.to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn args(n: &KdlNode) -> Vec<String> {
@@ -687,7 +687,7 @@ fn build(doc: &KdlDocument) -> Result<Diagram, String> {
         let holds = match parent {
             "setup" => "objects",
             "action" => "steps",
-            "check" => "`invariant` blocks",
+            "check" => "one `invariant`",
             other => return Err(format!("`{other}` is not setup, action or check")),
         };
         shape(n, 0, &[], true)?;
@@ -698,7 +698,8 @@ fn build(doc: &KdlDocument) -> Result<Diagram, String> {
             match (parent, name(c)) {
                 ("setup", _) => d.objects.push(object(c)?),
                 ("action", _) => d.steps.push(step(c)?),
-                ("check", "invariant") => d.checks.push(invariant(c)?),
+                ("check", "invariant") if d.check.is_none() => d.check = Some(invariant(c)?),
+                ("check", "invariant") => return Err("`check` holds one `invariant`".into()),
                 _ => return Err(format!("`{parent}` holds {holds}")),
             }
         }
@@ -727,7 +728,7 @@ fn build(doc: &KdlDocument) -> Result<Diagram, String> {
         }
     }
     run(&d.objects, &d.init, &mut d.steps)?;
-    for c in &d.checks {
+    if let Some(c) = &d.check {
         c.when
             .iter()
             .chain([&c.then])

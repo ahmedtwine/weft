@@ -8,7 +8,7 @@ use serde_json::Value;
 use vendor::lucide::ICONS;
 use weft_parse::{Data, Diagram, Mark, Verdict};
 
-const KEEP: usize = 36;
+const KEEP: usize = 48;
 const VALUE: usize = 36;
 const CHAR: f64 = 7.0;
 const SMALL: f64 = 6.6;
@@ -33,7 +33,7 @@ pub struct Palette {
     pub muted: &'static str,
     pub surface: &'static str,
     pub border: &'static str,
-    critical: &'static str,
+    pub critical: &'static str,
     fail: &'static str,
 }
 
@@ -376,7 +376,10 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
         }
         let rows = payload(&s.send.fields);
         let text: Vec<String> = match svg {
-            true => plain(&rows).into_iter().chain([String::new()]).collect(),
+            true => plain(&rows)
+                .into_iter()
+                .chain([format!("«{}»", s.send.name)])
+                .collect(),
             false => vec![
                 [format!("«{}»", s.send.name)]
                     .into_iter()
