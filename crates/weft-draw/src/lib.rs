@@ -278,7 +278,13 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
     for &i in &order {
         let head = &p.heads[i];
         let label = match svg {
-            true => [vec![String::new(); RESERVE], head.clone()].concat(),
+            true => {
+                let mut reserve = vec![String::new(); RESERVE];
+                reserve[0] = d
+                    .initial(&d.objects[i].name)
+                    .map_or(String::new(), |s| format!("«initial» {s}"));
+                [reserve, head.clone()].concat()
+            }
             false => head.clone(),
         };
         let _ = writeln!(p.source, "  participant o{i} as {}", mermaid_text(&label));
@@ -329,7 +335,11 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
             mermaid_text(&text)
         );
         p.payloads.push(rows);
-        for (object, value) in &s.set {
+        for (object, value) in s
+            .set
+            .iter()
+            .filter(|(o, _)| !(here && marks.iter().any(|m| &m.object == o)))
+        {
             note(
                 &mut p,
                 format!("o{}", col(d, object)),
@@ -533,7 +543,18 @@ pub fn svg(d: &Diagram, styles: &[(String, String)], theme: Theme) -> Result<Str
     let nodes = l["nodes"].as_array().cloned().unwrap_or_default();
     let edges = l["edges"].as_array().cloned().unwrap_or_default();
     let b = &l["bounds"];
-    let (x0, y0) = (num(b, "min_x"), num(b, "min_y"));
+    let rows = plan.heads.iter().map(Vec::len).max().unwrap_or(1) as f64;
+    let heads = nodes
+        .iter()
+        .find(|n| {
+            n["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("actor-top-o"))
+        })
+        .map_or(0.0, |n| num(n, "y") + num(n, "height") / 2.0)
+        - 84.0
+        - 16.0 * (rows - 1.0);
+    let (x0, y0) = (num(b, "min_x"), num(b, "min_y").max(heads - PAD));
     let (w, h) = (num(b, "max_x") - x0, num(b, "max_y") - y0);
     let mut out = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x0:.1} {y0:.1} {w:.1} {h:.1}" width="{w:.0}" height="{h:.0}" style="max-width:100%;height:auto" font-family="{FONT}" font-size="13"><rect x="{x0:.1}" y="{y0:.1}" width="{w:.1}" height="{h:.1}" fill="{}"/>"#,
@@ -665,7 +686,7 @@ pub fn svg(d: &Diagram, styles: &[(String, String)], theme: Theme) -> Result<Str
         else {
             continue;
         };
-        let (x, top) = (num(n, "x"), num(n, "y") - num(n, "height") / 2.0);
+        let (x, top) = (num(n, "x"), heads);
         label(
             &mut out,
             x,
@@ -761,16 +782,15 @@ setup {
     state "San Diego"
     state "Lahore, Pakistan"
     initial "San Diego"
-    on click from=agent to=origin next="Lahore, Pakistan"
   }
 }
 action {
-  click from=agent to=origin {
+  click from=agent to=origin origin="Lahore, Pakistan" {
     message "refunded jordan the full $125 on #102, copper downgraded to starter before the renewal so they shouldnt have been charged. closing it out"
   }
 }
 check {
-  invariant OriginEqualsSanDiego {
+  invariant {
     forall value origin {
       eq value "San Diego"
     }
@@ -802,6 +822,56 @@ check {
                 assert_eq!(joined, s, "{s} loses text");
             }
         }
+    }
+
+    fn drawn() -> String {
+        let d = weft_parse::parse(DIAGRAM).unwrap();
+        let styles = [
+            ("person", "user"),
+            ("browser", "app-window"),
+            ("element", "square-dashed-mouse-pointer"),
+        ]
+        .map(|(k, i)| (k.to_string(), i.to_string()));
+        svg(&d, &styles, Theme::Light).unwrap()
+    }
+
+    #[test]
+    fn each_head_touches_the_top_and_its_lifeline() {
+        let out = drawn();
+        let head = &out[..out.find('>').unwrap()];
+        let top: f64 = attr(head, "viewBox")
+            .unwrap()
+            .split(' ')
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let start = out
+            .split("<line")
+            .skip(1)
+            .map(|tag| number(tag, "y1"))
+            .fold(f64::MAX, f64::min);
+        let texts: Vec<(f64, f64)> = out
+            .split("<text")
+            .skip(1)
+            .map(|tag| (number(tag, "y"), number(tag, "font-size")))
+            .filter(|(y, _)| *y < start)
+            .collect();
+        let first = texts
+            .iter()
+            .map(|(y, size)| y - size)
+            .fold(f64::MAX, f64::min);
+        let last = texts.iter().map(|(y, _)| *y).fold(f64::MIN, f64::max);
+        assert!(
+            first - top <= LINE,
+            "{:.0} px of padding above the heads",
+            first - top
+        );
+        assert!(
+            start - last <= LINE,
+            "{:.0} px of padding below the heads",
+            start - last
+        );
     }
 
     #[test]

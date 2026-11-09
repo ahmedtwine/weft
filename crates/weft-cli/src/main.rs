@@ -14,6 +14,7 @@ use weft_parse::{Config, Diagram, Verdict};
 const USAGE: &str = "usage: weft [--ui]";
 const CONFIG: &str = "weft.kdl";
 const SUFFIX: &str = ".weft.kdl";
+const ADDRESS: &str = "127.0.0.1:7357";
 const OPEN: &str = match cfg!(target_os = "macos") {
     true => "open",
     false => "xdg-open",
@@ -163,8 +164,11 @@ section{{flex:1 1 auto;max-width:100%;min-width:0;border-top:1px solid {surface}
 .d svg{{display:block;margin:0 auto}}
 details{{margin-top:8px;color:{muted};font-size:12px}}
 pre{{font:12px/1.5 ui-monospace,Menlo,monospace;background:{surface};color:{fg};padding:12px;border-radius:6px;overflow-x:auto}}
-</style></head><body><h1>Weft Report</h1><p>{} files · {wrong} wrong</p>{errors}<main>{}</main></body></html>"#,
-        r.lines.len(),
+</style></head><body><h1>Weft Report</h1><p>{} · {wrong} wrong</p>{errors}<main>{}</main></body></html>"#,
+        match r.lines.len() {
+            1 => "1 file".to_string(),
+            n => format!("{n} files"),
+        },
         r.sections,
         bg = p.bg,
         fg = p.fg,
@@ -193,18 +197,15 @@ fn respond(mut stream: TcpStream) -> std::io::Result<()> {
 
 fn serve() -> Result<(), String> {
     report(true)?;
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let url = format!(
-        "http://{}",
-        listener.local_addr().map_err(|e| e.to_string())?
-    );
+    let listener = TcpListener::bind(ADDRESS).map_err(|e| format!("{ADDRESS}: {e}"))?;
+    let url = format!("http://{ADDRESS}");
     println!("Weft Report: {url}");
     Command::new(OPEN)
         .arg(&url)
         .status()
         .map_err(|e| format!("{OPEN} {url}: {e}"))?;
-    for stream in listener.incoming() {
-        respond(stream.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    for stream in listener.incoming().flatten() {
+        std::thread::spawn(|| respond(stream).unwrap_or_else(|e| eprintln!("{e}")));
     }
     Ok(())
 }
