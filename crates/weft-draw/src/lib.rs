@@ -778,7 +778,7 @@ setup {
     initial "search form"
     on click from=agent to=origin next="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
   }
-  element origin "input[aria-label^=\"Where from?\"] input[aria-label^=\"Where to?\"]" {
+  element origin "input[aria-label^=\"Where from?\"] input[aria-label^=\"Where to?\"]" value=place {
     state "San Diego"
     state "Lahore, Pakistan"
     initial "San Diego"
@@ -791,8 +791,11 @@ action {
 }
 check {
   invariant {
-    forall value origin {
-      eq value "San Diego"
+    forall place origin {
+      implies {
+        in step click
+        eq (next)place place
+      }
     }
   }
 }

@@ -64,24 +64,16 @@ pub struct Step {
 
 #[derive(Debug, Clone)]
 pub struct Check {
-    pub body: Cond,
+    pub name: String,
+    pub objects: Vec<String>,
+    pub steps: Vec<String>,
+    pub expected: Expected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Term {
-    Name(String),
-    Next(String),
-    Step,
-}
-
-#[derive(Debug, Clone)]
-pub enum Cond {
-    Eq(Term, Term),
-    In(Term, Vec<Term>),
-    And(Vec<Cond>),
-    Implies(Box<Cond>, Box<Cond>),
-    Iff(Box<Cond>, Box<Cond>),
-    Forall(String, Vec<String>, Box<Cond>),
+pub enum Expected {
+    Before,
+    State(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,51 +103,15 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-type Env = Vec<(String, String)>;
-
 type Event<'a> = (&'a str, &'a str, &'a str);
 
 struct Ctx<'a> {
     cur: &'a State,
     nxt: &'a State,
-    verb: Option<&'a str>,
+    verb: &'a str,
 }
 
-struct Val {
-    object: Option<String>,
-    text: String,
-}
-
-enum Side<'a> {
-    Object(&'a Object),
-    Verb,
-    Text(&'a str),
-}
-
-fn bound<'a>(env: &'a Env, o: &'a str) -> &'a str {
-    env.iter()
-        .rev()
-        .find(|(v, _)| v == o)
-        .map_or(o, |(_, x)| x.as_str())
-}
-
-fn bind(env: &Env, var: &str, object: &str) -> Env {
-    let mut out = env.clone();
-    out.push((var.to_string(), object.to_string()));
-    out
-}
-
-fn same(d: &Diagram, a: &Option<Val>, b: &Option<Val>) -> bool {
-    match (a, b) {
-        (Some(x), Some(y)) => match (&x.object, &y.object) {
-            (Some(o), None) => d.object(o).is_some_and(|ob| ob.within(&x.text, &y.text)),
-            (None, Some(o)) => d.object(o).is_some_and(|ob| ob.within(&y.text, &x.text)),
-            _ => x.text == y.text,
-        },
-        (None, None) => true,
-        _ => false,
-    }
-}
+type Broken = (String, String, String);
 
 fn list(names: &[String]) -> String {
     match names.split_last() {
@@ -164,32 +120,115 @@ fn list(names: &[String]) -> String {
     }
 }
 
-fn show(v: &Option<Val>) -> &str {
-    v.as_ref().map_or("unset", |v| v.text.as_str())
-}
-
 impl Check {
+    fn taken(&self, verb: &str) -> bool {
+        self.steps.iter().any(|s| s == verb)
+    }
+
+    fn right(&self) -> String {
+        match &self.expected {
+            Expected::Before => self.name.clone(),
+            Expected::State(s) => format!("\"{s}\""),
+        }
+    }
+
+    fn guard(&self) -> String {
+        let verbs: Vec<String> = self.steps.iter().map(|s| format!("\"{s}\"")).collect();
+        format!("in(step, Set({}))", verbs.join(", "))
+    }
+
+    fn compare(&self) -> String {
+        format!("eq(next({}), {})", self.name, self.right())
+    }
+
+    fn broken(&self, d: &Diagram, c: &Ctx) -> Vec<Broken> {
+        let read = |state: &State, o: &str| state.get(o).cloned().unwrap_or_default();
+        match self.taken(c.verb) {
+            false => Vec::new(),
+            true => self
+                .objects
+                .iter()
+                .filter_map(|o| {
+                    let after = read(c.nxt, o);
+                    let (kept, want) = match &self.expected {
+                        Expected::Before => {
+                            let before = read(c.cur, o);
+                            (after == before, before)
+                        }
+                        Expected::State(s) => {
+                            (d.object(o).is_some_and(|x| x.within(&after, s)), s.clone())
+                        }
+                    };
+                    (!kept).then(|| (o.clone(), after, want))
+                })
+                .collect(),
+        }
+    }
+
+    fn evidence(&self, broken: &[Broken], verb: &str) -> Vec<String> {
+        broken
+            .iter()
+            .flat_map(|(o, after, want)| {
+                [
+                    format!("{} = {o}", self.name),
+                    format!("{} = true · {verb}", self.guard()),
+                    format!("{} = false · {after} · {want}", self.compare()),
+                ]
+            })
+            .collect()
+    }
+
     pub fn statement(&self, d: &Diagram) -> String {
-        let words = self.body.words(d, &Vec::new());
+        let k = kind(d, &self.objects);
+        let named = match k.trim_end() == self.name {
+            true => self.name.clone(),
+            false => format!("{k}{}", self.name),
+        };
+        let moves: Vec<&Move> = d
+            .objects
+            .iter()
+            .flat_map(|o| &o.moves)
+            .filter(|m| self.taken(&m.verb))
+            .collect();
+        let place = match moves.split_first() {
+            Some((m, rest))
+                if rest
+                    .iter()
+                    .all(|r| r.actor == m.actor && r.target == m.target) =>
+            {
+                format!(" by the {} on the {}", m.actor, m.target)
+            }
+            _ => String::new(),
+        };
+        let steps = match self.steps.as_slice() {
+            [one] => format!("each {one}{place}"),
+            all => format!("any combination of {}{place}", list(all)),
+        };
+        let value = self
+            .objects
+            .first()
+            .and_then(|o| d.object(o))
+            .and_then(|o| o.value.clone())
+            .unwrap_or_default();
+        let owned = format!("the {value} of the {}", self.name);
+        let words = match &self.expected {
+            Expected::Before => format!("for any {named}, {steps} persists {owned}"),
+            Expected::State(s) => format!("for any {named}, after {steps}, {owned} is {s}"),
+        };
         let mut chars = words.chars();
         chars
             .next()
             .map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
     }
 
-    pub fn source(&self, d: &Diagram) -> String {
-        let body = self.body.source(d, &Vec::new());
-        match self.body.action() {
-            true => format!("always({body})"),
-            false => body,
-        }
-    }
-}
-
-fn third(verb: &str) -> String {
-    match ["s", "sh", "ch", "x"].iter().any(|e| verb.ends_with(e)) {
-        true => format!("{verb}es"),
-        false => format!("{verb}s"),
+    pub fn source(&self) -> String {
+        format!(
+            "always(forall(Set({}), {} => implies({}, {})))",
+            self.objects.join(", "),
+            self.name,
+            self.guard(),
+            self.compare()
+        )
     }
 }
 
@@ -237,31 +276,24 @@ impl Diagram {
 
     pub fn verdict(&self) -> Option<Verdict> {
         let c = self.check.as_ref()?;
-        let action = c.body.action();
         let mut now: State = self.init.iter().cloned().collect();
         for (step, s) in self.steps.iter().enumerate() {
             let mut next = now.clone();
             next.extend(s.set.iter().cloned());
-            let ctx = match action {
-                true => Ctx {
-                    cur: &now,
-                    nxt: &next,
-                    verb: Some(&s.send.name),
-                },
-                false => Ctx {
-                    cur: &next,
-                    nxt: &next,
-                    verb: None,
-                },
+            let ctx = Ctx {
+                cur: &now,
+                nxt: &next,
+                verb: &s.send.name,
             };
-            if !c.body.holds(self, &Vec::new(), &ctx) {
-                let (mut evidence, mut marks) = (Vec::new(), Vec::new());
-                c.body.explain(self, &Vec::new(), &ctx, &mut evidence);
-                c.body.marks(self, &Vec::new(), &ctx, &mut marks);
+            let broken = c.broken(self, &ctx);
+            if !broken.is_empty() {
                 return Some(Verdict::Fails {
                     step,
-                    evidence,
-                    marks,
+                    evidence: c.evidence(&broken, &s.send.name),
+                    marks: broken
+                        .iter()
+                        .map(|(o, after, want)| note(o, format!("{after} ≠ {want}")))
+                        .collect(),
                 });
             }
             now = next;
@@ -390,360 +422,6 @@ fn note(o: &str, text: String) -> Mark {
     Mark {
         object: o.to_string(),
         text,
-    }
-}
-
-impl Term {
-    fn action(&self) -> bool {
-        !matches!(self, Term::Name(_))
-    }
-
-    fn source(&self, d: &Diagram, vars: &[String]) -> String {
-        match self {
-            Term::Step => "step".into(),
-            Term::Next(o) => format!("next({o})"),
-            Term::Name(n) if vars.contains(n) || d.object(n).is_some() => n.clone(),
-            Term::Name(n) => format!("\"{n}\""),
-        }
-    }
-
-    fn noun(&self, d: &Diagram, vars: &[String]) -> String {
-        match self {
-            Term::Step => "the step".into(),
-            Term::Next(o) => format!("the {o}"),
-            Term::Name(n) if vars.contains(n) => format!("the {n}"),
-            Term::Name(n) => match (d.object(n), d.steps.iter().find(|s| &s.to == n)) {
-                (Some(_), Some(s)) => {
-                    format!("the {n} that the {} {}", s.from, third(&s.send.name))
-                }
-                (Some(_), None) => format!("the {n}"),
-                _ => n.clone(),
-            },
-        }
-    }
-
-    fn value(&self, d: &Diagram, env: &Env, c: &Ctx) -> Option<Val> {
-        let leaf = |o: &str, state: &State| {
-            state.get(o).map(|l| Val {
-                object: Some(o.to_string()),
-                text: l.clone(),
-            })
-        };
-        match self {
-            Term::Step => c.verb.map(|v| Val {
-                object: None,
-                text: v.to_string(),
-            }),
-            Term::Next(o) => leaf(bound(env, o), c.nxt),
-            Term::Name(n) => match d.object(bound(env, n)) {
-                Some(_) => leaf(bound(env, n), c.cur),
-                None => Some(Val {
-                    object: None,
-                    text: n.clone(),
-                }),
-            },
-        }
-    }
-
-    fn side<'a>(&'a self, d: &'a Diagram, env: &'a Env) -> Result<Side<'a>, String> {
-        let object = |o: &str| match d.object(bound(env, o)) {
-            Some(x) if x.nodes.is_empty() => Err(format!("`{}` has no states", x.name)),
-            found => Ok(found.map(Side::Object)),
-        };
-        match self {
-            Term::Step => Ok(Side::Verb),
-            Term::Next(o) => object(o)?.ok_or_else(|| format!("`(next){o}` names no object")),
-            Term::Name(n) => Ok(object(n)?.unwrap_or(Side::Text(n))),
-        }
-    }
-}
-
-fn compared(d: &Diagram, env: &Env, a: &Term, b: &Term) -> Result<(), String> {
-    match (a.side(d, env)?, b.side(d, env)?) {
-        (Side::Object(x), Side::Object(y)) => {
-            match [x, y].into_iter().find(|o| o.value.is_none()) {
-                Some(o) => Err(format!("`{}` needs `value=` to be compared", o.name)),
-                None => Ok(()),
-            }
-        }
-        (Side::Object(o), Side::Text(s)) | (Side::Text(s), Side::Object(o)) => match o.node(s) {
-            Some(_) => Ok(()),
-            None => Err(format!("`{s}` is not a state of `{}`", o.name)),
-        },
-        (Side::Verb, Side::Text(s)) | (Side::Text(s), Side::Verb) => {
-            match d.steps.iter().any(|x| x.send.name == s)
-                || d.objects.iter().flat_map(|o| &o.moves).any(|m| m.verb == s)
-            {
-                true => Ok(()),
-                false => Err(format!("`{s}` is not a step")),
-            }
-        }
-        _ => Err(
-            "`eq` and `in` compare an object with an object or a state, or `step` with a step"
-                .into(),
-        ),
-    }
-}
-
-impl Cond {
-    fn action(&self) -> bool {
-        match self {
-            Cond::Eq(a, b) => a.action() || b.action(),
-            Cond::In(a, all) => a.action() || all.iter().any(Term::action),
-            Cond::And(all) => all.iter().any(Cond::action),
-            Cond::Forall(_, _, a) => a.action(),
-            Cond::Implies(a, b) | Cond::Iff(a, b) => a.action() || b.action(),
-        }
-    }
-
-    fn source(&self, d: &Diagram, vars: &[String]) -> String {
-        let pair = |op: &str, a: &Term, b: &Term| {
-            format!("{op}({}, {})", a.source(d, vars), b.source(d, vars))
-        };
-        match self {
-            Cond::Eq(a, b) => pair("eq", a, b),
-            Cond::In(a, all) => format!(
-                "in({}, Set({}))",
-                a.source(d, vars),
-                all.iter()
-                    .map(|x| x.source(d, vars))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            Cond::And(all) => format!(
-                "and {{ {} }}",
-                all.iter()
-                    .map(|x| x.source(d, vars))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            Cond::Implies(a, b) => format!("implies({}, {})", a.source(d, vars), b.source(d, vars)),
-            Cond::Iff(a, b) => format!("iff({}, {})", a.source(d, vars), b.source(d, vars)),
-            Cond::Forall(v, objects, body) => {
-                let inner = [vars, std::slice::from_ref(v)].concat();
-                format!(
-                    "forall(Set({}), {v} => {})",
-                    objects.join(", "),
-                    body.source(d, &inner)
-                )
-            }
-        }
-    }
-
-    fn steps(&self, d: &Diagram) -> Option<String> {
-        let verb = |t: &Term| match t {
-            Term::Name(n) => Some(n.clone()),
-            _ => None,
-        };
-        match self {
-            Cond::Eq(Term::Step, v) => verb(v).map(|v| format!("each {v}")),
-            Cond::In(Term::Step, all) => {
-                let verbs: Vec<String> = all.iter().filter_map(verb).collect();
-                let taken: Vec<&Step> = d
-                    .steps
-                    .iter()
-                    .filter(|s| verbs.contains(&s.send.name))
-                    .collect();
-                let place = match taken.split_first() {
-                    Some((s, rest)) if rest.iter().all(|r| r.from == s.from && r.to == s.to) => {
-                        format!(" by the {} on the {}", s.from, s.to)
-                    }
-                    _ => String::new(),
-                };
-                Some(format!("any combination of {}{place}", list(&verbs)))
-            }
-            _ => None,
-        }
-    }
-
-    fn words(&self, d: &Diagram, env: &Env) -> String {
-        let vars: Vec<String> = env.iter().map(|(v, _)| v.clone()).collect();
-        let vars = vars.as_slice();
-        let noun = |t: &Term| t.noun(d, vars);
-        let owned = |t: &Term| match t {
-            Term::Name(n) | Term::Next(n) => {
-                match d.object(bound(env, n)).and_then(|o| o.value.as_ref()) {
-                    Some(v) => format!("the {v} of {}", noun(t)),
-                    None => noun(t),
-                }
-            }
-            Term::Step => noun(t),
-        };
-        let literal =
-            |t: &Term| matches!(t, Term::Name(n) if !vars.contains(n) && d.object(n).is_none());
-        match self {
-            Cond::Eq(Term::Next(x), Term::Name(y)) | Cond::Eq(Term::Name(y), Term::Next(x))
-                if x == y =>
-            {
-                format!("{} persists", owned(&Term::Name(y.clone())))
-            }
-            Cond::Eq(a, b) if literal(b) => format!("{} is {}", noun(a), noun(b)),
-            Cond::Eq(a, b) => format!("{} equals {}", owned(a), owned(b)),
-            Cond::In(a, all) => format!(
-                "{} is one of {}",
-                noun(a),
-                list(&all.iter().map(noun).collect::<Vec<_>>())
-            ),
-            Cond::And(all) => list(&all.iter().map(|x| x.words(d, env)).collect::<Vec<_>>()),
-            Cond::Iff(a, b) => format!("{} exactly when {}", a.words(d, env), b.words(d, env)),
-            Cond::Implies(a, b) => match (a.steps(d), b.as_ref()) {
-                (Some(s), Cond::Eq(Term::Next(x), Term::Name(y))) if x == y => {
-                    format!("{s} persists {}", owned(&Term::Name(y.clone())))
-                }
-                (Some(s), _) => format!("after {s}, {}", b.words(d, env)),
-                (None, _) => format!("when {}, {}", a.words(d, env), b.words(d, env)),
-            },
-            Cond::Forall(v, objects, body) => {
-                let k = kind(d, objects);
-                let named = match k.trim_end() == v {
-                    true => v.clone(),
-                    false => format!("{k}{v}"),
-                };
-                format!(
-                    "for any {named}, {}",
-                    body.words(d, &bind(env, v, &objects[0]))
-                )
-            }
-        }
-    }
-
-    fn holds(&self, d: &Diagram, env: &Env, c: &Ctx) -> bool {
-        match self {
-            Cond::Eq(a, b) => same(d, &a.value(d, env, c), &b.value(d, env, c)),
-            Cond::In(a, all) => all
-                .iter()
-                .any(|x| same(d, &a.value(d, env, c), &x.value(d, env, c))),
-            Cond::And(all) => all.iter().all(|x| x.holds(d, env, c)),
-            Cond::Implies(a, b) => !a.holds(d, env, c) || b.holds(d, env, c),
-            Cond::Iff(a, b) => a.holds(d, env, c) == b.holds(d, env, c),
-            Cond::Forall(v, objects, body) => {
-                objects.iter().all(|o| body.holds(d, &bind(env, v, o), c))
-            }
-        }
-    }
-
-    fn explain(&self, d: &Diagram, env: &Env, c: &Ctx, out: &mut Vec<String>) {
-        match self {
-            Cond::Eq(a, b) => {
-                let vars: Vec<String> = env.iter().map(|(v, _)| v.clone()).collect();
-                out.push(format!(
-                    "{} = {} · {} · {}",
-                    self.source(d, &vars),
-                    self.holds(d, env, c),
-                    show(&a.value(d, env, c)),
-                    show(&b.value(d, env, c))
-                ));
-            }
-            Cond::In(a, _) => {
-                let vars: Vec<String> = env.iter().map(|(v, _)| v.clone()).collect();
-                out.push(format!(
-                    "{} = {} · {}",
-                    self.source(d, &vars),
-                    self.holds(d, env, c),
-                    show(&a.value(d, env, c))
-                ));
-            }
-            Cond::And(all) => all.iter().for_each(|x| x.explain(d, env, c, out)),
-            Cond::Implies(a, b) | Cond::Iff(a, b) => {
-                a.explain(d, env, c, out);
-                b.explain(d, env, c, out);
-            }
-            Cond::Forall(v, objects, body) => {
-                for o in objects {
-                    let inner = bind(env, v, o);
-                    if !body.holds(d, &inner, c) {
-                        out.push(format!("{v} = {o}"));
-                        body.explain(d, &inner, c, out);
-                    }
-                }
-            }
-        }
-    }
-
-    fn notes(&self, d: &Diagram, env: &Env, c: &Ctx, out: &mut Vec<Mark>, failed: bool) {
-        match self {
-            Cond::Eq(a, b) => {
-                let (x, y) = (a.value(d, env, c), b.value(d, env, c));
-                let object = x
-                    .as_ref()
-                    .and_then(|v| v.object.clone())
-                    .or_else(|| y.as_ref().and_then(|v| v.object.clone()));
-                let sign = match failed {
-                    true => "≠",
-                    false => "=",
-                };
-                if let Some(o) = object {
-                    out.push(note(&o, format!("{} {sign} {}", show(&x), show(&y))));
-                }
-            }
-            Cond::In(a, all) => {
-                let x = a.value(d, env, c);
-                let sign = match failed {
-                    true => "∉",
-                    false => "∈",
-                };
-                let names: Vec<String> = all
-                    .iter()
-                    .map(|t| show(&t.value(d, env, c)).to_string())
-                    .collect();
-                if let Some(o) = x.as_ref().and_then(|v| v.object.clone()) {
-                    out.push(note(
-                        &o,
-                        format!("{} {sign} [{}]", show(&x), names.join(", ")),
-                    ));
-                }
-            }
-            Cond::And(all) => all
-                .iter()
-                .filter(|x| x.holds(d, env, c) != failed)
-                .for_each(|x| x.notes(d, env, c, out, failed)),
-            Cond::Implies(a, b) => match failed {
-                true => b.notes(d, env, c, out, true),
-                false => a.notes(d, env, c, out, true),
-            },
-            Cond::Iff(a, b) => {
-                a.notes(d, env, c, out, !a.holds(d, env, c));
-                b.notes(d, env, c, out, !b.holds(d, env, c));
-            }
-            Cond::Forall(v, objects, body) => {
-                for o in objects {
-                    let inner = bind(env, v, o);
-                    if body.holds(d, &inner, c) != failed {
-                        body.notes(d, &inner, c, out, failed);
-                    }
-                }
-            }
-        }
-    }
-
-    fn marks(&self, d: &Diagram, env: &Env, c: &Ctx, out: &mut Vec<Mark>) {
-        if !self.holds(d, env, c) {
-            self.notes(d, env, c, out, true);
-        }
-    }
-
-    fn typed(&self, d: &Diagram, env: &Env) -> Result<(), String> {
-        match self {
-            Cond::Eq(a, b) => compared(d, env, a, b),
-            Cond::In(a, all) => all.iter().try_for_each(|x| compared(d, env, a, x)),
-            Cond::And(all) => all.iter().try_for_each(|x| x.typed(d, env)),
-            Cond::Implies(a, b) | Cond::Iff(a, b) => a.typed(d, env).and_then(|_| b.typed(d, env)),
-            Cond::Forall(v, objects, body) => {
-                if d.object(v).is_some() || env.iter().any(|(x, _)| x == v) {
-                    return Err(format!("`forall {v}` names an object or a bound name"));
-                }
-                for (i, o) in objects.iter().enumerate() {
-                    if d.object(o).is_none() {
-                        return Err(format!("unknown object `{o}`"));
-                    }
-                    if objects[..i].contains(o) {
-                        return Err(format!("`forall {v}` names `{o}` twice"));
-                    }
-                    body.typed(d, &bind(env, v, o))?;
-                }
-                Ok(())
-            }
-        }
     }
 }
 
@@ -938,107 +616,136 @@ fn step(n: &KdlNode) -> Result<Step, String> {
     })
 }
 
-fn term(e: &KdlEntry) -> Result<Term, String> {
-    let v = text(e.value());
-    match (e.ty().map(|t| t.value()), v.as_str()) {
-        (None, "step") => Ok(Term::Step),
-        (None, _) => Ok(Term::Name(v)),
-        (Some("next"), _) => Ok(Term::Next(v)),
-        (Some(t), _) => Err(format!("`({t})` is not `(next)`")),
-    }
-}
+const CHECK: &str = "`invariant` holds `forall <name> <object>… { implies { in step <verb>…; eq (next)<name> <name> } }`, or a state of each object in place of the last `<name>`";
 
-fn pair(n: &KdlNode) -> Result<(Term, Term), String> {
-    shape(n, 2, &[], false)?;
-    let terms = n
-        .entries()
-        .iter()
-        .filter(|e| e.name().is_none())
-        .map(term)
-        .collect::<Result<Vec<_>, _>>()?;
-    let [a, b]: [Term; 2] = terms
-        .try_into()
-        .map_err(|_| format!("`{}` takes two values", name(n)))?;
-    Ok((a, b))
-}
-
-fn two(n: &KdlNode) -> Result<(Box<Cond>, Box<Cond>), String> {
-    shape(n, 0, &[], true)?;
+fn only<'a>(n: &'a KdlNode, node: &str) -> Result<&'a KdlNode, String> {
     match lines(n) {
-        [a, b] => Ok((Box::new(cond(a)?), Box::new(cond(b)?))),
-        _ => Err(format!("`{}` holds two conditions", name(n))),
+        [one] if name(one) == node => Ok(one),
+        _ => Err(format!("`{}` holds one `{node}`: {CHECK}", name(n))),
     }
 }
 
-fn cond(n: &KdlNode) -> Result<Cond, String> {
-    match name(n) {
-        "eq" => pair(n).map(|(a, b)| Cond::Eq(a, b)),
-        "in" => {
-            let terms = n
-                .entries()
-                .iter()
-                .filter(|e| e.name().is_none())
-                .map(term)
-                .collect::<Result<Vec<_>, _>>()?;
-            shape(n, terms.len(), &[], false)?;
-            match terms.split_first() {
-                Some((a, all)) if all.len() > 1 => Ok(Cond::In(a.clone(), all.to_vec())),
-                _ => Err("`in` takes a value and two or more values".into()),
-            }
-        }
-        "and" => {
-            shape(n, 0, &[], true)?;
-            match lines(n) {
-                held if held.len() > 1 => held
-                    .iter()
-                    .map(cond)
-                    .collect::<Result<_, _>>()
-                    .map(Cond::And),
-                _ => Err("`and` holds two or more conditions".into()),
-            }
-        }
-        "implies" => two(n).map(|(a, b)| Cond::Implies(a, b)),
-        "iff" => two(n).map(|(a, b)| Cond::Iff(a, b)),
-        "forall" => {
-            let given = args(n);
-            shape(n, given.len(), &[], true)?;
-            match (given.as_slice(), lines(n)) {
-                ([var, objects @ ..], [body]) if !objects.is_empty() => Ok(Cond::Forall(
-                    var.clone(),
-                    objects.to_vec(),
-                    Box::new(cond(body)?),
-                )),
-                _ => Err(
-                    "`forall` takes a name and one or more objects, and holds one condition".into(),
-                ),
-            }
-        }
-        other => Err(format!(
-            "`{other}` is not eq, in, and, implies, iff or forall"
-        )),
-    }
+fn plain(n: &KdlNode) -> Result<Vec<String>, String> {
+    n.entries()
+        .iter()
+        .map(|e| match (e.name(), e.ty()) {
+            (None, None) => Ok(text(e.value())),
+            _ => Err(format!(
+                "`{}` takes plain names, not `{e}`: {CHECK}",
+                name(n)
+            )),
+        })
+        .collect()
 }
 
 fn invariant(n: &KdlNode) -> Result<Check, String> {
     shape(n, 0, &[], true)?;
-    match lines(n) {
-        [body] => Ok(Check { body: cond(body)? }),
-        _ => Err("`invariant` holds one condition".into()),
-    }
+    let forall = only(n, "forall")?;
+    let (bound, objects) = match plain(forall)?.split_first() {
+        Some((v, all)) if !all.is_empty() => (v.clone(), all.to_vec()),
+        _ => {
+            return Err(format!(
+                "`forall` takes a name and one or more objects: {CHECK}"
+            ));
+        }
+    };
+    let implies = only(forall, "implies")?;
+    let (guard, compare) = match lines(implies) {
+        [g, c] if name(g) == "in" && name(c) == "eq" && implies.entries().is_empty() => (g, c),
+        _ => {
+            return Err(format!(
+                "`implies` holds `in step <verb>…` and then `eq (next){bound} …`: {CHECK}"
+            ));
+        }
+    };
+    let steps = match plain(guard)?.split_first() {
+        Some((s, verbs)) if s == "step" && !verbs.is_empty() && guard.children().is_none() => {
+            verbs.to_vec()
+        }
+        _ => return Err(format!("`in` takes `step` and one or more verbs: {CHECK}")),
+    };
+    let expected = match (compare.entries(), compare.children()) {
+        ([after, right], None)
+            if after.name().is_none()
+                && after.ty().map(|t| t.value()) == Some("next")
+                && text(after.value()) == bound
+                && right.name().is_none()
+                && right.ty().is_none() =>
+        {
+            match text(right.value()) {
+                v if v == bound => Expected::Before,
+                v => Expected::State(v),
+            }
+        }
+        _ => {
+            return Err(format!(
+                "`eq` takes `(next){bound}` and then `{bound}` or a state: {CHECK}"
+            ));
+        }
+    };
+    Ok(Check {
+        name: bound,
+        objects,
+        steps,
+        expected,
+    })
 }
 
-fn typed(d: &Diagram, c: &Check) -> Result<(), String> {
-    c.body.typed(d, &Vec::new())?;
-    let init: State = d.init.iter().cloned().collect();
-    let ctx = Ctx {
-        cur: &init,
-        nxt: &init,
-        verb: None,
-    };
-    match !c.body.action() && !c.body.holds(d, &Vec::new(), &ctx) {
-        true => Err(format!("`{}` fails in the initial state", c.statement(d))),
-        false => Ok(()),
+fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
+    if d.object(&c.name).is_some() {
+        return Err(format!(
+            "`forall {}` names an object, and needs a new name",
+            c.name
+        ));
     }
+    if let Expected::State(s) = &c.expected
+        && d.object(s).is_some()
+    {
+        return Err(format!(
+            "`eq` compares `(next){}` with `{}` or a state, not with the object `{s}`",
+            c.name, c.name
+        ));
+    }
+    let verbs: Vec<&str> = d
+        .objects
+        .iter()
+        .flat_map(|o| &o.moves)
+        .map(|m| m.verb.as_str())
+        .collect();
+    for (i, s) in c.steps.iter().enumerate() {
+        if c.steps[..i].contains(s) {
+            return Err(format!("`in step` names `{s}` twice"));
+        }
+        if !verbs.contains(&s.as_str()) {
+            return Err(format!("`{s}` is the verb of no `on` line"));
+        }
+    }
+    for (i, o) in c.objects.iter().enumerate() {
+        let x = d
+            .object(o)
+            .ok_or_else(|| format!("`forall` names unknown object `{o}`"))?;
+        if c.objects[..i].contains(o) {
+            return Err(format!("`forall` names `{o}` twice"));
+        }
+        if x.nodes.is_empty() {
+            return Err(format!("`{o}` has no states"));
+        }
+        if x.value.is_none() {
+            return Err(format!("`{o}` needs `value=` to be checked"));
+        }
+        if let Expected::State(s) = &c.expected
+            && x.node(s).is_none()
+        {
+            return Err(format!("`{s}` is not a state of `{o}`"));
+        }
+        if let Some(m) = x.moves.iter().find(|m| c.taken(&m.verb)) {
+            return Err(format!(
+                "`{o}` has `on {}`, so `setup` decides what `check` compares",
+                m.verb
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn build(doc: &KdlDocument) -> Result<Diagram, String> {
@@ -1091,7 +798,7 @@ fn build(doc: &KdlDocument) -> Result<Diagram, String> {
     }
     run(&d.objects, &d.init, &mut d.steps)?;
     let c = d.check.as_ref().ok_or("needs `check`")?;
-    typed(&d, c)?;
+    checked(&d, c)?;
     explore(&d, c)?;
     let last = d.steps.len();
     match d.verdict() {
@@ -1233,17 +940,10 @@ fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
                     .collect();
             }
             for next in nexts {
-                let ctx = match c.body.action() {
-                    true => Ctx {
-                        cur: &now,
-                        nxt: &next,
-                        verb: Some(e.1),
-                    },
-                    false => Ctx {
-                        cur: &next,
-                        nxt: &next,
-                        verb: None,
-                    },
+                let ctx = Ctx {
+                    cur: &now,
+                    nxt: &next,
+                    verb: e.1,
                 };
                 let shown: Vec<String> = given
                     .iter()
@@ -1254,7 +954,7 @@ fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
                     vec![format!("{} {} {} ({})", e.0, e.1, e.2, shown.join(", "))],
                 ]
                 .concat();
-                if !c.body.holds(d, &Vec::new(), &ctx) {
+                if !c.broken(d, &ctx).is_empty() {
                     return Err(format!(
                         "`{}` fails in the setup after {}",
                         c.statement(d),

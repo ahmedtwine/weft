@@ -92,7 +92,7 @@ fn section(
         .check
         .as_ref()
         .map_or((String::new(), String::new()), |c| {
-            (c.statement(d), c.source(d))
+            (c.statement(d), c.source())
         });
     Ok(format!(
         r#"<section><h2>{}</h2><code>{}</code><div class="d">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
