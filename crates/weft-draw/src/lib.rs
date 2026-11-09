@@ -55,6 +55,7 @@ const DARK: Palette = Palette {
 enum Kind {
     Initial,
     State,
+    Check,
     Broken,
 }
 
@@ -144,16 +145,21 @@ fn order(d: &Diagram) -> Vec<usize> {
 fn stereotype(kind: Kind) -> &'static str {
     match kind {
         Kind::Initial => "«initial»",
-        Kind::State | Kind::Broken => "«state»",
+        Kind::State => "«state»",
+        Kind::Check | Kind::Broken => "«check»",
     }
 }
 
+fn lines(text: &str) -> Vec<String> {
+    text.lines().flat_map(|l| wrap(l, WRAP)).collect()
+}
+
 fn note(p: &mut Plan, over: String, text: String, kind: Kind) {
-    let lines = match (p.svg, kind) {
-        (true, _) => [vec![stereotype(kind).to_string()], wrap(&text, WRAP)].concat(),
-        (false, _) => vec![text.clone()],
+    let shown = match p.svg {
+        true => [vec![stereotype(kind).to_string()], lines(&text)].concat(),
+        false => text.lines().map(String::from).collect(),
     };
-    let _ = writeln!(p.source, "  Note over {over}: {}", mermaid_text(&lines));
+    let _ = writeln!(p.source, "  Note over {over}: {}", mermaid_text(&shown));
     p.notes.push(Note { text, kind });
 }
 
@@ -200,13 +206,15 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
             .max_by_key(|s| count(s));
         note(&mut p, over, widest.unwrap_or_default(), Kind::Initial);
     }
-    let (failed, marks) = match d.verdict() {
-        Some(Verdict::Fails { step, marks, .. }) => (Some(step), marks),
-        _ => (None, Vec::new()),
+    let failed = match d.verdict() {
+        Some(Verdict::Fails { step, .. }) => Some(step),
+        _ => None,
     };
     p.failed = failed;
+    let checks = d.checks();
     for (k, s) in d.steps.iter().enumerate() {
         let here = failed == Some(k);
+        let checked: Vec<_> = checks.iter().filter(|(at, _)| *at == k).collect();
         if here {
             let _ = writeln!(p.source, "  rect rgb(0, 0, 0)");
             p.rects += 1;
@@ -221,24 +229,28 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
         for (object, value) in s
             .set
             .iter()
-            .filter(|(o, _)| !(here && marks.iter().any(|m| &m.object == o)))
+            .filter(|(o, _)| !checked.iter().any(|(_, m)| &m.object == o))
         {
             note(
                 &mut p,
                 format!("o{}", col(d, object)),
-                value.clone(),
+                weft_parse::shown(value),
                 Kind::State,
             );
         }
+        for (_, m) in &checked {
+            let kind = match m.kept {
+                true => Kind::Check,
+                false => Kind::Broken,
+            };
+            note(
+                &mut p,
+                format!("o{}", col(d, &m.object)),
+                m.text.clone(),
+                kind,
+            );
+        }
         if here {
-            for m in &marks {
-                note(
-                    &mut p,
-                    format!("o{}", col(d, &m.object)),
-                    m.text.clone(),
-                    Kind::Broken,
-                );
-            }
             let _ = writeln!(p.source, "  end");
         }
     }
@@ -315,7 +327,7 @@ fn node(
     p: &Palette,
 ) {
     let top = stereotype(kind);
-    let lines = wrap(state, WRAP);
+    let lines = lines(state);
     let wide = lines
         .iter()
         .map(|l| width(l, 13.0) * 1.06)
@@ -498,7 +510,9 @@ pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
                     );
                 }
             }
-            Kind::State => node(&mut out, (x, y), note.kind, &note.text, (p.border, p.fg), p),
+            Kind::State | Kind::Check => {
+                node(&mut out, (x, y), note.kind, &note.text, (p.border, p.fg), p)
+            }
             Kind::Broken => node(
                 &mut out,
                 (x, y),
@@ -608,29 +622,29 @@ mod tests {
     const DIAGRAM: &str = r#"
 setup {
   person agent
-  browser page initial="search form" {
-    state "search form" {
-      on click "Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
+  browser page snapshot=snap_0 {
+    state snapshot=snap_0 {
+      on click snapshot=snap_1
     }
-    state "Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
+    state snapshot=snap_1
   }
-  element origin initial="San Diego" {
-    state "San Diego" {
-      on type "Lahore, Pakistan"
+  element origin value="San Diego" {
+    state value="San Diego" {
+      on type value="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
     }
-    state "Lahore, Pakistan"
+    state value="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
   }
 }
 action {
   type from=agent to=origin
-  click from=agent to=page origin="San Diego"
+  click from=agent to=page origin.value="San Diego"
 }
 check {
   invariant {
     forall element origin {
       implies {
         in step click
-        eq (next)element element
+        eq (next)element.value element.value
       }
     }
   }

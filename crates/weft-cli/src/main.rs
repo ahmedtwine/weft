@@ -76,7 +76,7 @@ fn summary(path: &str, d: &Diagram) -> String {
     };
     format!(
         "✓ {path} · {} · {}",
-        d.check.as_ref().map_or(String::new(), |c| c.statement(d)),
+        d.check.as_ref().map_or(String::new(), |c| c.english()),
         evidence.join(" · ")
     )
 }
@@ -86,7 +86,7 @@ fn section(path: &str, src: &str, d: &Diagram, theme: Theme) -> Result<String, S
         .check
         .as_ref()
         .map_or((String::new(), String::new()), |c| {
-            (c.statement(d), c.source())
+            (c.english(), c.source())
         });
     Ok(format!(
         r#"<section><h2>{}</h2><code>{}</code><div class="d">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
