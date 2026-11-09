@@ -6,17 +6,15 @@ use merman::ascii::AsciiRenderOptions;
 use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest};
 use serde_json::Value;
 use vendor::lucide::ICONS;
-use weft_parse::{Data, Diagram, Mark, Verdict};
+use weft_parse::{Data, Diagram, Verdict};
 
-const KEEP: usize = 48;
 const VALUE: usize = 36;
-const CHAR: f64 = 7.0;
-const SMALL: f64 = 6.6;
+const WRAP: usize = 24;
 const LINE: f64 = 17.6;
 const INDENT: f64 = 12.0;
 const GAP: f64 = 14.0;
 const PAD: f64 = 10.0;
-const RESERVE: usize = 1;
+const RESERVE: usize = 2;
 const FONT: &str = "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif";
 const DIRECTIVE: &str =
     "%%{init: {\"sequence\": {\"mirrorActors\": false, \"actorMargin\": 16, \"width\": 96}}}%%\n";
@@ -69,7 +67,6 @@ enum Kind {
     Initial,
     State,
     Broken,
-    Expect(usize, usize),
 }
 
 struct Note {
@@ -79,7 +76,7 @@ struct Note {
 
 struct Plan {
     source: String,
-    heads: Vec<String>,
+    heads: Vec<Vec<String>>,
     payloads: Vec<Vec<Field>>,
     notes: Vec<Note>,
     initial: Vec<(usize, String)>,
@@ -92,112 +89,32 @@ fn count(s: &str) -> usize {
     s.chars().count()
 }
 
-fn camel(s: &str) -> Vec<&str> {
-    let mut cuts = vec![0];
-    let chars: Vec<(usize, char)> = s.char_indices().collect();
-    for w in chars.windows(2) {
-        if w[0].1.is_lowercase() && w[1].1.is_uppercase() {
-            cuts.push(w[1].0);
-        }
-    }
-    cuts.push(s.len());
-    cuts.windows(2).map(|w| &s[w[0]..w[1]]).collect()
-}
-
-fn parts(s: &str) -> Vec<&str> {
-    match s.contains(['/', ' ']) {
-        true => s.split_inclusive(['/', ' ']).collect(),
-        false => camel(s),
-    }
-}
-
-fn clip(s: &str, max: usize) -> String {
-    if count(s) <= max {
-        return s.to_string();
-    }
-    let parts = parts(s);
-    let fixed = match parts.first() {
-        Some(p) if p.ends_with(' ') => parts.len().min(2),
-        _ => 0,
-    };
-    let head = parts[..fixed].concat();
-    (fixed + 1..parts.len())
-        .map(|t| {
-            let sep = parts[t - 1]
-                .chars()
-                .last()
-                .filter(|c| *c == '/' || *c == ' ');
-            format!(
-                "{head}…{}{}",
-                sep.map_or(String::new(), String::from),
-                parts[t..].concat()
-            )
+fn width(s: &str, size: f64) -> f64 {
+    s.chars()
+        .map(|c| match c {
+            'i' | 'l' | 'j' | 'I' | '|' | '.' | ',' | ':' | ';' | '\'' | '!' => 0.3,
+            'f' | 't' | 'r' | ' ' | '(' | ')' | '[' | ']' | '/' | '-' => 0.38,
+            'm' | 'w' | 'M' | 'W' => 0.88,
+            c if c.is_uppercase() => 0.7,
+            c if c.is_ascii_digit() => 0.62,
+            _ => 0.58,
         })
-        .find(|c| count(c) <= max)
-        .unwrap_or_else(|| {
-            let chars: Vec<char> = s.chars().collect();
-            format!(
-                "…{}",
-                chars[chars.len() + 1 - max..].iter().collect::<String>()
-            )
-        })
+        .sum::<f64>()
+        * size
 }
 
-fn fit(s: &str, max: usize) -> Vec<String> {
-    if count(s) <= max {
-        return vec![s.to_string()];
+fn wrap(s: &str, max: usize) -> Vec<String> {
+    let words: Vec<&str> = s.split_inclusive([' ', '/']).collect();
+    let line = |w: &[&str]| w.concat().trim_end().to_string();
+    let longest = |k: &usize| count(&line(&words[..*k])).max(count(&line(&words[*k..])));
+    match (count(s) > max, (1..words.len()).min_by_key(longest)) {
+        (true, Some(k)) => vec![line(&words[..k]), line(&words[k..])],
+        _ => vec![s.trim_end().to_string()],
     }
-    let parts = parts(s);
-    let mut lines: Vec<String> = Vec::new();
-    for part in &parts {
-        match lines.last_mut() {
-            Some(line) if count(line) + count(part) <= max => line.push_str(part),
-            _ => lines.push(part.to_string()),
-        }
-    }
-    if lines.len() <= 2 && lines.iter().all(|l| count(l) <= max) {
-        return lines
-            .into_iter()
-            .map(|l| l.trim_end().to_string())
-            .collect();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    if parts.len() < 3 {
-        let rest: String = chars[max..].iter().collect();
-        let tail = match count(&rest) <= max {
-            true => rest,
-            false => format!(
-                "…{}",
-                chars[chars.len() + 1 - max..].iter().collect::<String>()
-            ),
-        };
-        return vec![chars[..max].iter().collect(), tail];
-    }
-    let mut end = parts.len();
-    while end > 1 && count(&parts[end - 1..].concat()) <= max {
-        end -= 1;
-    }
-    let second = parts[end..].concat();
-    let head = match parts[0].ends_with(' ') && end > 1 {
-        true => parts[..2].concat(),
-        false => parts[0].to_string(),
-    };
-    let sep = head.chars().last().filter(|c| *c == '/' || *c == ' ');
-    let mark = format!("…{}", sep.map_or(String::new(), String::from));
-    let start = head.matches(['/', ' ']).count().max(1).min(end);
-    let mut from = end;
-    while from > start && count(&format!("{head}{mark}{}", parts[from - 1..end].concat())) <= max {
-        from -= 1;
-    }
-    let first = match from == start {
-        true => parts[..end].concat(),
-        false => format!("{head}{mark}{}", parts[from..end].concat()),
-    };
-    vec![first.trim_end().to_string(), second]
 }
 
 fn field(out: &mut Vec<Field>, depth: usize, key: &str, value: &str) {
-    for (i, line) in fit(value, VALUE).into_iter().enumerate() {
+    for (i, line) in wrap(value, VALUE).into_iter().enumerate() {
         out.push(Field {
             depth,
             bullet: false,
@@ -310,18 +227,31 @@ fn col(d: &Diagram, name: &str) -> usize {
     d.objects.iter().position(|o| o.name == name).unwrap_or(0)
 }
 
+fn order(d: &Diagram) -> Vec<usize> {
+    let mut seen = Vec::new();
+    let steps = d.steps.iter().flat_map(|s| {
+        [col(d, &s.from), col(d, &s.to)]
+            .into_iter()
+            .chain(s.set.iter().map(|(o, _)| col(d, o)))
+    });
+    for i in steps.chain(0..d.objects.len()) {
+        if !seen.contains(&i) {
+            seen.push(i);
+        }
+    }
+    seen
+}
+
 fn stereotype(kind: Kind) -> &'static str {
     match kind {
         Kind::Initial => "«initial»",
         Kind::State | Kind::Broken => "«state»",
-        Kind::Expect(..) => "«expected»",
     }
 }
 
 fn note(p: &mut Plan, over: String, text: String, kind: Kind) {
     let lines = match (p.svg, kind) {
-        (_, Kind::Expect(..)) => vec![stereotype(kind).to_string()],
-        (true, _) => vec![stereotype(kind).to_string(), text.clone()],
+        (true, _) => [vec![stereotype(kind).to_string()], wrap(&text, WRAP)].concat(),
         (false, _) => vec![text.clone()],
     };
     let _ = writeln!(p.source, "  Note over {over}: {}", mermaid_text(&lines));
@@ -343,19 +273,22 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
         p.source.push_str(DIRECTIVE);
     }
     p.source.push_str("sequenceDiagram\n  autonumber\n");
-    for (i, o) in d.objects.iter().enumerate() {
-        let head = clip(&o.label, KEEP);
+    p.heads = d.objects.iter().map(|o| wrap(&o.label, WRAP)).collect();
+    let order = order(d);
+    for &i in &order {
+        let head = &p.heads[i];
         let label = match svg {
-            true => [vec![String::new(); RESERVE], vec![head.clone()]].concat(),
-            false => vec![head.clone()],
+            true => [vec![String::new(); RESERVE], head.clone()].concat(),
+            false => head.clone(),
         };
         let _ = writeln!(p.source, "  participant o{i} as {}", mermaid_text(&label));
-        p.heads.push(head);
         p.initial
-            .extend(d.initial(&o.name).map(|s| (i, s.to_string())));
+            .extend(d.initial(&d.objects[i].name).map(|s| (i, s.to_string())));
     }
-    if svg && !p.initial.is_empty() {
-        let over = format!("o0,o{}", d.objects.len() - 1);
+    if let (true, Some(first), Some(last)) =
+        (svg && !p.initial.is_empty(), order.first(), order.last())
+    {
+        let over = format!("o{first},o{last}");
         let widest = p
             .initial
             .iter()
@@ -406,23 +339,12 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
         }
         if here {
             for m in &marks {
-                match m {
-                    Mark::Note { object, text } => note(
-                        &mut p,
-                        format!("o{}", col(d, object)),
-                        text.clone(),
-                        Kind::Broken,
-                    ),
-                    Mark::Expect { from, to } => {
-                        let (a, b) = (col(d, from), col(d, to));
-                        note(
-                            &mut p,
-                            format!("o{},o{}", a.min(b), a.max(b)),
-                            String::new(),
-                            Kind::Expect(a, b),
-                        )
-                    }
-                }
+                note(
+                    &mut p,
+                    format!("o{}", col(d, &m.object)),
+                    m.text.clone(),
+                    Kind::Broken,
+                );
             }
             let _ = writeln!(p.source, "  end");
         }
@@ -483,13 +405,13 @@ fn label(out: &mut String, x: f64, y: f64, text: &str, color: &str, weight: u16,
 fn text(out: &mut String, x: f64, y: f64, text: &str, color: &str) {
     let _ = write!(
         out,
-        r#"<text x="{x:.1}" y="{y:.1}" fill="{color}" style="white-space:pre">{}</text>"#,
+        r#"<text x="{x:.1}" y="{y:.1}" font-size="12.5" fill="{color}" style="white-space:pre">{}</text>"#,
         escape(text)
     );
 }
 
 fn tag(out: &mut String, (x, y): (f64, f64), text: &str, ink: &str, bg: &str) {
-    let w = count(text) as f64 * SMALL + 10.0;
+    let w = width(text, 12.0) + 10.0;
     let _ = write!(
         out,
         r#"<rect x="{:.1}" y="{:.1}" width="{w:.1}" height="19" rx="3" fill="{bg}"/>"#,
@@ -508,20 +430,29 @@ fn node(
     p: &Palette,
 ) {
     let top = stereotype(kind);
-    let w = count(top).max(count(state)) as f64 * CHAR + 24.0;
+    let lines = wrap(state, WRAP);
+    let wide = lines
+        .iter()
+        .map(|l| width(l, 13.0) * 1.06)
+        .fold(0.0, f64::max);
+    let w = width(top, 11.5).max(wide) + 24.0;
+    let h = 26.0 + lines.len() as f64 * 16.0;
     let dash = match kind {
         Kind::Initial => r#" stroke-dasharray="4 3""#,
         _ => "",
     };
     let _ = write!(
         out,
-        r#"<rect x="{:.1}" y="{:.1}" width="{w:.1}" height="42" rx="4" fill="{}" stroke="{stroke}"{dash}/>"#,
+        r#"<rect x="{:.1}" y="{:.1}" width="{w:.1}" height="{h:.1}" rx="4" fill="{}" stroke="{stroke}"{dash}/>"#,
         x - w / 2.0,
-        y - 21.0,
+        y - h / 2.0,
         p.surface
     );
-    label(out, x, y - 4.0, top, p.muted, 400, 11.5);
-    label(out, x, y + 13.0, state, ink, 700, 13.0);
+    let top_y = y - h / 2.0;
+    label(out, x, top_y + 17.0, top, p.muted, 400, 11.5);
+    for (i, line) in lines.iter().enumerate() {
+        label(out, x, top_y + 34.0 + i as f64 * 16.0, line, ink, 700, 13.0);
+    }
 }
 
 fn arrow(out: &mut String, (px, py): (f64, f64), (zx, zy): (f64, f64), color: &str) {
@@ -555,18 +486,18 @@ fn points(e: &Value) -> Vec<(f64, f64)> {
 }
 
 fn paint_fields(out: &mut String, at: &Value, rows: &[Field], p: &Palette) {
-    let key = |f: &Field| f.depth as f64 * INDENT + count(&f.key) as f64 * SMALL;
+    let key = |f: &Field| f.depth as f64 * INDENT + width(&f.key, 12.5);
     let column = column(rows, key);
     let w = PAD * 2.0
         + rows
             .iter()
-            .map(|f| key(f).max(column + GAP + count(&f.value) as f64 * SMALL))
+            .map(|f| key(f).max(column + GAP + width(&f.value, 12.5)))
             .fold(0.0, f64::max);
     let h = rows.len() as f64 * LINE + 12.0;
     let (x0, top) = (num(at, "x") - w / 2.0, num(at, "y") - 2.0);
     let _ = write!(
         out,
-        r#"<rect x="{x0:.1}" y="{top:.1}" width="{w:.1}" height="{h:.1}" rx="4" fill="{}" stroke="{}"/><g font-size="12.5">"#,
+        r#"<rect x="{x0:.1}" y="{top:.1}" width="{w:.1}" height="{h:.1}" rx="4" fill="{}" stroke="{}"/>"#,
         p.surface, p.border
     );
     for (k, f) in rows.iter().enumerate() {
@@ -580,7 +511,6 @@ fn paint_fields(out: &mut String, at: &Value, rows: &[Field], p: &Palette) {
         text(out, x, y, &f.key, p.muted);
         text(out, x0 + PAD + column + GAP, y, &f.value, p.fg);
     }
-    out.push_str("</g>");
 }
 
 pub fn svg(d: &Diagram, styles: &[(String, String)], theme: Theme) -> Result<String, String> {
@@ -606,7 +536,7 @@ pub fn svg(d: &Diagram, styles: &[(String, String)], theme: Theme) -> Result<Str
     let (x0, y0) = (num(b, "min_x"), num(b, "min_y"));
     let (w, h) = (num(b, "max_x") - x0, num(b, "max_y") - y0);
     let mut out = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x0:.1} {y0:.1} {w:.1} {h:.1}" width="100%" style="max-width:{w:.0}px" font-family="{FONT}" font-size="13"><rect x="{x0:.1}" y="{y0:.1}" width="{w:.1}" height="{h:.1}" fill="{}"/>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x0:.1} {y0:.1} {w:.1} {h:.1}" width="{w:.0}" height="{h:.0}" style="max-width:100%;height:auto" font-family="{FONT}" font-size="13"><rect x="{x0:.1}" y="{y0:.1}" width="{w:.1}" height="{h:.1}" fill="{}"/>"#,
         p.bg
     );
     for n in sorted(&nodes, "rect-").into_iter().take(plan.rects) {
@@ -697,7 +627,6 @@ pub fn svg(d: &Diagram, styles: &[(String, String)], theme: Theme) -> Result<Str
         );
     }
     for (n, note) in sorted(&nodes, "note-").into_iter().zip(&plan.notes) {
-        let nh = num(n, "height");
         let (x, y) = (num(n, "x"), num(n, "y"));
         match note.kind {
             Kind::Initial => {
@@ -721,22 +650,6 @@ pub fn svg(d: &Diagram, styles: &[(String, String)], theme: Theme) -> Result<Str
                 (p.critical, p.critical),
                 p,
             ),
-            Kind::Expect(a, b) => {
-                let (ax, zx, line) = (column[a], column[b], y + nh / 4.0);
-                let _ = write!(
-                    out,
-                    r#"<path d="M {ax:.1},{line:.1} L {zx:.1},{line:.1}" fill="none" stroke="{0}" stroke-width="1.5" stroke-dasharray="5 4"/>"#,
-                    p.critical
-                );
-                arrow(&mut out, (ax, line), (zx, line), p.critical);
-                tag(
-                    &mut out,
-                    ((ax + zx) / 2.0, line),
-                    stereotype(note.kind),
-                    p.critical,
-                    p.bg,
-                );
-            }
         }
     }
     for n in &nodes {
@@ -752,11 +665,11 @@ pub fn svg(d: &Diagram, styles: &[(String, String)], theme: Theme) -> Result<Str
         else {
             continue;
         };
-        let (x, bottom) = (num(n, "x"), num(n, "y") + num(n, "height") / 2.0);
+        let (x, top) = (num(n, "x"), num(n, "y") - num(n, "height") / 2.0);
         label(
             &mut out,
             x,
-            bottom - 70.0,
+            top + 12.0,
             &format!("«{}»", o.kind),
             p.muted,
             400,
@@ -766,14 +679,24 @@ pub fn svg(d: &Diagram, styles: &[(String, String)], theme: Theme) -> Result<Str
             out,
             r#"<rect x="{:.1}" y="{:.1}" width="40" height="40" rx="8" fill="{}" stroke="{}"/><g transform="translate({:.1} {:.1})" fill="none" stroke="{}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{drawn}</g>"#,
             x - 20.0,
-            bottom - 62.0,
+            top + 20.0,
             p.surface,
             p.border,
             x - 12.0,
-            bottom - 54.0,
+            top + 28.0,
             p.fg
         );
-        label(&mut out, x, bottom - 6.0, head, p.fg, 600, 13.0);
+        for (k, line) in head.iter().enumerate() {
+            label(
+                &mut out,
+                x,
+                top + 76.0 + k as f64 * 16.0,
+                line,
+                p.fg,
+                600,
+                13.0,
+            );
+        }
     }
     out.push_str("</svg>");
     Ok(out)
@@ -808,6 +731,118 @@ impl Theme {
         match self {
             Theme::Light => &LIGHT,
             Theme::Dark => &DARK,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LABELS: [&str; 6] = [
+        "/sandbox/www.google.com/R9HTtq0IEYLMLIPOdYMMr",
+        "input[aria-label^=\"Where from?\"]",
+        "POST /api/correlation",
+        "refunded jordan the full $125 on #102, copper downgraded to starter before the renewal so they shouldnt have been charged. closing it out",
+        "Agent",
+        "R9HTtq0IEYLMLIPOdYMMrR9HTtq0IEYLMLIPOdYMMr",
+    ];
+
+    const DIAGRAM: &str = r#"
+setup {
+  person agent Agent
+  browser page "/sandbox/www.google.com/R9HTtq0IEYLMLIPOdYMMr" {
+    state "search form"
+    state "Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
+    initial "search form"
+    on click from=agent to=origin next="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
+  }
+  element origin "input[aria-label^=\"Where from?\"] input[aria-label^=\"Where to?\"]" {
+    state "San Diego"
+    state "Lahore, Pakistan"
+    initial "San Diego"
+    on click from=agent to=origin next="Lahore, Pakistan"
+  }
+}
+action {
+  click from=agent to=origin {
+    message "refunded jordan the full $125 on #102, copper downgraded to starter before the renewal so they shouldnt have been charged. closing it out"
+  }
+}
+check {
+  invariant OriginEqualsSanDiego {
+    forall value origin {
+      eq value "San Diego"
+    }
+  }
+}
+"#;
+
+    fn attr(tag: &str, name: &str) -> Option<String> {
+        let from = tag.find(&format!(" {name}=\""))? + name.len() + 3;
+        tag[from..].split('"').next().map(String::from)
+    }
+
+    fn number(tag: &str, name: &str) -> f64 {
+        attr(tag, name).and_then(|v| v.parse().ok()).unwrap_or(0.0)
+    }
+
+    #[test]
+    fn each_label_wraps_to_two_lines_and_keeps_each_word() {
+        for s in LABELS {
+            for max in [VALUE, WRAP] {
+                let lines = wrap(s, max);
+                assert!(lines.len() <= 2, "{s} wraps to {} lines", lines.len());
+                let joined = lines.iter().fold(String::new(), |all, l| {
+                    match all.is_empty() || all.ends_with('/') {
+                        true => all + l,
+                        false => all + " " + l,
+                    }
+                });
+                assert_eq!(joined, s, "{s} loses text");
+            }
+        }
+    }
+
+    #[test]
+    fn each_text_is_inside_the_diagram() {
+        let d = weft_parse::parse(DIAGRAM).unwrap();
+        let styles = [
+            ("person", "user"),
+            ("browser", "app-window"),
+            ("element", "square-dashed-mouse-pointer"),
+        ]
+        .map(|(k, i)| (k.to_string(), i.to_string()));
+        let out = svg(&d, &styles, Theme::Light).unwrap();
+        let head = &out[..out.find('>').unwrap()];
+        assert!(head.contains(r#"style="max-width:100%;height:auto""#));
+        let view: Vec<f64> = attr(head, "viewBox")
+            .unwrap()
+            .split(' ')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let plan = plan(&d, true);
+        assert!(plan.heads.iter().all(|h| h.len() <= 2));
+        for chunk in out.split("<text").skip(1) {
+            let (tag, rest) = chunk.split_once('>').unwrap();
+            let content = rest.split("</text>").next().unwrap();
+            let size = number(tag, "font-size");
+            let bold = match number(tag, "font-weight") >= 600.0 {
+                true => 1.06,
+                false => 1.0,
+            };
+            let w = width(content, size) * bold;
+            let x = number(tag, "x");
+            let (left, right) = match tag.contains(r#"text-anchor="middle""#) {
+                true => (x - w / 2.0, x + w / 2.0),
+                false => (x, x + w),
+            };
+            assert!(
+                left >= view[0] && right <= view[0] + view[2],
+                "`{content}` spans {left:.0}..{right:.0} outside {:.0}..{:.0}",
+                view[0],
+                view[0] + view[2]
+            );
         }
     }
 }

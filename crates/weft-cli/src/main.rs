@@ -69,26 +69,15 @@ fn escape(s: &str) -> String {
 }
 
 fn summary(path: &str, d: &Diagram) -> String {
-    match d.verdict() {
-        Some(Verdict::Fails {
-            statement,
-            step,
-            evidence,
-            ..
-        }) => {
-            let s = &d.steps[step];
-            format!(
-                "✓ {path} · {statement} · step {} {} from={} to={} · {}",
-                step + 1,
-                s.send.name,
-                s.from,
-                s.to,
-                evidence.join(" · ")
-            )
-        }
-        Some(Verdict::Holds) => format!("✕ {path} · the run breaks no invariant"),
-        None => format!("✓ {path} · no check"),
-    }
+    let evidence = match d.verdict() {
+        Some(Verdict::Fails { evidence, .. }) => evidence,
+        _ => Vec::new(),
+    };
+    format!(
+        "✓ {path} · {} · {}",
+        d.check.as_ref().map_or(String::new(), |c| c.statement(d)),
+        evidence.join(" · ")
+    )
 }
 
 fn section(
@@ -98,10 +87,16 @@ fn section(
     config: &Config,
     theme: Theme,
 ) -> Result<String, String> {
-    let statement = d.check.as_ref().map_or("", |c| c.statement.as_str());
+    let (words, formula) = d
+        .check
+        .as_ref()
+        .map_or((String::new(), String::new()), |c| {
+            (c.statement(d), c.source(d))
+        });
     Ok(format!(
-        r#"<section><h2>{}</h2><div class="d">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
-        escape(statement),
+        r#"<section><h2>{}</h2><code>{}</code><div class="d">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
+        escape(&words),
+        escape(&formula),
         weft_draw::svg(d, &config.styles, theme)?,
         escape(path),
         escape(src)
@@ -159,15 +154,16 @@ fn page(r: &Report) -> String {
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Weft Report</title><style>
 body{{margin:0;background:{bg};color:{fg};font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;padding:24px max(16px,env(safe-area-inset-right)) 24px max(16px,env(safe-area-inset-left))}}
 h1{{font-size:22px;margin:0 0 6px}}
-h2{{font-size:17px;font-weight:600;margin:0 0 14px}}
+h2{{font-size:17px;font-weight:600;margin:0 0 6px}}
+code{{display:block;font:13px/1.5 ui-monospace,Menlo,monospace;color:{muted};margin:0 0 14px;overflow-wrap:anywhere}}
 .e{{color:{critical}}}
 p{{margin:0 0 8px;color:{muted}}}
-section{{border-top:1px solid {surface};padding:20px 0}}
-.d{{overflow-x:auto}}
-.d svg{{display:block}}
+main{{display:flex;flex-wrap:wrap;gap:0 48px}}
+section{{flex:1 1 auto;max-width:100%;min-width:0;border-top:1px solid {surface};padding:20px 0}}
+.d svg{{display:block;margin:0 auto}}
 details{{margin-top:8px;color:{muted};font-size:12px}}
 pre{{font:12px/1.5 ui-monospace,Menlo,monospace;background:{surface};color:{fg};padding:12px;border-radius:6px;overflow-x:auto}}
-</style></head><body><h1>Weft Report</h1><p>{} files · {wrong} wrong</p>{errors}{}</body></html>"#,
+</style></head><body><h1>Weft Report</h1><p>{} files · {wrong} wrong</p>{errors}<main>{}</main></body></html>"#,
         r.lines.len(),
         r.sections,
         bg = p.bg,
