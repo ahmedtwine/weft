@@ -104,10 +104,16 @@ unsafe fn text<'a>(
 unsafe fn diagram(
     ctx: *mut WeftContext,
     call: &str,
+    config: weft_string_t,
     source: weft_string_t,
 ) -> Result<Diagram, weft_result_t> {
     set_error(ctx, "");
-    weft_parse::parse(unsafe { text(ctx, call, "source", source) }?).map_err(|e| {
+    let config =
+        weft_parse::config(unsafe { text(ctx, call, "config", config) }?).map_err(|e| {
+            set_error(ctx, &format!("{call}: config: {e}"));
+            WEFT_E_PARSE
+        })?;
+    weft_parse::parse(unsafe { text(ctx, call, "source", source) }?, &config).map_err(|e| {
         set_error(ctx, &e.to_string());
         WEFT_E_PARSE
     })
@@ -120,26 +126,13 @@ pub unsafe extern "C" fn weft_render(
     format: u32,
     out_result: *mut weft_owned_string_t,
 ) -> weft_result_t {
-    let d = match unsafe { diagram(ctx, "weft_render", source) } {
+    let d = match unsafe { diagram(ctx, "weft_render", config, source) } {
         Ok(d) => d,
         Err(rc) => return rc,
     };
-    let styles = match unsafe { text(ctx, "weft_render", "config", config) }.and_then(|c| {
-        weft_parse::config(c).map_err(|e| {
-            set_error(ctx, &format!("weft_render: config: {e}"));
-            WEFT_E_PARSE
-        })
-    }) {
-        Ok(c) => c.styles,
-        Err(rc) => return rc,
-    };
     let drawn = match format {
-        f if f == weft_format_t::WEFT_FORMAT_SVG_LIGHT as u32 => {
-            weft_draw::svg(&d, &styles, Theme::Light)
-        }
-        f if f == weft_format_t::WEFT_FORMAT_SVG_DARK as u32 => {
-            weft_draw::svg(&d, &styles, Theme::Dark)
-        }
+        f if f == weft_format_t::WEFT_FORMAT_SVG_LIGHT as u32 => weft_draw::svg(&d, Theme::Light),
+        f if f == weft_format_t::WEFT_FORMAT_SVG_DARK as u32 => weft_draw::svg(&d, Theme::Dark),
         f if f == weft_format_t::WEFT_FORMAT_ASCII as u32 => weft_draw::ascii(&d),
         _ => {
             set_error(ctx, "weft_render: format is not a weft_format_t");
@@ -168,10 +161,11 @@ pub unsafe extern "C" fn weft_render(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_check(
     ctx: *mut WeftContext,
+    config: weft_string_t,
     source: weft_string_t,
     out_verdict: *mut weft_verdict_t,
 ) -> weft_result_t {
-    let d = match unsafe { diagram(ctx, "weft_check", source) } {
+    let d = match unsafe { diagram(ctx, "weft_check", config, source) } {
         Ok(d) => d,
         Err(rc) => return rc,
     };

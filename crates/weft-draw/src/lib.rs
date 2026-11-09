@@ -397,7 +397,7 @@ fn icon(name: &str) -> Option<&'static str> {
         .map(|i| ICONS[i].1)
 }
 
-pub fn styled(styles: &[(String, String)]) -> Result<(), String> {
+pub fn styled(styles: &[(weft_parse::Kind, String)]) -> Result<(), String> {
     match styles.iter().find(|(_, i)| icon(i).is_none()) {
         Some((kind, i)) => Err(format!("`style {kind}`: `{i}` is not a Lucide icon")),
         None => Ok(()),
@@ -523,19 +523,14 @@ fn paint_fields(out: &mut String, at: &Value, rows: &[Field], p: &Palette) {
     }
 }
 
-pub fn svg(d: &Diagram, styles: &[(String, String)], theme: Theme) -> Result<String, String> {
+pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
     let p = theme.palette();
     let icons = d
         .objects
         .iter()
         .map(|o| {
-            styles
-                .iter()
-                .find(|(k, _)| *k == o.kind)
-                .ok_or_else(|| format!("`{}` has no `style {}`", o.name, o.kind))
-                .and_then(|(k, i)| {
-                    icon(i).ok_or_else(|| format!("`style {k}`: `{i}` is not a Lucide icon"))
-                })
+            icon(&o.icon)
+                .ok_or_else(|| format!("`style {}`: `{}` is not a Lucide icon", o.kind, o.icon))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let plan = plan(d, true);
@@ -827,15 +822,18 @@ check {
         }
     }
 
+    const CONFIG: &str = r#"include "**/*.weft.kdl"
+theme light
+style person icon=user
+style browser icon=app-window
+style element icon=square-dashed-mouse-pointer"#;
+
+    fn diagram() -> Diagram {
+        weft_parse::parse(DIAGRAM, &weft_parse::config(CONFIG).unwrap()).unwrap()
+    }
+
     fn drawn() -> String {
-        let d = weft_parse::parse(DIAGRAM).unwrap();
-        let styles = [
-            ("person", "user"),
-            ("browser", "app-window"),
-            ("element", "square-dashed-mouse-pointer"),
-        ]
-        .map(|(k, i)| (k.to_string(), i.to_string()));
-        svg(&d, &styles, Theme::Light).unwrap()
+        svg(&diagram(), Theme::Light).unwrap()
     }
 
     #[test]
@@ -879,14 +877,8 @@ check {
 
     #[test]
     fn each_text_is_inside_the_diagram() {
-        let d = weft_parse::parse(DIAGRAM).unwrap();
-        let styles = [
-            ("person", "user"),
-            ("browser", "app-window"),
-            ("element", "square-dashed-mouse-pointer"),
-        ]
-        .map(|(k, i)| (k.to_string(), i.to_string()));
-        let out = svg(&d, &styles, Theme::Light).unwrap();
+        let d = diagram();
+        let out = svg(&d, Theme::Light).unwrap();
         let head = &out[..out.find('>').unwrap()];
         assert!(head.contains(r#"style="max-width:100%;height:auto""#));
         let view: Vec<f64> = attr(head, "viewBox")

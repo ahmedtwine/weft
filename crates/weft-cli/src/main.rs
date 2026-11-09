@@ -81,13 +81,7 @@ fn summary(path: &str, d: &Diagram) -> String {
     )
 }
 
-fn section(
-    path: &str,
-    src: &str,
-    d: &Diagram,
-    config: &Config,
-    theme: Theme,
-) -> Result<String, String> {
+fn section(path: &str, src: &str, d: &Diagram, theme: Theme) -> Result<String, String> {
     let (words, formula) = d
         .check
         .as_ref()
@@ -98,7 +92,7 @@ fn section(
         r#"<section><h2>{}</h2><code>{}</code><div class="d">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
         escape(&words),
         escape(&formula),
-        weft_draw::svg(d, &config.styles, theme)?,
+        weft_draw::svg(d, theme)?,
         escape(path),
         escape(src)
     ))
@@ -106,14 +100,8 @@ fn section(
 
 fn diagram(file: &PathBuf, config: &Config) -> Result<(String, Diagram), String> {
     let src = fs::read_to_string(file).map_err(|e| e.to_string())?;
-    let d = weft_parse::parse(&src).map_err(|e| e.to_string())?;
-    match d.unstyled(&config.styles) {
-        Some(o) => Err(format!(
-            "`{}` has no `style {}` in {CONFIG}",
-            o.name, o.kind
-        )),
-        None => Ok((src, d)),
-    }
+    let d = weft_parse::parse(&src, config).map_err(|e| e.to_string())?;
+    Ok((src, d))
 }
 
 fn report(drawn: bool) -> Result<Report, String> {
@@ -130,7 +118,7 @@ fn report(drawn: bool) -> Result<Report, String> {
             .display()
             .to_string();
         let line = diagram(&file, &config).and_then(|(src, d)| match drawn {
-            true => section(&path, &src, &d, &config, theme).map(|s| {
+            true => section(&path, &src, &d, theme).map(|s| {
                 out.sections.push_str(&s);
                 summary(&path, &d)
             }),

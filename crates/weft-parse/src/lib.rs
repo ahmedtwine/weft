@@ -29,10 +29,60 @@ pub struct Move {
     pub to: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Person,
+    Element,
+    Browser,
+    Db,
+    Api,
+    File,
+}
+
+impl Kind {
+    const ALL: [Kind; 6] = [
+        Kind::Person,
+        Kind::Element,
+        Kind::Browser,
+        Kind::Db,
+        Kind::Api,
+        Kind::File,
+    ];
+
+    fn parse(s: &str) -> Result<Kind, String> {
+        match s {
+            "person" => Ok(Kind::Person),
+            "element" => Ok(Kind::Element),
+            "browser" => Ok(Kind::Browser),
+            "db" => Ok(Kind::Db),
+            "api" => Ok(Kind::Api),
+            "file" => Ok(Kind::File),
+            other => Err(format!(
+                "`{other}` is not a kind; a kind is any of {}",
+                list(&Kind::ALL.map(|k| format!("`{k}`")))
+            )),
+        }
+    }
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            Kind::Person => "person",
+            Kind::Element => "element",
+            Kind::Browser => "browser",
+            Kind::Db => "db",
+            Kind::Api => "api",
+            Kind::File => "file",
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Object {
     pub name: String,
-    pub kind: String,
+    pub kind: Kind,
+    pub icon: String,
     pub label: String,
     pub value: Option<String>,
     pub initial: Option<String>,
@@ -233,10 +283,10 @@ impl Check {
 }
 
 fn kind(d: &Diagram, objects: &[String]) -> String {
-    let kinds: HashSet<&str> = objects
+    let kinds: HashSet<Kind> = objects
         .iter()
         .filter_map(|o| d.object(o))
-        .map(|o| o.kind.as_str())
+        .map(|o| o.kind)
         .collect();
     match kinds.into_iter().collect::<Vec<_>>().as_slice() {
         [one] => format!("{one} "),
@@ -257,12 +307,6 @@ impl Move {
 type State = BTreeMap<String, String>;
 
 impl Diagram {
-    pub fn unstyled(&self, styles: &[(String, String)]) -> Option<&Object> {
-        self.objects
-            .iter()
-            .find(|o| !styles.iter().any(|(k, _)| *k == o.kind))
-    }
-
     fn object(&self, name: &str) -> Option<&Object> {
         self.objects.iter().find(|o| o.name == name)
     }
@@ -527,8 +571,14 @@ fn on(n: &KdlNode) -> Result<Move, String> {
     })
 }
 
-fn object(n: &KdlNode) -> Result<Object, String> {
-    let kind = name(n);
+fn object(n: &KdlNode, config: &Config) -> Result<Object, String> {
+    let kind = Kind::parse(name(n))?;
+    let icon = config
+        .styles
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, i)| i.clone())
+        .ok_or_else(|| format!("`{kind}` has no `style {kind}` in the config"))?;
     let at = |e: String| format!("{kind}: {e}");
     let [object_name, label]: [String; 2] = shape(n, 2, &["value"], true)
         .map_err(at)?
@@ -537,7 +587,8 @@ fn object(n: &KdlNode) -> Result<Object, String> {
     let at = |e: String| format!("{kind} {object_name}: {e}");
     let mut o = Object {
         name: object_name.clone(),
-        kind: kind.to_string(),
+        kind,
+        icon,
         label,
         value: n.get("value").map(text),
         initial: None,
@@ -748,7 +799,7 @@ fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
     Ok(())
 }
 
-fn build(doc: &KdlDocument) -> Result<Diagram, String> {
+fn build(doc: &KdlDocument, config: &Config) -> Result<Diagram, String> {
     let mut d = Diagram::default();
     let mut seen = HashSet::new();
     for n in doc.nodes() {
@@ -765,7 +816,7 @@ fn build(doc: &KdlDocument) -> Result<Diagram, String> {
         }
         for c in n.iter_children() {
             match (parent, name(c)) {
-                ("setup", _) => d.objects.push(object(c)?),
+                ("setup", _) => d.objects.push(object(c, config)?),
                 ("action", _) => d.steps.push(step(c)?),
                 ("check", "invariant") if d.check.is_none() => d.check = Some(invariant(c)?),
                 ("check", "invariant") => return Err("`check` holds one `invariant`".into()),
@@ -994,7 +1045,7 @@ fn document(src: &str) -> Result<KdlDocument, Error> {
 pub struct Config {
     pub include: Vec<String>,
     pub theme: String,
-    pub styles: Vec<(String, String)>,
+    pub styles: Vec<(Kind, String)>,
 }
 
 pub fn config(src: &str) -> Result<Config, Error> {
@@ -1009,7 +1060,8 @@ pub fn config(src: &str) -> Result<Config, Error> {
             "include" => c.include.extend(shape(n, 1, &[], false).map_err(Error)?),
             "theme" => c.theme = shape(n, 1, &[], false).map_err(Error)?.remove(0),
             "style" => {
-                let kind = shape(n, 1, &["icon"], false).map_err(Error)?.remove(0);
+                let named = shape(n, 1, &["icon"], false).map_err(Error)?.remove(0);
+                let kind = Kind::parse(&named).map_err(|e| Error(format!("`style`: {e}")))?;
                 if c.styles.iter().any(|(k, _)| *k == kind) {
                     return Err(Error(format!("`style {kind}` is set twice")));
                 }
@@ -1027,6 +1079,6 @@ pub fn config(src: &str) -> Result<Config, Error> {
     }
 }
 
-pub fn parse(src: &str) -> Result<Diagram, Error> {
-    build(&document(src)?).map_err(Error)
+pub fn parse(src: &str, config: &Config) -> Result<Diagram, Error> {
+    build(&document(src)?, config).map_err(Error)
 }

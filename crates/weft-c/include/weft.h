@@ -48,6 +48,9 @@ weft_result_t weft_render(weft_context_t *ctx,
                           uint32_t format,
                           weft_owned_string_t *out_result);
 
-weft_result_t weft_check(weft_context_t *ctx, weft_string_t source, weft_verdict_t *out_verdict);
+weft_result_t weft_check(weft_context_t *ctx,
+                         weft_string_t config,
+                         weft_string_t source,
+                         weft_verdict_t *out_verdict);
 
 weft_result_t weft_owned_string_free(weft_context_t *ctx, weft_owned_string_t *result);
