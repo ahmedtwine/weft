@@ -1105,7 +1105,11 @@ fn build(doc: &KdlDocument) -> Result<Diagram, String> {
     }
 }
 
-fn choices(objects: &[Object], now: &State, e: Event) -> Result<Vec<(String, Vec<String>)>, String> {
+fn choices(
+    objects: &[Object],
+    now: &State,
+    e: Event,
+) -> Result<Vec<(String, Vec<String>)>, String> {
     let mut out = Vec::new();
     for o in objects {
         let lines: Vec<&Move> = o.moves.iter().filter(|m| m.takes(e)).collect();
@@ -1139,7 +1143,10 @@ fn run(objects: &[Object], init: &[(String, String)], steps: &mut [Step]) -> Res
     let last = steps.len();
     for (k, s) in steps.iter_mut().enumerate() {
         let at = |e: String| format!("step {}: {e}", k + 1);
-        for x in [&s.from, &s.to].into_iter().chain(s.shows.iter().map(|(o, _)| o)) {
+        for x in [&s.from, &s.to]
+            .into_iter()
+            .chain(s.shows.iter().map(|(o, _)| o))
+        {
             if !objects.iter().any(|o| &o.name == x) {
                 return Err(at(format!("unknown object `{x}`")));
             }
@@ -1147,8 +1154,14 @@ fn run(objects: &[Object], init: &[(String, String)], steps: &mut [Step]) -> Res
         let given = choices(objects, &now, (&s.from, &s.send.name, &s.to)).map_err(at)?;
         let mut set = Vec::new();
         for (name_of, options) in &given {
-            let o = objects.iter().find(|o| &o.name == name_of).ok_or("unknown object")?;
-            match (s.shows.iter().find(|(x, _)| x == name_of), options.as_slice()) {
+            let o = objects
+                .iter()
+                .find(|o| &o.name == name_of)
+                .ok_or("unknown object")?;
+            match (
+                s.shows.iter().find(|(x, _)| x == name_of),
+                options.as_slice(),
+            ) {
                 (Some((_, v)), _) => {
                     let shown = o.leaf(v).map_err(at)?;
                     if !options.contains(&shown) && k + 1 < last {
@@ -1178,7 +1191,10 @@ fn run(objects: &[Object], init: &[(String, String)], steps: &mut [Step]) -> Res
                     s.send.name
                 )));
             }
-            let o = objects.iter().find(|o| &o.name == name_of).ok_or("unknown object")?;
+            let o = objects
+                .iter()
+                .find(|o| &o.name == name_of)
+                .ok_or("unknown object")?;
             set.push((name_of.clone(), o.leaf(v).map_err(at)?));
         }
         now.extend(set.iter().cloned());
@@ -1233,7 +1249,11 @@ fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
                     .iter()
                     .filter_map(|(o, _)| next.get(o).map(|v| format!("{o}={v}")))
                     .collect();
-                let path = [trace.clone(), vec![format!("{} {} {} ({})", e.0, e.1, e.2, shown.join(", "))]].concat();
+                let path = [
+                    trace.clone(),
+                    vec![format!("{} {} {} ({})", e.0, e.1, e.2, shown.join(", "))],
+                ]
+                .concat();
                 if !c.body.holds(d, &Vec::new(), &ctx) {
                     return Err(format!(
                         "`{}` fails in the setup after {}",
