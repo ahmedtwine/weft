@@ -10,6 +10,7 @@ use globset::{Glob, GlobSetBuilder};
 use ignore::WalkBuilder;
 use weft_draw::Theme;
 use weft_parse::{Config, Diagram, Verdict};
+use weft_simulator::Outcome;
 
 const USAGE: &str = "usage: weft [--ui]";
 const CONFIG: &str = "weft.kdl";
@@ -69,16 +70,100 @@ fn escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn summary(path: &str, d: &Diagram) -> String {
+struct Table {
+    head: &'static [&'static str],
+    rows: Vec<Vec<String>>,
+}
+
+impl Table {
+    fn text(&self) -> Vec<String> {
+        let line = |cells: Vec<&str>| format!("  {}", cells.join(" · "));
+        std::iter::once(line(self.head.to_vec()))
+            .chain(self.rows.iter().map(|cells| {
+                line(
+                    cells
+                        .iter()
+                        .map(|c| match c.is_empty() {
+                            true => "-",
+                            false => c,
+                        })
+                        .collect(),
+                )
+            }))
+            .collect()
+    }
+}
+
+fn headline(o: &Outcome) -> String {
+    format!(
+        "adapter {} · {} cases · {} runs · {}",
+        o.adapter,
+        o.cases,
+        o.runs,
+        o.found
+            .as_ref()
+            .map_or("holds".to_string(), |t| match t.len() {
+                1 => "fails after 1 step".to_string(),
+                n => format!("fails after {n} steps"),
+            })
+    )
+}
+
+fn tables(o: &Outcome) -> Vec<Table> {
+    let trace = Table {
+        head: &["step", "action", "input", "state", "check"],
+        rows: o
+            .found
+            .iter()
+            .flatten()
+            .enumerate()
+            .map(|(k, l)| {
+                vec![
+                    (k + 1).to_string(),
+                    l.step.clone(),
+                    l.input.clone(),
+                    l.state.clone(),
+                    l.evidence.join(" · "),
+                ]
+            })
+            .collect(),
+    };
+    let tally = Table {
+        head: &["action", "steps", "checks"],
+        rows: o
+            .tally
+            .iter()
+            .map(|t| vec![t.step.clone(), t.steps.to_string(), t.checks.to_string()])
+            .collect(),
+    };
+    [trace, tally]
+        .into_iter()
+        .filter(|t| !t.rows.is_empty())
+        .collect()
+}
+
+fn summary(path: &str, d: &Diagram, run: Option<&Outcome>) -> String {
     let evidence = match d.verdict() {
         Some(Verdict::Fails { evidence, .. }) => evidence,
         _ => Vec::new(),
     };
-    format!(
-        "✓ {path} · {} · {}",
+    let head = format!(
+        "{} {path} · {} · {}",
+        match run.and_then(|o| o.found.as_ref()) {
+            Some(_) => '✕',
+            None => '✓',
+        },
         d.check.as_ref().map_or(String::new(), |c| c.english()),
         evidence.join(" · ")
-    )
+    );
+    match run {
+        None => head,
+        Some(o) => [head, format!("  {}", headline(o))]
+            .into_iter()
+            .chain(tables(o).iter().flat_map(Table::text))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
 }
 
 fn section(path: &str, src: &str, d: &Diagram, theme: Theme) -> Result<String, String> {
@@ -120,9 +205,14 @@ fn report(drawn: bool) -> Result<Report, String> {
         let line = diagram(&file, &config).and_then(|(src, d)| match drawn {
             true => section(&path, &src, &d, theme).map(|s| {
                 out.sections.push_str(&s);
-                summary(&path, &d)
+                summary(&path, &d, None)
             }),
-            false => Ok(summary(&path, &d)),
+            false => config
+                .adapter
+                .as_ref()
+                .map(|a| weft_simulator::run(&d, &file, a))
+                .transpose()
+                .map(|run| summary(&path, &d, run.as_ref())),
         });
         out.lines
             .push(line.unwrap_or_else(|e| format!("✕ {path} · {e}")));

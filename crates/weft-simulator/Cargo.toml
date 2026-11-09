@@ -1,0 +1,10 @@
+[package]
+name = "weft-simulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hegeltest = "=0.52.0"
+serde_json = "1"
+weft-parse = { path = "../weft-parse" }

@@ -32,7 +32,7 @@ impl Value {
 
 pub type Pairs = BTreeMap<String, Value>;
 
-type State = BTreeMap<String, Pairs>;
+pub type State = BTreeMap<String, Pairs>;
 
 #[derive(Debug, Clone, Default)]
 pub struct Diagram {
@@ -416,6 +416,29 @@ impl Check {
         })
     }
 
+    pub fn judge(&self, cur: &State, nxt: &State, verb: &str) -> Option<Vec<String>> {
+        let c = Ctx { cur, nxt, verb };
+        self.broken(&c).map(|o| self.evidence(&c, o))
+    }
+
+    pub fn applies(&self, cur: &State, nxt: &State, verb: &str) -> bool {
+        let c = Ctx { cur, nxt, verb };
+        let now = self.now(&c);
+        self.objects.iter().any(|o| self.body.guarded(&now, o))
+    }
+
+    pub fn reads(&self) -> Vec<(&String, &String)> {
+        let mut out: Vec<(&String, &String)> = Vec::new();
+        for o in &self.objects {
+            for (k, _) in self.body.fields() {
+                if !out.contains(&(o, k)) {
+                    out.push((o, k));
+                }
+            }
+        }
+        out
+    }
+
     pub fn source(&self) -> String {
         let k = self.kind.to_string();
         format!(
@@ -438,6 +461,21 @@ impl Check {
 impl Diagram {
     fn object(&self, name: &str) -> Option<&Object> {
         self.objects.iter().find(|o| o.name == name)
+    }
+
+    pub fn enabled(&self, now: &State) -> Vec<(&Object, &str, Pairs)> {
+        let mut out: Vec<(&Object, &str, Pairs)> = Vec::new();
+        for o in &self.objects {
+            for m in &o.moves {
+                if out.iter().any(|(x, v, _)| x.name == o.name && *v == m.verb) {
+                    continue;
+                }
+                if let Ok(p) = moved(o, now, &m.verb) {
+                    out.push((o, &m.verb, p));
+                }
+            }
+        }
+        out
     }
 
     pub fn initial(&self, name: &str) -> Option<String> {
@@ -1073,14 +1111,6 @@ fn run(objects: &[Object], init: &State, steps: &mut [Step], c: &Check) -> Resul
 }
 
 fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
-    let mut events: Vec<(&Object, &str)> = Vec::new();
-    for o in &d.objects {
-        for m in &o.moves {
-            if !events.iter().any(|(x, v)| x.name == o.name && *v == m.verb) {
-                events.push((o, &m.verb));
-            }
-        }
-    }
     let start = d.init.clone();
     let first = Ctx {
         cur: &start,
@@ -1093,10 +1123,7 @@ fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
     let mut seen = HashSet::from([start.clone()]);
     let mut queue = VecDeque::from([(start, Vec::<String>::new())]);
     while let Some((now, trace)) = queue.pop_front() {
-        for (o, verb) in &events {
-            let Ok(v) = moved(o, &now, verb) else {
-                continue;
-            };
+        for (o, verb, v) in d.enabled(&now) {
             let mut next = now.clone();
             let path = [
                 trace.clone(),
@@ -1104,12 +1131,7 @@ fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
             ]
             .concat();
             next.insert(o.name.clone(), v);
-            let ctx = Ctx {
-                cur: &now,
-                nxt: &next,
-                verb,
-            };
-            if c.broken(&ctx).is_some() {
+            if c.judge(&now, &next, verb).is_some() {
                 return Err(format!(
                     "`{}` fails in the setup after {}",
                     c.source(),
@@ -1145,10 +1167,16 @@ fn document(src: &str) -> Result<KdlDocument, Error> {
     })
 }
 
+pub struct Adapter {
+    pub name: String,
+    pub cases: u64,
+}
+
 pub struct Config {
     pub include: Vec<String>,
     pub theme: String,
     pub styles: Vec<(Kind, String)>,
+    pub adapter: Option<Adapter>,
 }
 
 pub fn config(src: &str) -> Result<Config, Error> {
@@ -1157,6 +1185,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
         include: Vec::new(),
         theme: String::new(),
         styles: Vec::new(),
+        adapter: None,
     };
     for n in doc.nodes() {
         match name(n) {
@@ -1170,8 +1199,26 @@ pub fn config(src: &str) -> Result<Config, Error> {
                 }
                 c.styles.push((kind, need(n, "icon").map_err(Error)?));
             }
+            "adapter" if c.adapter.is_some() => {
+                return Err(Error("`adapter` is set twice".into()));
+            }
+            "adapter" => {
+                let name = shape(n, 1, &["cases"], false).map_err(Error)?.remove(0);
+                let cases = match n.get("cases") {
+                    Some(KdlValue::Integer(k)) => u64::try_from(*k).ok().filter(|k| *k > 0),
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    Error(format!(
+                        "`adapter {name}` takes `cases=<count>`, a count above 0"
+                    ))
+                })?;
+                c.adapter = Some(Adapter { name, cases });
+            }
             other => {
-                return Err(Error(format!("`{other}` is not include, theme or style")));
+                return Err(Error(format!(
+                    "`{other}` is not include, theme, style or adapter"
+                )));
             }
         }
     }
