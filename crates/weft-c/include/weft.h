@@ -8,6 +8,7 @@ typedef enum {
   WEFT_E_PARSE = -1,
   WEFT_E_INVALID_ARG = -2,
   WEFT_E_RENDER = -3,
+  WEFT_E_REFUSED = -4,
 } weft_result_t;
 
 typedef enum {
@@ -54,3 +55,11 @@ weft_result_t weft_check(weft_context_t *ctx,
                          weft_verdict_t *out_verdict);
 
 weft_result_t weft_owned_string_free(weft_context_t *ctx, weft_owned_string_t *result);
+
+weft_result_t weft_diagram_join(weft_context_t *ctx, weft_string_t name, weft_string_t hello);
+
+weft_result_t weft_diagram_turn(weft_context_t *ctx,
+                                weft_string_t report,
+                                weft_owned_string_t *out_turn);
+
+weft_result_t weft_diagram_done(weft_context_t *ctx, weft_string_t said);

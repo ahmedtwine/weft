@@ -1,10 +1,13 @@
 #![allow(non_camel_case_types, clippy::missing_safety_doc)]
 
+mod client;
+
 use std::ffi::c_char;
 use std::ptr;
 
 use weft_draw::{Code, Theme};
 use weft_parse::{Diagram, Verdict};
+use weft_wire::{DONE, JOIN, Reader, TURN};
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct weft_string_t {
@@ -19,6 +22,7 @@ pub enum weft_result_t {
     WEFT_E_PARSE = -1,
     WEFT_E_INVALID_ARG = -2,
     WEFT_E_RENDER = -3,
+    WEFT_E_REFUSED = -4,
 }
 
 use weft_result_t::*;
@@ -118,6 +122,26 @@ unsafe fn diagram(
         WEFT_E_PARSE
     })
 }
+unsafe fn give(
+    ctx: *mut WeftContext,
+    call: &str,
+    out_result: *mut weft_owned_string_t,
+    text: String,
+) -> weft_result_t {
+    let Some(out) = (unsafe { out_result.as_mut() }) else {
+        set_error(ctx, &format!("{call}: out_result is NULL"));
+        return WEFT_E_INVALID_ARG;
+    };
+    let mut bytes = text.into_bytes();
+    let len = bytes.len();
+    bytes.push(0);
+    *out = weft_string_t {
+        data: Box::into_raw(bytes.into_boxed_slice()).cast::<c_char>(),
+        len,
+    };
+    WEFT_OK
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_render(
     ctx: *mut WeftContext,
@@ -143,24 +167,13 @@ pub unsafe extern "C" fn weft_render(
             return WEFT_E_INVALID_ARG;
         }
     };
-    let Some(out) = (unsafe { out_result.as_mut() }) else {
-        set_error(ctx, "weft_render: out_result is NULL");
-        return WEFT_E_INVALID_ARG;
-    };
-    let mut bytes = match drawn {
-        Ok(drawn) => drawn.into_bytes(),
+    match drawn {
+        Ok(drawn) => unsafe { give(ctx, "weft_render", out_result, drawn) },
         Err(e) => {
             set_error(ctx, &e);
-            return WEFT_E_RENDER;
+            WEFT_E_RENDER
         }
-    };
-    let len = bytes.len();
-    bytes.push(0);
-    *out = weft_string_t {
-        data: Box::into_raw(bytes.into_boxed_slice()).cast::<c_char>(),
-        len,
-    };
-    WEFT_OK
+    }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_check(
@@ -215,4 +228,64 @@ pub unsafe extern "C" fn weft_owned_string_free(
         len: 0,
     };
     WEFT_OK
+}
+
+unsafe fn sent(
+    ctx: *mut WeftContext,
+    call: &str,
+    index: u16,
+    parts: &[(&str, weft_string_t)],
+) -> Result<Vec<u8>, weft_result_t> {
+    set_error(ctx, "");
+    let parts = parts
+        .iter()
+        .map(|(what, part)| unsafe { text(ctx, call, what, *part) }.map(str::as_bytes))
+        .collect::<Result<Vec<_>, _>>()?;
+    client::said(index, &parts).map_err(|e| {
+        set_error(ctx, &e);
+        WEFT_E_REFUSED
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn weft_diagram_join(
+    ctx: *mut WeftContext,
+    name: weft_string_t,
+    hello: weft_string_t,
+) -> weft_result_t {
+    let parts = [("name", name), ("hello", hello)];
+    match unsafe { sent(ctx, "weft_diagram_join", JOIN, &parts) } {
+        Ok(_) => WEFT_OK,
+        Err(rc) => rc,
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn weft_diagram_turn(
+    ctx: *mut WeftContext,
+    report: weft_string_t,
+    out_turn: *mut weft_owned_string_t,
+) -> weft_result_t {
+    let call = "weft_diagram_turn";
+    let turn = unsafe { sent(ctx, call, TURN, &[("report", report)]) }.and_then(|reply| {
+        Reader(&reply)
+            .bytes()
+            .map(|turn| String::from_utf8_lossy(turn).into_owned())
+            .map_err(|_| {
+                set_error(ctx, "weft_diagram_turn: the reply of weft has no turn");
+                WEFT_E_REFUSED
+            })
+    });
+    match turn {
+        Ok(turn) => unsafe { give(ctx, call, out_turn, turn) },
+        Err(rc) => rc,
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn weft_diagram_done(
+    ctx: *mut WeftContext,
+    said: weft_string_t,
+) -> weft_result_t {
+    match unsafe { sent(ctx, "weft_diagram_done", DONE, &[("said", said)]) } {
+        Ok(_) => WEFT_OK,
+        Err(rc) => rc,
+    }
 }

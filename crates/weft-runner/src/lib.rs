@@ -1,51 +1,75 @@
 mod bun;
 mod setup;
 mod transport;
-mod wire;
 
 use std::path::Path;
+use std::time::Duration;
 
 use weft_parse::{Adapter, Config, Diagram};
-use weft_simulator::Runner;
+use weft_simulator::{Member, Outcome, simulate};
 
-use bun::Bun;
 use setup::Setup;
-use wire::Wire;
+use transport::{HUB, listen};
 
-pub fn start<'a>(
+const WAIT: Duration = Duration::from_secs(60);
+
+fn verbs(d: &Diagram) -> Vec<String> {
+    let mut all: Vec<String> = d
+        .objects
+        .iter()
+        .flat_map(|o| &o.moves)
+        .map(|m| m.verb.clone())
+        .collect();
+    all.sort_unstable();
+    all.dedup();
+    all
+}
+
+pub fn run(
     config: &Config,
-    d: &'a Diagram,
+    d: &Diagram,
     file: &Path,
-) -> Result<Box<dyn Runner + 'a>, String> {
-    let dir = file
-        .strip_prefix(".")
-        .unwrap_or(file)
-        .parent()
-        .unwrap_or(Path::new(""));
-    Ok(match (&config.transport, &config.adapter) {
-        (Some(transport), _) => Box::new(Wire::new(transport::connect(transport)?, dir)?),
-        (None, Adapter::Default) => Box::new(Setup::new(d, file)),
-        (None, Adapter::Bun) => Box::new(Wire::new(
-            Box::new(Bun::start(&file.with_extension("ts"))?),
-            dir,
-        )?),
-    })
+    key: Option<&str>,
+) -> Result<Outcome, String> {
+    let file = file.strip_prefix(".").unwrap_or(file);
+    if (&config.transport, &config.adapter) == (&None, &Adapter::Default) {
+        return simulate(d, &mut [Box::new(Setup::new(d, file))], config.cases, key);
+    }
+    let name = file.display().to_string();
+    let at = listen(config.transport.as_ref())?;
+    let session = HUB.open(&name, file.parent().unwrap_or(Path::new("")));
+    let bun = match config.adapter {
+        Adapter::Bun => Some(bun::start(file, &name, &at, session.clone())?),
+        Adapter::Default => None,
+    };
+    let outcome = session.members(&verbs(d), WAIT).and_then(|remotes| {
+        let mut members: Vec<Box<dyn Member>> = remotes
+            .into_iter()
+            .map(|remote| Box::new(remote) as Box<dyn Member>)
+            .collect();
+        simulate(d, &mut members, config.cases, key)
+    });
+    HUB.close(&name);
+    let told = bun.and_then(|bun| bun.join().ok());
+    match (outcome, told) {
+        (Err(e), Some(told)) => Err(format!("{e}: {told}")),
+        (outcome, _) => outcome,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{Value as Json, json};
-    use std::io::{BufRead, BufReader, Read, Write};
-    use std::net::TcpListener;
-    use std::os::unix::net::UnixListener;
+    use std::env;
+    use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, Mutex};
     use std::thread;
-    use weft_parse::{Ran, Span};
-    use weft_simulator::{Outcome, Source};
+    use std::time::Instant;
 
-    const CODE: &str = "src/page.ts";
+    use weft_simulator::{CALLS, PRINT};
+    use weft_wire::{DONE, JOIN, Reader, TURN, Writer, receive, send};
+
     const FILE: &str = "invariants/page.weft.kdl";
-
     const PAGE: &str = r#"
 setup {
   person user
@@ -60,356 +84,351 @@ setup {
 }
 action {
   send from=user to=page
-  reload from=user to=page page.count=2
+  reload from=user to=page page.count=0
 }
 check {
   invariant {
     forall browser page {
-      and {
-        implies {
-          in step send
-          eq (next)browser.count {
-            iadd browser.count 1
-          }
-        }
-        implies {
-          in step reload
-          eq (next)browser.count browser.count
-        }
+      implies {
+        in step reload
+        eq (next)browser.count browser.count
       }
     }
   }
 }
 "#;
+    const VALID: u32 = 0;
+    const OVERRUN: u32 = 2;
+    const INTERESTING: u32 = 3;
+    const STOP: &str = "-1:";
+    const MOST: i64 = 1000;
 
-    fn schema() -> Json {
-        let actions = ["send", "reload"].map(|verb| {
-            json!({ "type": "object", "weft": verb, "from": [CODE], "run": CODE, "properties": {} })
-        });
-        json!({
-            "state": {
-                "type": "object",
-                "properties": {
-                    "page": {
-                        "type": "object",
-                        "properties": {
-                            "count": { "type": "integer", "weft": "page.count", "from": [CODE] }
-                        }
-                    }
+    type App = Arc<Mutex<i64>>;
+
+    enum Link {
+        Unix(UnixStream),
+        Http(String),
+    }
+
+    struct Runner {
+        link: Link,
+        pending: Vec<Writer>,
+    }
+
+    fn index(name: &str) -> u16 {
+        CALLS
+            .iter()
+            .position(|c| *c == name)
+            .map_or(u16::MAX, |i| i as u16)
+    }
+
+    fn call(index: u16) -> Writer {
+        let mut w = Writer::default();
+        w.put(index);
+        w
+    }
+
+    impl Runner {
+        fn ask(&mut self, last: Writer) -> Result<Vec<u8>, String> {
+            let mut message = Writer::default();
+            message.put(PRINT);
+            message.put(self.pending.len() as u32 + 1);
+            for w in self.pending.drain(..).chain([last]) {
+                message.0.extend(w.0);
+            }
+            let reply = match &mut self.link {
+                Link::Unix(stream) => send(stream, &message.0)
+                    .and_then(|()| receive(stream))
+                    .map_err(|e| e.to_string())?,
+                Link::Http(url) => ureq_post(url, &message.0)?,
+            };
+            let mut r = Reader(&reply);
+            match r.get::<i32>().map_err(|_| "short")? {
+                0 => Ok(r.0.to_vec()),
+                code => Err(format!(
+                    "{code}: {}",
+                    String::from_utf8_lossy(r.bytes().map_err(|_| "short")?)
+                )),
+            }
+        }
+
+        fn hegel(&mut self, name: &str, args: impl FnOnce(&mut Writer)) -> Result<Vec<u8>, String> {
+            let mut w = call(index(name));
+            args(&mut w);
+            self.ask(w)
+        }
+
+        fn said(&mut self, call: u16, parts: &[&str]) -> Result<Vec<u8>, String> {
+            let mut w = self::call(call);
+            parts.iter().for_each(|part| w.bytes(part.as_bytes()));
+            self.ask(w)
+        }
+
+        fn turn(&mut self, report: &str) -> Result<String, String> {
+            let reply = self.said(TURN, &[report])?;
+            Ok(String::from_utf8_lossy(Reader(&reply).bytes().map_err(|_| "short")?).into_owned())
+        }
+    }
+
+    fn ureq_post(url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+        let host = url.trim_start_matches("http://");
+        let (address, path) = host.split_once('/').unwrap_or((host, ""));
+        let mut stream = std::net::TcpStream::connect(address).map_err(|e| e.to_string())?;
+        use std::io::{Read, Write};
+        write!(
+            stream,
+            "POST /{path} HTTP/1.1\r\nhost: {address}\r\ncontent-length: {}\r\n\r\n",
+            body.len()
+        )
+        .and_then(|()| stream.write_all(body))
+        .map_err(|e| e.to_string())?;
+        let mut reader = std::io::BufReader::new(stream);
+        let mut size = 0;
+        loop {
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut reader, &mut line).map_err(|e| e.to_string())?;
+            match line.trim().split_once(':') {
+                Some((name, value)) if name.eq_ignore_ascii_case("content-length") => {
+                    size = value.trim().parse().map_err(|_| "size")?;
                 }
-            },
-            "actions": actions
+                Some(_) => {}
+                None if line.trim().is_empty() => break,
+                None => {}
+            }
+        }
+        let mut body = vec![0; size];
+        reader.read_exact(&mut body).map_err(|e| e.to_string())?;
+        Ok(body)
+    }
+
+    fn state(app: &App) -> String {
+        format!(r#"{{"page":{{"count":{}}}}}"#, app.lock().map_or(0, |n| *n))
+    }
+
+    fn runner(
+        at: &str,
+        hello: &str,
+        app: App,
+        play: fn(&mut Runner, u64, &App, &str) -> Result<String, String>,
+    ) -> Result<(), String> {
+        let link = match at.strip_prefix("unix:") {
+            Some(path) => Link::Unix(UnixStream::connect(path).map_err(|e| e.to_string())?),
+            None => Link::Http(format!("{at}/{}", hello.len())),
+        };
+        let mut r = Runner {
+            link,
+            pending: Vec::new(),
+        };
+        r.said(JOIN, &[FILE, hello])?;
+        let run = Reader(&r.hegel("hegel_run_start", |w| {
+            w.put(0u64);
+            w.put(false);
+        })?)
+        .get::<u64>()
+        .map_err(|_| "short")?;
+        loop {
+            let tc = Reader(&r.hegel("hegel_next_test_case", |w| w.put(run))?)
+                .get::<u64>()
+                .map_err(|_| "short")?;
+            if tc == 0 {
+                break;
+            }
+            let mut now = r.turn("{}")?;
+            let status = loop {
+                match (now.contains("\"done\""), now.contains("\"failed\"")) {
+                    (true, _) => break VALID,
+                    (_, true) => break INTERESTING,
+                    _ => match play(&mut r, tc, &app, &now) {
+                        Ok(next) => now = next,
+                        Err(e) if e.starts_with(STOP) => break OVERRUN,
+                        Err(e) => return Err(e),
+                    },
+                }
+            };
+            let mut w = call(index("hegel_mark_complete"));
+            w.put(tc);
+            w.put(status);
+            w.opt((status == INTERESTING).then_some(&b"runner"[..]));
+            r.pending.push(w);
+        }
+        r.hegel("hegel_run_result", |w| w.put(run))?;
+        let verb = if hello.contains("\"send\"") {
+            "send"
+        } else {
+            "reload"
+        };
+        r.said(
+            DONE,
+            &[&format!(
+                r#"{{"ran":{{"reset":[{{"file":"src/page.ts","from":1,"to":2}}],"actions":{{"{verb}":[{{"file":"src/page.ts","from":3,"to":4}}]}}}}}}"#
+            )],
+        )?;
+        Ok(())
+    }
+
+    fn sender(r: &mut Runner, tc: u64, app: &App, now: &str) -> Result<String, String> {
+        let report = match now {
+            n if n.contains("\"reset\"") => {
+                *app.lock().map_err(|e| e.to_string())? = 0;
+                format!(r#"{{"state":{}}}"#, state(app))
+            }
+            n if n.contains("\"run\"") => {
+                let drawn = r.hegel("hegel_generate_integer", |w| {
+                    w.put(tc);
+                    w.put(0i64);
+                    w.put(MOST);
+                })?;
+                let n = Reader(&drawn).get::<i64>().map_err(|_| "short")?;
+                *app.lock().map_err(|e| e.to_string())? = n;
+                format!(r#"{{"state":{},"input":"n={n}"}}"#, state(app))
+            }
+            _ => format!(r#"{{"state":{}}}"#, state(app)),
+        };
+        r.turn(&report)
+    }
+
+    fn reloader(r: &mut Runner, _: u64, app: &App, now: &str) -> Result<String, String> {
+        let report = match now.contains("\"run\"") {
+            true => {
+                let mut n = app.lock().map_err(|e| e.to_string())?;
+                if *n > 5 {
+                    *n = 0;
+                }
+                drop(n);
+                r#"{"state":{},"input":""}"#.to_string()
+            }
+            false => r#"{"state":{}}"#.to_string(),
+        };
+        r.turn(&report)
+    }
+
+    fn reloader_that_keeps(r: &mut Runner, _: u64, _: &App, now: &str) -> Result<String, String> {
+        r.turn(match now.contains("\"run\"") {
+            true => r#"{"state":{},"input":""}"#,
+            false => r#"{"state":{}}"#,
         })
     }
 
-    fn answer(count: &mut i64, message: &Json) -> Json {
-        match (
-            message.get("reset"),
-            message.get("apply").and_then(Json::as_str),
-        ) {
-            (Some(_), _) => *count = 0,
-            (_, Some("send")) => *count += 1,
-            _ => {}
-        }
-        if message.get("ran").is_some() {
-            return json!({ "ran": {
-                "reset": [{ "file": "page.ts", "from": 3, "to": 5 }],
-                "actions": {
-                    "send": [{ "file": "page.ts", "from": 7, "to": 9 }],
-                    "reload": [{ "file": "page.ts", "from": 11, "to": 11 }]
-                }
-            } });
-        }
-        json!({ "state": { "page": { "count": *count } }, "score": *count })
-    }
+    const SENDS: &str = r#"{"reads":[{"tag":"page.count","from":["src/page.ts"]}],"actions":[{"tag":"send","from":["src/page.ts"],"run":["src/page.ts"]}],"mocks":[]}"#;
+    const RELOADS: &str = r#"{"reads":[],"actions":[{"tag":"reload","from":["src/page.ts"],"run":["src/page.ts"]}],"mocks":[]}"#;
 
-    fn served(reply: impl FnMut(&Json) -> Json + Send + 'static) -> String {
-        sent(schema(), reply)
-    }
-
-    fn sent(schema: Json, mut reply: impl FnMut(&Json) -> Json + Send + 'static) -> String {
-        let path = std::env::temp_dir().join(format!(
-            "weft-unix-{}-{:?}",
-            std::process::id(),
-            thread::current().id()
-        ));
-        let listener = UnixListener::bind(&path).unwrap();
-        let bound = path.clone();
-        thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            std::fs::remove_file(bound).unwrap();
-            let mut writer = stream.try_clone().unwrap();
-            writeln!(writer, "{schema}").unwrap();
-            for line in BufReader::new(stream).lines() {
-                let message: Json = serde_json::from_str(&line.unwrap()).unwrap();
-                let out = reply(&message);
-                if message.get("done").is_some() {
-                    break;
-                }
-                writeln!(writer, "{out}").unwrap();
-            }
-        });
-        path.display().to_string()
-    }
-
-    fn simulated(line: &str) -> (Config, Outcome) {
+    fn two(
+        transport: &str,
+        reload: fn(&mut Runner, u64, &App, &str) -> Result<String, String>,
+    ) -> Result<Outcome, String> {
         let config = weft_parse::config(&format!(
-            "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\n{line}"
+            "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\n{transport}\nadapter default cases=100\n"
         ))
-        .unwrap();
-        let d = weft_parse::parse(PAGE, &config).unwrap();
-        let mut runner = start(&config, &d, Path::new(FILE)).unwrap();
-        let o = weft_simulator::simulate(&d, runner.as_mut(), config.cases, None).unwrap();
-        (config, o)
-    }
-
-    #[test]
-    fn the_setup_runs_each_step_and_holds_without_an_adapter_line() {
-        let (config, o) = simulated("");
-        assert_eq!(
-            (config.adapter, config.transport, o.cases, o.runs),
-            (Adapter::Default, None, 100, 100)
-        );
-        assert!(!o.failed);
-        assert!(o.tally.iter().all(|t| t.steps > 0 && t.checks == t.steps));
-        assert_eq!(
-            o.ran,
-            Ran {
-                reset: vec![span(FILE, 4, 4)],
-                actions: vec![
-                    ("send".into(), vec![span(FILE, 6, 6)]),
-                    ("reload".into(), vec![span(FILE, 9, 9)]),
-                ],
-            }
-        );
-    }
-
-    fn span(file: &str, from: usize, to: usize) -> Span {
-        Span {
-            file: file.into(),
-            from,
-            to,
+        .map_err(|e| e.to_string())?;
+        let d = weft_parse::parse(PAGE, &config).map_err(|e| e.to_string())?;
+        let at = listen(config.transport.as_ref())?;
+        let app = App::default();
+        let runners = [
+            (
+                SENDS,
+                sender as fn(&mut Runner, u64, &App, &str) -> Result<String, String>,
+            ),
+            (RELOADS, reload),
+        ]
+        .map(|(hello, play)| {
+            let (at, app) = (at.clone(), app.clone());
+            thread::spawn(move || runner(&at, hello, app, play))
+        });
+        let outcome = run(&config, &d, Path::new(FILE), None);
+        for r in runners {
+            r.join().map_err(|_| "a runner panics")??;
         }
+        outcome
+    }
+
+    fn socket(name: &str) -> String {
+        format!(
+            "transport unix path=\"{}\"",
+            env::temp_dir()
+                .join(format!("weft-{name}-{}.sock", std::process::id()))
+                .display()
+        )
     }
 
     #[test]
-    fn a_runner_sends_the_code_of_reset_and_of_each_action_one_time_for_a_run() {
-        let mut count = 0;
-        let (sent, seen) = std::sync::mpsc::channel();
-        let path = served(move |message| {
-            sent.send(message.get("ran").is_some()).unwrap();
-            answer(&mut count, message)
-        });
-        let (_, o) = simulated(&format!("transport unix path=\"{path}\""));
-        assert_eq!(
-            o.ran,
-            Ran {
-                reset: vec![span("page.ts", 3, 5)],
-                actions: vec![
-                    ("send".into(), vec![span("page.ts", 7, 9)]),
-                    ("reload".into(), vec![span("page.ts", 11, 11)]),
-                ],
-            }
-        );
-        assert_eq!(seen.try_iter().filter(|ran| *ran).count(), 1);
-    }
-
-    #[test]
-    fn a_runner_that_sends_no_code_stops_the_run() {
-        let mut count = 0;
-        let path = served(move |message| match message.get("ran") {
-            Some(_) => json!({ "state": { "page": { "count": count } } }),
-            None => answer(&mut count, message),
-        });
-        let config = weft_parse::config(&format!(
-            "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\ntransport unix path=\"{path}\""
-        ))
-        .unwrap();
-        let d = weft_parse::parse(PAGE, &config).unwrap();
-        let mut runner = start(&config, &d, Path::new(FILE)).unwrap();
-        let error = weft_simulator::simulate(&d, runner.as_mut(), config.cases, None)
-            .err()
-            .unwrap();
-        assert!(
-            error.starts_with("the runner answers `") && error.ends_with("` to `ran`"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn a_runner_on_a_unix_socket_gets_the_messages_of_the_bun_harness() {
-        let mut count = 0;
-        let path = served(move |message| answer(&mut count, message));
-        let (config, o) = simulated(&format!(
-            "adapter bun cases=30\ntransport unix path=\"{path}\""
-        ));
-        assert_eq!(
-            (config.adapter, config.transport),
-            (Adapter::Bun, Some(weft_parse::Transport::Unix(path)))
-        );
-        assert_eq!((o.cases, o.runs), (30, 30));
+    fn two_runners_on_a_unix_socket_share_each_case_and_hold() -> Result<(), String> {
+        let o = two(&socket("hold"), reloader_that_keeps)?;
         assert!(!o.failed);
+        assert!(o.tally.iter().all(|t| t.steps > 0), "each verb runs");
+        Ok(())
     }
 
     #[test]
-    fn hegel_shrinks_a_value_that_the_runner_draws_in_a_step() {
-        let mut count = 0;
-        let mut waiting = false;
-        let path = served(move |message| {
-            let drawn = message.get("drawn").and_then(Json::as_i64);
-            let stop = message.get("stop").is_some();
-            let send = message.get("apply").and_then(Json::as_str) == Some("send");
-            match (waiting, drawn, stop, send) {
-                (true, Some(n), _, _) => {
-                    waiting = false;
-                    count += if n >= 4 { 2 } else { 1 };
-                    json!({ "state": { "page": { "count": count } } })
-                }
-                (true, None, true, _) => {
-                    waiting = false;
-                    json!({ "error": "weft stops the step" })
-                }
-                (true, None, false, _) => json!({ "error": format!("{message} is not drawn") }),
-                (false, _, _, true) => {
-                    waiting = true;
-                    json!({ "draw": { "type": "integer", "minimum": 0, "maximum": 9 } })
-                }
-                (false, _, _, false) => answer(&mut count, message),
-            }
-        });
-        let (_, o) = simulated(&format!("transport unix path=\"{path}\""));
+    fn a_failing_case_of_two_runners_shrinks_to_the_least_value_and_steps() -> Result<(), String> {
+        let started = Instant::now();
+        let o = two(&socket("shrink"), reloader)?;
         assert!(o.failed);
-        let rows: Vec<(String, &str, String)> = o
+        let steps: Vec<(String, String)> = o
             .trace
             .iter()
-            .skip(1)
-            .map(|l| (l.step(), l.input.as_str(), weft_simulator::view(&l.state)))
+            .map(|l| (l.step(), l.input.clone()))
             .collect();
         assert_eq!(
-            rows,
-            [("send to=page".into(), "drawn=4", "page: count = 2".into())]
+            steps,
+            [
+                ("start".to_string(), String::new()),
+                ("send to=page".to_string(), "n=6".to_string()),
+                ("reload to=page".to_string(), String::new()),
+            ],
+            "after {:?}",
+            started.elapsed()
         );
+        Ok(())
     }
 
     #[test]
-    fn a_tag_and_the_function_of_an_action_are_from_a_file_outside_the_driver() {
-        let driver = "invariants/page.weft.ts";
-        let changed = |path: &str, value: Json| {
-            let mut schema = schema();
-            *schema.pointer_mut(path).unwrap() = value;
-            schema
-        };
-        let cases = [
-            (
-                changed("/state/properties/page/properties/count/from", json!([])),
-                "the tag `page.count` has no `from`: the runner names the file that registers each tag".to_string(),
-            ),
-            (
-                changed("/state/properties/page/properties/count/from", json!([CODE, driver])),
-                format!("the tag `page.count` is from `{driver}`, a file of the driver: only the code outside `invariants` gives it"),
-            ),
-            (
-                changed("/actions/0/from", json!([driver])),
-                format!("the tag `send` is from `{driver}`, a file of the driver: only the code outside `invariants` gives it"),
-            ),
-            (
-                changed("/actions/1/run", Json::Null),
-                "the function of the action `reload` has no `run`: the runner names the file that exports the function".to_string(),
-            ),
-            (
-                changed("/actions/1/run", json!(driver)),
-                format!("the function of the action `reload` is from `{driver}`, a file of the driver: only the code outside `invariants` gives it"),
-            ),
-        ];
-        for (schema, error) in cases {
-            let mut count = 0;
-            let path = sent(schema, move |message| answer(&mut count, message));
-            let config = weft_parse::config(&format!(
-                "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\ntransport unix path=\"{path}\""
-            ))
-            .unwrap();
-            let d = weft_parse::parse(PAGE, &config).unwrap();
-            let file = format!("./{FILE}");
-            assert_eq!(start(&config, &d, Path::new(&file)).err(), Some(error));
-        }
-    }
-
-    struct Cut;
-
-    impl Source for Cut {
-        fn draw(&self, _: &weft_simulator::Choice) -> Json {
-            panic!("cut")
-        }
-        fn index(&self, _: usize) -> usize {
-            panic!("cut")
-        }
-        fn target(&self, _: f64) {}
-    }
-
-    #[test]
-    fn a_runner_gets_stop_before_done_when_the_last_case_ends_in_a_draw() {
-        let (sent, seen) = std::sync::mpsc::channel();
-        let path = served(move |message| {
-            sent.send(message.as_object().unwrap().keys().next().cloned().unwrap())
-                .unwrap();
-            match message.get("apply") {
-                Some(_) => json!({ "draw": { "type": "boolean" } }),
-                None => json!({ "error": "weft stops the step" }),
-            }
-        });
-        let mut wire = Wire::new(
-            transport::connect(&weft_parse::Transport::Unix(path)).unwrap(),
-            Path::new(FILE).parent().unwrap(),
-        )
-        .unwrap();
-        let cut = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            wire.apply("page", "send", &json!({}), &Cut)
-        }));
-        assert!(cut.is_err());
-        drop(wire);
-        assert_eq!(seen.iter().collect::<Vec<_>>(), ["apply", "stop", "done"]);
-    }
-
-    #[test]
-    fn a_runner_over_http_gives_the_schema_on_get_and_each_state_on_post() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/weft", listener.local_addr().unwrap());
-        thread::spawn(move || {
-            let mut count = 0;
-            for stream in listener.incoming() {
-                let mut reader = BufReader::new(stream.unwrap());
-                let mut head = Vec::new();
-                let mut line = String::new();
-                while reader.read_line(&mut line).unwrap() > 2 {
-                    head.push(std::mem::take(&mut line).to_lowercase());
-                }
-                let size = head
-                    .iter()
-                    .find_map(|h| h.strip_prefix("content-length:"))
-                    .map_or(0, |n| n.trim().parse().unwrap());
-                let mut body = vec![0; size];
-                reader.read_exact(&mut body).unwrap();
-                let out = match head[0].starts_with("get") {
-                    true => schema(),
-                    false => answer(&mut count, &serde_json::from_slice(&body).unwrap()),
-                }
-                .to_string();
-                write!(
-                    reader.get_mut(),
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
-                    out.len()
-                )
-                .unwrap();
-            }
-        });
-        let (config, o) = simulated(&format!(
-            "adapter default cases=30\ntransport http url=\"{url}\""
-        ));
-        assert_eq!(
-            (config.adapter, config.transport),
-            (Adapter::Default, Some(weft_parse::Transport::Http(url)))
-        );
-        assert_eq!((o.cases, o.runs), (30, 30));
+    fn two_runners_over_http_share_each_case_and_hold() -> Result<(), String> {
+        let o = two(
+            "transport http url=\"http://127.0.0.1:7413\"",
+            reloader_that_keeps,
+        )?;
         assert!(!o.failed);
+        Ok(())
+    }
+
+    #[test]
+    fn the_setup_adapter_runs_the_diagram_without_the_code() -> Result<(), String> {
+        let config = weft_parse::config("include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\nadapter default cases=50\n")
+            .map_err(|e| e.to_string())?;
+        let d = weft_parse::parse(PAGE, &config).map_err(|e| e.to_string())?;
+        let o = run(&config, &d, Path::new(FILE), None)?;
+        assert!(!o.failed);
+        assert_eq!(o.cases, 50);
+        Ok(())
+    }
+
+    #[test]
+    fn weft_refuses_a_tag_that_a_file_of_the_driver_registers() {
+        let hello = SENDS.replace("[\"src/page.ts\"]", "[\"invariants/page.weft.ts\"]");
+        let config = weft_parse::config(&format!(
+            "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\n{}\nadapter default cases=10\n",
+            socket("refuse")
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+        let d = weft_parse::parse(PAGE, &config).unwrap_or_else(|e| panic!("{e}"));
+        let at = listen(config.transport.as_ref()).unwrap_or_else(|e| panic!("{e}"));
+        let joined = thread::spawn(move || {
+            runner(
+                &at,
+                Box::leak(hello.into_boxed_str()),
+                App::default(),
+                sender,
+            )
+        });
+        let error = run(&config, &d, Path::new(FILE), None)
+            .err()
+            .unwrap_or_default();
+        let _ = joined.join();
+        assert!(
+            error.contains(
+                "the tag `page.count` is from `invariants/page.weft.ts`, a file of the driver"
+            ),
+            "{error}"
+        );
     }
 }

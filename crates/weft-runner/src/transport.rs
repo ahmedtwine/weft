@@ -1,87 +1,130 @@
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::thread;
 
-use serde_json::{Value as Json, json};
+use weft_parse::Transport;
+use weft_simulator::{Hub, Peer};
+use weft_wire::{receive, send};
 
-pub const WAIT: Duration = Duration::from_secs(60);
+type Peers = Arc<Mutex<HashMap<String, Arc<Mutex<Peer>>>>>;
 
-pub trait Transport {
-    fn schema(&mut self) -> Result<Json, String>;
-    fn ask(&mut self, message: &Json) -> Result<Json, String>;
-    fn done(&mut self) {}
-}
+pub static HUB: LazyLock<Arc<Hub>> = LazyLock::new(Arc::default);
+static OPEN: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex::default);
 
-pub struct Unix {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
-}
-
-impl Unix {
-    pub fn new(stream: UnixStream) -> Result<Unix, String> {
-        stream.set_nonblocking(false).map_err(|e| e.to_string())?;
-        stream
-            .set_read_timeout(Some(WAIT))
-            .map_err(|e| e.to_string())?;
-        let writer = stream.try_clone().map_err(|e| e.to_string())?;
-        Ok(Unix {
-            reader: BufReader::new(stream),
-            writer,
-        })
-    }
-}
-
-impl Transport for Unix {
-    fn schema(&mut self) -> Result<Json, String> {
-        let mut line = String::new();
-        match self.reader.read_line(&mut line) {
-            Ok(0) => Err("the runner closes the socket".to_string()),
-            Ok(_) => serde_json::from_str(&line).map_err(|e| format!("{e}: {line}")),
-            Err(e) => Err(e.to_string()),
+fn unix(stream: UnixStream) {
+    let mut peer = Peer::default();
+    let mut stream = stream;
+    while let Ok(message) = receive(&mut stream) {
+        if send(&mut stream, &peer.serve(&HUB, &message)).is_err() {
+            break;
         }
     }
+}
 
-    fn ask(&mut self, message: &Json) -> Result<Json, String> {
-        writeln!(self.writer, "{message}").map_err(|e| e.to_string())?;
-        self.schema()
+fn request(reader: &mut BufReader<TcpStream>) -> Option<(String, Vec<u8>)> {
+    let mut line = String::new();
+    reader.read_line(&mut line).ok().filter(|n| *n > 0)?;
+    let path = line.split(' ').nth(1)?.to_string();
+    let mut size = 0;
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header).ok().filter(|n| *n > 0)?;
+        match header.trim().split_once(':') {
+            Some((name, value)) if name.eq_ignore_ascii_case("content-length") => {
+                size = value.trim().parse().ok()?;
+            }
+            Some(_) => {}
+            None => break,
+        }
     }
+    let mut body = vec![0; size];
+    reader.read_exact(&mut body).ok()?;
+    Some((path, body))
+}
 
-    fn done(&mut self) {
-        let _ = writeln!(self.writer, "{}", json!({ "done": true }));
+fn http(stream: TcpStream, peers: Peers) {
+    let Ok(mut writer) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(stream);
+    while let Some((path, body)) = request(&mut reader) {
+        let peer = peers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(path)
+            .or_default()
+            .clone();
+        let reply = peer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .serve(&HUB, &body);
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\n\r\n",
+            reply.len()
+        );
+        if writer
+            .write_all(head.as_bytes())
+            .and_then(|()| writer.write_all(&reply))
+            .is_err()
+        {
+            break;
+        }
     }
 }
 
-pub struct Http {
-    agent: ureq::Agent,
-    url: String,
+fn open(transport: Option<&Transport>) -> Result<String, String> {
+    let socket = |path: String| {
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).map_err(|e| format!("{path}: {e}"))?;
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                thread::spawn(move || unix(stream));
+            }
+        });
+        Ok(format!("unix:{path}"))
+    };
+    match transport {
+        None => socket(
+            env::temp_dir()
+                .join(format!("weft-{}.sock", std::process::id()))
+                .display()
+                .to_string(),
+        ),
+        Some(Transport::Unix(path)) => socket(path.clone()),
+        Some(Transport::Http(url)) => {
+            let host = url
+                .strip_prefix("http://")
+                .map(|rest| rest.split('/').next().unwrap_or_default())
+                .ok_or_else(|| {
+                    format!("`transport http url={url}` has no `http://<host>:<port>`")
+                })?;
+            let listener = TcpListener::bind(host).map_err(|e| format!("{host}: {e}"))?;
+            let peers = Peers::default();
+            thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let peers = peers.clone();
+                    thread::spawn(move || http(stream, peers));
+                }
+            });
+            Ok(url.trim_end_matches('/').to_string())
+        }
+    }
 }
 
-impl Transport for Http {
-    fn schema(&mut self) -> Result<Json, String> {
-        self.agent
-            .get(self.url.as_str())
-            .call()
-            .and_then(|mut r| r.body_mut().read_json())
-            .map_err(|e| format!("GET {}: {e}", self.url))
+pub fn listen(transport: Option<&Transport>) -> Result<String, String> {
+    let key = transport.map_or(String::new(), Transport::to_string);
+    let mut all = OPEN.lock().unwrap_or_else(|p| p.into_inner());
+    match all.get(&key) {
+        Some(at) => Ok(at.clone()),
+        None => {
+            let at = open(transport)?;
+            all.insert(key, at.clone());
+            Ok(at)
+        }
     }
-
-    fn ask(&mut self, message: &Json) -> Result<Json, String> {
-        self.agent
-            .post(self.url.as_str())
-            .send_json(message)
-            .and_then(|mut r| r.body_mut().read_json())
-            .map_err(|e| format!("POST {}: {e}", self.url))
-    }
-}
-
-pub fn connect(transport: &weft_parse::Transport) -> Result<Box<dyn Transport>, String> {
-    Ok(match transport {
-        weft_parse::Transport::Unix(path) => Box::new(Unix::new(
-            UnixStream::connect(path).map_err(|e| format!("{path}: {e}"))?,
-        )?),
-        weft_parse::Transport::Http(url) => Box::new(Http {
-            agent: ureq::Agent::new_with_defaults(),
-            url: url.clone(),
-        }),
-    })
 }

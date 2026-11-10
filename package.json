@@ -1,0 +1,17 @@
+{
+  "name": "weft",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./sdk/index.ts",
+    "./harness": "./sdk/harness.ts"
+  },
+  "dependencies": {
+    "@hegeldev/hegel": "0.5.3",
+    "koffi": "^3.0.2"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  }
+}

@@ -1,304 +1,77 @@
-use std::cell::Cell;
 use std::env;
-use std::panic::{self, AssertUnwindSafe};
+use std::ffi::c_char;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::ptr;
 
-use hegel::extras::serde_json::values;
-use hegel::generators::{self as gs, Generator};
-use hegel::{Database, HealthCheck, NondeterminismStrictness, Settings, TestCase, Verbosity};
-use serde_json::{Map, Value as Json};
+use hegel_c::hegel_result_t::{HEGEL_E_ASSUME, HEGEL_E_STOP_TEST, HEGEL_OK};
+use hegel_c::{
+    HegelContext, HegelRun, HegelRunResult, HegelStateMachine, HegelTestCase, hegel_result_t,
+    hegel_string_t,
+};
 
-use crate::{Bound, Case, Choice, Format, Source, Stop};
-
-const STOP: &str = "weft";
 const STORE: &str = "weft";
-const STEPS: i64 = 20;
-const DEPTH: usize = 3;
+const STEP: &str = "weft.step";
+const QUIET: u32 = 1;
+const FILTER_TOO_MUCH: u32 = 1 << 0;
+const TOO_SLOW: u32 = 1 << 1;
+const FAILED: u32 = 1;
+const ERROR: u32 = 2;
+pub const VALID: u32 = 0;
+pub const INVALID: u32 = 1;
+pub const OVERRUN: u32 = 2;
+pub const INTERESTING: u32 = 3;
 
-struct Drawer<'c> {
-    choice: &'c Choice,
-    open: Arc<Vec<(&'c str, &'c Choice)>>,
-    depth: usize,
+pub enum Halt {
+    Overrun,
+    Invalid,
+    Fatal(String),
 }
 
-impl<'c> Drawer<'c> {
-    fn of(&self, choice: &'c Choice) -> Drawer<'c> {
-        Drawer {
-            choice,
-            open: Arc::clone(&self.open),
-            depth: self.depth,
-        }
-    }
-
-    fn last(&self) -> bool {
-        self.depth >= DEPTH
-    }
-
-    fn most(&self, item: &Choice, min: usize, max: Option<usize>) -> Option<usize> {
-        match (self.last() && !item.ends(), loops(item)) {
-            (true, _) => Some(min),
-            (false, true) => {
-                let wide = min + DEPTH - self.depth;
-                Some(max.map_or(wide, |max| max.min(wide)))
-            }
-            (false, false) => max,
-        }
-    }
-
-    fn sized<G: Generator<Json>>(
-        &self,
-        all: gs::VecGenerator<G, Json>,
-        item: &Choice,
-        min: usize,
-        max: Option<usize>,
-    ) -> gs::VecGenerator<G, Json> {
-        match self.most(item, min, max) {
-            Some(max) => all.min_size(min).max_size(max),
-            None => all.min_size(min),
-        }
-    }
-
-    fn number(&self, tc: &TestCase, min: Bound, max: Bound) -> f64 {
-        let any = gs::floats::<f64>().allow_nan(false).allow_infinity(false);
-        let low = match min {
-            Bound::Open => any,
-            Bound::At(n) => any.min_value(n),
-            Bound::Past(n) => any.min_value_exclusive(n),
-        };
-        match max {
-            Bound::Open => low,
-            Bound::At(n) => low.max_value(n),
-            Bound::Past(n) => low.max_value_exclusive(n),
-        }
-        .do_draw(tc)
-    }
-
-    fn format(&self, tc: &TestCase, format: Format) -> String {
-        match format {
-            Format::Email => gs::emails().do_draw(tc),
-            Format::Uri => gs::urls().do_draw(tc),
-            Format::Uuid => gs::uuids().do_draw(tc),
-            Format::Date => gs::date_strings().do_draw(tc),
-            Format::Time => gs::time_strings().do_draw(tc),
-            Format::DateTime => gs::datetime_strings().do_draw(tc),
-            Format::Ipv4 => gs::ip_addresses().v4().do_draw(tc).to_string(),
-            Format::Ipv6 => gs::ip_addresses().v6().do_draw(tc).to_string(),
-            Format::Hostname => gs::domains().do_draw(tc),
-        }
+impl From<String> for Halt {
+    fn from(e: String) -> Halt {
+        Halt::Fatal(e)
     }
 }
 
-fn python(pattern: &str) -> String {
-    let mut out = String::new();
-    let mut class = false;
-    let mut chars = pattern.chars();
-    while let Some(c) = chars.next() {
-        let set = match (c, class) {
-            ('\\', _) => match chars.next() {
-                Some('d') => Some("0-9"),
-                Some('w') => Some("A-Za-z0-9_"),
-                Some('s') => Some(" \\t\\n\\r\\f\\v"),
-                Some(other) => {
-                    out.extend(['\\', other]);
-                    None
-                }
-                None => None,
-            },
-            ('$', false) => {
-                out.push_str("\\Z");
-                None
-            }
-            (c, _) => {
-                class = match c {
-                    '[' => true,
-                    ']' => false,
-                    _ => class,
-                };
-                out.push(c);
-                None
-            }
-        };
-        match (set, class) {
-            (Some(set), true) => out.push_str(set),
-            (Some(set), false) => out.extend(["[", set, "]"]),
-            (None, _) => {}
-        }
-    }
-    out
-}
-
-fn loops(choice: &Choice) -> bool {
-    match choice {
-        Choice::Var(_) => true,
-        Choice::Rec(_, _, shown) => loops(shown),
-        Choice::AnyOf(all) | Choice::Tuple(all) => all.iter().any(loops),
-        Choice::Array(item, ..) => loops(item),
-        Choice::Record(key, value) => loops(key) || loops(value),
-        Choice::Object(fields) => fields.iter().any(|(_, c, _)| loops(c)),
-        _ => false,
+pub fn text(bytes: &[u8]) -> hegel_string_t {
+    hegel_string_t {
+        data: bytes.as_ptr().cast::<c_char>(),
+        len: bytes.len(),
     }
 }
 
-fn kind(choice: &Choice) -> &'static str {
-    match choice {
-        Choice::Any => "weft.any",
-        Choice::Bool => "weft.bool",
-        Choice::Int(..) => "weft.int",
-        Choice::Text(..) => "weft.text",
-        Choice::Pattern(_) => "weft.pattern",
-        Choice::Format(_) => "weft.format",
-        Choice::Number(..) => "weft.number",
-        Choice::Enum(_) => "weft.enum",
-        Choice::AnyOf(_) => "weft.any_of",
-        Choice::Array(..) => "weft.array",
-        Choice::Tuple(_) => "weft.tuple",
-        Choice::Record(..) => "weft.record",
-        Choice::Object(_) => "weft.object",
-        Choice::Rec(..) => "weft.rec",
-        Choice::Var(_) => "weft.var",
+pub unsafe fn raw<'a>(data: *const u8, len: usize) -> &'a [u8] {
+    match data.is_null() {
+        true => &[],
+        false => unsafe { std::slice::from_raw_parts(data, len) },
     }
 }
 
-impl Generator<Json> for Drawer<'_> {
-    fn label(&self) -> u64 {
-        gs::label_from_name(kind(self.choice))
-    }
+pub unsafe fn bytes<'a>(s: hegel_string_t) -> &'a [u8] {
+    unsafe { raw(s.data.cast::<u8>(), s.len) }
+}
 
-    fn do_draw(&self, tc: &TestCase) -> Json {
-        match self.choice {
-            Choice::Any => values().do_draw(tc),
-            Choice::Bool => Json::from(gs::booleans().do_draw(tc)),
-            Choice::Int(min, max) => Json::from(
-                gs::integers::<i64>()
-                    .min_value(*min)
-                    .max_value(*max)
-                    .do_draw(tc),
-            ),
-            Choice::Text(min, max) => Json::from(match max {
-                Some(max) => gs::text().min_size(*min).max_size(*max).do_draw(tc),
-                None => gs::text().min_size(*min).do_draw(tc),
-            }),
-            Choice::Pattern(pattern) => Json::from(
-                gs::from_regex(&python(pattern))
-                    .fullmatch(false)
-                    .do_draw(tc),
-            ),
-            Choice::Format(format) => Json::from(self.format(tc, *format)),
-            Choice::Number(min, max) => Json::from(self.number(tc, *min, *max)),
-            Choice::Enum(values) => gs::sampled_from(values.as_slice()).do_draw(tc),
-            Choice::AnyOf(all) => gs::one_of(
-                all.iter()
-                    .filter(|c| !self.last() || c.ends())
-                    .map(|c| self.of(c)),
-            )
-            .do_draw(tc),
-            Choice::Array(item, min, max, unique) => Json::Array(
-                self.sized(gs::vecs(self.of(item)), item, *min, *max)
-                    .unique(*unique)
-                    .do_draw(tc),
-            ),
-            Choice::Tuple(all) => {
-                Json::Array(all.iter().map(|c| tc.draw_silent(self.of(c))).collect())
-            }
-            Choice::Record(key, value) => {
-                let keys = self.of(key).map(|k| match k {
-                    Json::String(k) => k,
-                    k => k.to_string(),
-                });
-                let all = gs::btree_maps(keys, self.of(value));
-                Json::Object(
-                    match self.most(value, 0, None) {
-                        Some(max) => all.max_size(max),
-                        None => all,
-                    }
-                    .do_draw(tc)
-                    .into_iter()
-                    .collect::<Map<_, _>>(),
-                )
-            }
-            Choice::Object(fields) => Json::Object(
-                fields
-                    .iter()
-                    .filter_map(|(k, c, required)| {
-                        match (*required, self.last() && !c.ends()) {
-                            (true, _) => Some(tc.draw_silent(self.of(c))),
-                            (false, true) => None,
-                            (false, false) => tc.draw_silent(gs::optional(self.of(c))),
-                        }
-                        .map(|v| (k.clone(), v))
-                    })
-                    .collect::<Map<_, _>>(),
-            ),
-            Choice::Rec(key, body, shown) => Drawer {
-                choice: shown,
-                open: Arc::new([self.open.as_slice(), &[(key.as_str(), &**body)]].concat()),
-                depth: self.depth,
-            }
-            .do_draw(tc),
-            Choice::Var(key) => {
-                let (_, body) = self
-                    .open
-                    .iter()
-                    .rev()
-                    .find(|(k, _)| k == key)
-                    .unwrap_or_else(|| panic!("the schema `{key}` is not open"));
-                Drawer {
-                    choice: body,
-                    open: Arc::clone(&self.open),
-                    depth: self.depth + 1,
-                }
-                .do_draw(tc)
-            }
-        }
+pub fn said(ctx: *mut HegelContext) -> String {
+    String::from_utf8_lossy(unsafe { bytes(hegel_c::hegel_context_last_error(ctx)) }).into_owned()
+}
+
+fn checked(ctx: *mut HegelContext, code: hegel_result_t) -> Result<(), Halt> {
+    match code {
+        HEGEL_OK => Ok(()),
+        HEGEL_E_STOP_TEST => Err(Halt::Overrun),
+        HEGEL_E_ASSUME => Err(Halt::Invalid),
+        code => Err(Halt::Fatal(format!(
+            "Hegel gives {}: {}",
+            code as i32,
+            said(ctx)
+        ))),
     }
 }
 
-struct Drawn<'b> {
-    tc: &'b TestCase,
-    best: &'b Cell<Option<f64>>,
-}
-
-impl Source for Drawn<'_> {
-    fn draw(&self, choice: &Choice) -> Json {
-        self.tc.draw_silent(Drawer {
-            choice,
-            open: Arc::new(Vec::new()),
-            depth: 0,
-        })
-    }
-
-    fn index(&self, count: usize) -> usize {
-        self.tc
-            .draw_silent(gs::integers::<usize>().min_value(0).max_value(count - 1))
-    }
-
-    fn target(&self, score: f64) {
-        self.best
-            .set(Some(self.best.get().map_or(score, |b| b.max(score))));
-    }
-}
-
-fn said(p: &(dyn std::any::Any + Send)) -> String {
-    p.downcast_ref::<&str>()
-        .map(|s| s.to_string())
-        .or_else(|| p.downcast_ref::<String>().cloned())
-        .unwrap_or_default()
-}
-
-fn settings(cases: u64, key: Option<&str>) -> Settings {
-    let settings = Settings::new()
-        .test_cases(cases)
-        .suppress_health_check([HealthCheck::TooSlow])
-        .nondeterminism_strictness(NondeterminismStrictness::Error)
-        .verbosity(Verbosity::Quiet)
-        .print_blob(false);
-    match key {
-        Some(key) => settings
-            .database(Database::Path(store()))
-            .database_key(key.to_string()),
-        None => settings.database(Database::Disabled),
-    }
+macro_rules! hegel {
+    ($ctx:expr, $name:ident($($arg:expr),*)) => {
+        checked($ctx, unsafe { hegel_c::$name($ctx, $($arg),*) })
+    };
 }
 
 fn store() -> String {
@@ -311,34 +84,211 @@ fn store() -> String {
         .to_string()
 }
 
-fn steps(tc: &TestCase) -> i64 {
-    let full = tc.draw_silent(gs::booleans());
-    let some = tc.draw_silent(gs::integers::<i64>().min_value(0).max_value(STEPS));
-    if full { STEPS } else { some }
+pub struct Engine {
+    ctx: *mut HegelContext,
+    run: *mut HegelRun,
+    step: u64,
 }
 
-pub fn run(cases: u64, key: Option<&str>, case: &mut dyn Case) -> Result<(), String> {
-    let hegel = || {
-        hegel::Hegel::new(|tc: TestCase| {
-            let best = Cell::new(None);
-            let source = Drawn {
-                tc: &tc,
-                best: &best,
-            };
-            let ended = case
-                .start(&source)
-                .and_then(|()| (0..steps(&tc)).try_for_each(|_| case.step(&source)));
-            match (ended, best.get()) {
-                (Err(Stop::Fail), _) => panic!("{STOP}"),
-                (_, Some(score)) => tc.target(score),
-                _ => {}
+pub struct Case {
+    ctx: *mut HegelContext,
+    tc: *mut HegelTestCase,
+    machine: *mut HegelStateMachine,
+    step: u64,
+}
+
+pub struct Ended {
+    pub result: *mut HegelRunResult,
+    pub failed: bool,
+    pub caveat: Option<String>,
+}
+
+impl Engine {
+    pub fn start(cases: u64, key: Option<&str>) -> Result<Engine, String> {
+        let ctx = hegel_c::hegel_context_new();
+        let made = || -> Result<Engine, Halt> {
+            let mut settings = ptr::null_mut();
+            hegel!(ctx, hegel_settings_new(&mut settings))?;
+            let store = key.map_or(String::new(), |_| store());
+            let database = text(store.as_bytes());
+            hegel!(ctx, hegel_settings_set_test_cases(settings, cases))?;
+            hegel!(ctx, hegel_settings_set_verbosity(settings, QUIET))?;
+            hegel!(ctx, hegel_settings_set_print_blob(settings, false))?;
+            hegel!(
+                ctx,
+                hegel_settings_set_suppress_health_check(settings, FILTER_TOO_MUCH | TOO_SLOW)
+            )?;
+            hegel!(ctx, hegel_settings_set_database(settings, &database))?;
+            if let Some(key) = key {
+                hegel!(
+                    ctx,
+                    hegel_settings_set_database_key(settings, &text(key.as_bytes()))
+                )?;
             }
+            let mut run = ptr::null_mut();
+            let started = hegel!(
+                ctx,
+                hegel_run_start(settings, None, ptr::null_mut(), &mut run)
+            );
+            hegel!(ctx, hegel_settings_free(settings))?;
+            started?;
+            let mut step = 0;
+            hegel!(ctx, hegel_label_from_name(text(STEP.as_bytes()), &mut step))?;
+            Ok(Engine { ctx, run, step })
+        };
+        made().map_err(|halt| match halt {
+            Halt::Fatal(e) => e,
+            Halt::Overrun | Halt::Invalid => "Hegel stops before the run starts".into(),
         })
-        .settings(settings(cases, key))
-        .run()
-    };
-    match panic::catch_unwind(AssertUnwindSafe(hegel)) {
-        Err(p) if said(&*p) != STOP => Err(said(&*p)),
-        _ => Ok(()),
+    }
+
+    pub fn next(&mut self) -> Result<Option<Case>, String> {
+        let mut tc = ptr::null_mut();
+        match hegel!(self.ctx, hegel_next_test_case(self.run, &mut tc)) {
+            Ok(()) => Ok((!tc.is_null()).then_some(Case {
+                ctx: self.ctx,
+                tc,
+                machine: ptr::null_mut(),
+                step: self.step,
+            })),
+            Err(Halt::Fatal(e)) => Err(e),
+            Err(Halt::Overrun | Halt::Invalid) => Err("Hegel stops between two cases".into()),
+        }
+    }
+
+    pub fn end(&mut self) -> Result<Ended, String> {
+        let ctx = self.ctx;
+        let read = || -> Result<Ended, Halt> {
+            let mut result = ptr::null_mut();
+            hegel!(ctx, hegel_run_result(self.run, &mut result))?;
+            let mut status = hegel_c::hegel_run_status_t::HEGEL_RUN_STATUS_PASSED;
+            hegel!(ctx, hegel_run_result_status(result, &mut status))?;
+            let mut error = ptr::null();
+            hegel!(ctx, hegel_run_result_error(result, &mut error))?;
+            if status as u32 == ERROR {
+                return Err(Halt::Fatal(
+                    String::from_utf8_lossy(unsafe {
+                        error.as_ref().map_or(&[][..], |e| bytes(*e))
+                    })
+                    .into_owned(),
+                ));
+            }
+            let mut caveat = None;
+            if status as u32 == FAILED {
+                let mut failure = ptr::null_mut();
+                hegel!(ctx, hegel_run_result_failure(result, 0, &mut failure))?;
+                let mut told = ptr::null();
+                hegel!(ctx, hegel_failure_caveat(failure, &mut told))?;
+                caveat = unsafe { told.as_ref() }
+                    .map(|t| String::from_utf8_lossy(unsafe { bytes(*t) }).into_owned());
+                hegel!(ctx, hegel_failure_free(failure))?;
+            }
+            Ok(Ended {
+                result,
+                failed: status as u32 == FAILED,
+                caveat,
+            })
+        };
+        read().map_err(|halt| match halt {
+            Halt::Fatal(e) => e,
+            Halt::Overrun | Halt::Invalid => "Hegel stops after the run".into(),
+        })
+    }
+
+    pub fn free(&mut self, ended: Ended) {
+        unsafe {
+            let _ = hegel_c::hegel_run_result_free(self.ctx, ended.result);
+        }
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = hegel_c::hegel_run_free(self.ctx, self.run);
+            let _ = hegel_c::hegel_context_free(self.ctx);
+        }
+    }
+}
+
+impl Case {
+    pub fn raw(&self) -> *mut HegelTestCase {
+        self.tc
+    }
+
+    pub fn machine(&mut self, rules: &[String], steps: i64) -> Result<(), Halt> {
+        let (ctx, tc) = (self.ctx, self.tc);
+        hegel!(
+            ctx,
+            hegel_new_state_machine(tc, 1, 1, steps, &mut self.machine)
+        )?;
+        for rule in rules {
+            hegel!(
+                ctx,
+                hegel_state_machine_add_rule(
+                    tc,
+                    self.machine,
+                    text(rule.as_bytes()),
+                    1.0,
+                    [0].as_ptr(),
+                    1
+                )
+            )?;
+        }
+        let mut concurrency = 0;
+        hegel!(
+            ctx,
+            hegel_state_machine_start(tc, self.machine, &mut concurrency)
+        )
+    }
+
+    pub fn round(&mut self) -> Result<bool, Halt> {
+        let (mut group, mut concurrency) = (0, 0);
+        hegel!(self.ctx, hegel_start_span(self.tc, self.step))?;
+        hegel!(
+            self.ctx,
+            hegel_state_machine_next_group(self.tc, self.machine, &mut group, &mut concurrency)
+        )?;
+        Ok(group != i64::MIN)
+    }
+
+    pub fn rule(&mut self) -> Result<Option<usize>, Halt> {
+        let mut rule = 0;
+        hegel!(
+            self.ctx,
+            hegel_state_machine_next_rule(self.tc, self.machine, 0, &mut rule)
+        )?;
+        Ok(usize::try_from(rule).ok())
+    }
+
+    pub fn rejected(&mut self) -> Result<(), Halt> {
+        hegel!(
+            self.ctx,
+            hegel_state_machine_rule_rejected(self.tc, self.machine, 0)
+        )
+    }
+
+    pub fn close(&mut self, discard: bool) -> Result<(), Halt> {
+        hegel!(self.ctx, hegel_stop_span(self.tc, discard))
+    }
+
+    pub fn complete(self, status: u32, origin: Option<&str>) -> Result<(), String> {
+        let origin = origin.map(|o| text(o.as_bytes()));
+        let marked = hegel!(
+            self.ctx,
+            hegel_mark_complete(
+                self.tc,
+                status,
+                origin.as_ref().map_or(ptr::null(), |o| o as *const _)
+            )
+        );
+        unsafe {
+            let _ = hegel_c::hegel_state_machine_free(self.ctx, self.machine);
+            let _ = hegel_c::hegel_test_case_free(self.ctx, self.tc);
+        }
+        marked.map_err(|halt| match halt {
+            Halt::Fatal(e) => e,
+            Halt::Overrun | Halt::Invalid => "Hegel stops at the end of a case".into(),
+        })
     }
 }

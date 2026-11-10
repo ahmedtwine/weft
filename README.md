@@ -2,6 +2,19 @@
 
 A distributed runner for property tests, built on [Hegel](https://hegel.dev) and [KDL](https://kdl.dev) files.
 
+```mermaid
+flowchart TB
+  weft["weft<br>*.weft.kdl, the Hegel engine<br>each case, shrink, check, report"]
+  weft <-->|"unix socket or http"| lib
+  lib["libweft<br>hegel_* calls of libhegel<br>weft_diagram_join, turn, done"]
+  lib --> sdk["weft SDK<br>each Hegel generator and combinator<br>Zod schema to generator, mocks"]
+  sdk --> runner["runner<br>bun test<br>the driver and the code"]
+```
+
+weft owns each case. libweft exports the same `hegel_*` calls as libhegel, and the Hegel library of a language loads libweft in place of libhegel. Each draw goes to the engine in weft, so each runner of one diagram draws from the same case, and Hegel shrinks a failing case across all of them.
+
+A runner joins a diagram, takes a turn (`reset`, `run`, `read`), and gives the state. A call with no output goes with the next call that has one.
+
 ## Start
 
 `weft.kdl`
@@ -92,15 +105,15 @@ export const reloaded = { input: reloadSchema, run: reload };
 ```
 $ weft
 ✓ invariants/page.weft.kdl · Always, for each browser in page, if step is reload, then browser.count stays unchanged
-  adapter bun · 100 cases · 100 runs · 1490 steps · 1391 checks [3.89s]
+  adapter bun · 100 cases · 100 runs · 1785 steps · 1686 checks [1.22s]
   step · action · input · state · check
   0 · start · - · page: count = 0 · -
-  1 · send to=page · text="¬-\u0001¬\u0001--¬-¬" · page: count = 1 · -
+  1 · send to=page · text="\u00056-\u0004" · page: count = 1 · -
   2 · reload to=page · - · page: count = 1 · -
   …
   action · steps · checks
   send to=page · 99 · 0
-  reload to=page · 1391 · 1391
+  reload to=page · 1686 · 1686
   code · files · lines
   reset · 2 · 4
   send · 2 · 4
@@ -108,8 +121,8 @@ $ weft
 
  1 pass
  0 fail
- 1391 checks
-Ran 1 file in 3.89s
+ 1686 checks
+Ran 1 file in 1.23s
 ```
 
 `weft --ui` serves the diagrams at http://127.0.0.1:7357.
@@ -125,10 +138,11 @@ The driver joins the diagram to the code. It has no schema and no function of it
 | `reset` | Starts each case. |
 | `{ input, run }` | One action. The tag of `input` is the verb. A union gives one action for each branch that has a tag. |
 | `{ output, of, name }` | One mock. Hegel draws `output` at each `reset`, and `of[name]` gives that value. |
+| `{ schema, generator }` | The generator of one schema, from `weft`. |
 
 weft refuses a tag that a file in the directory of the diagram makes, and a `run` that such a file exports.
 
-Hegel draws each input from the JSON Schema of `input`: `boolean`, `integer`, `number`, `string` with `minLength`, `maxLength`, `pattern` or `format`, `null`, `enum`, `const`, `anyOf`, `oneOf`, `allOf` of objects, `array` with `items`, `prefixItems` and `uniqueItems`, `object` with `properties` or `additionalProperties`, `$ref` to `$defs`, and a schema that holds itself.
+Hegel draws each input from the Zod schema of `input`. `{ schema, generator }` gives a Hegel generator for a schema, and `weft` exports each generator and combinator of `@hegeldev/hegel`.
 
 An input that `input` does not parse is no step.
 
@@ -140,19 +154,15 @@ export const read = (error?: Error) => ({
 });
 ```
 
-## Architecture
+## Config
 
-```mermaid
-flowchart LR
-  files["weft.kdl<br>*.weft.kdl"] --> weft
-  weft --> hegel["Hegel<br>draws each case<br>shrinks a failing case"]
-  hegel --> runner{{Runner}}
-  runner --> setup["Setup<br>adapter default<br>the setup, without the code"]
-  runner --> wire["Wire<br>JSON messages"]
-  wire --> transport{{Transport}}
-  transport --> bun["Bun<br>adapter bun<br>bun test, *.weft.ts"]
-  transport --> unix["Unix<br>transport unix path=…"]
-  transport --> http["Http<br>transport http url=…"]
-```
+| Line | Use |
+| --- | --- |
+| `adapter bun cases=<count>` | weft starts `bun test` on the driver of each diagram. |
+| `adapter default cases=<count>` | weft runs the setup without the code, or waits for runners when the config has a `transport`. |
+| `transport unix path=<socket>` | Runners join on a unix socket. |
+| `transport http url=<url>` | Runners join over http. |
+
+A runner on another machine runs `bun test` on `weft/harness` with `WEFT_LIB` set to libweft, `WEFT_TRANSPORT` to `unix:<socket>` or to the url, `WEFT_DIAGRAM` to the path of the diagram, and `WEFT_DRIVER` to its driver.
 
 MIT. merman is MIT OR Apache-2.0. Icons are Lucide, ISC, in `crates/weft-draw/src/vendor`.

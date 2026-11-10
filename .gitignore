@@ -2,3 +2,4 @@ target/
 pkg/
 *.svg
 .env
+node_modules/

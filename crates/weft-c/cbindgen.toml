@@ -11,6 +11,7 @@ include = ["weft_format_t", "weft_status_t"]
 
 [export.rename]
 "WeftContext" = "weft_context_t"
+"WeftDiagram" = "weft_diagram_t"
 
 [enum]
 prefix_with_name = false
