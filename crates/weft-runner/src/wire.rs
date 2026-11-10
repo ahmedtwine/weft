@@ -256,6 +256,11 @@ impl Drop for Wire {
             let _ = writeln!(writer, "{}", json!({ "done": true }));
         }
         if let Some(b) = &mut self.bun {
+            let started = Instant::now();
+            while b.child.try_wait().ok().flatten().is_none() && started.elapsed() < WAIT {
+                thread::sleep(Duration::from_millis(10));
+            }
+            let _ = b.child.kill();
             let _ = b.child.wait();
             let _ = fs::remove_dir_all(&b.dir);
         }

@@ -80,6 +80,7 @@ test("weft", async () => {
   const source: Source = {
     draw: async (schema) => schema.parse(await drawn(z.toJSONSchema(schema))),
     pick: async (options, weights) => {
+      if (options.length === 0) throw new Error("pick takes at least one option");
       const index = await drawn({
         type: "integer",
         index: true,

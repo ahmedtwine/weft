@@ -159,10 +159,11 @@ check {
             writeln!(writer, "{}", schema()).unwrap();
             for line in BufReader::new(stream).lines() {
                 let message: Json = serde_json::from_str(&line.unwrap()).unwrap();
+                let out = reply(&message);
                 if message.get("done").is_some() {
                     break;
                 }
-                writeln!(writer, "{}", reply(&message)).unwrap();
+                writeln!(writer, "{out}").unwrap();
             }
         });
         path.display().to_string()
@@ -243,6 +244,47 @@ check {
             .map(|l| (l.step.as_str(), l.input.as_str(), l.state.as_str()))
             .collect();
         assert_eq!(rows, [("send to=page", "drawn=4", "page: count = 2")]);
+    }
+
+    struct Cut;
+
+    impl Source for Cut {
+        fn draw(&self, choice: &weft_simulator::Choice) -> Json {
+            choice.draw(self)
+        }
+        fn bool(&self) -> bool {
+            panic!("cut")
+        }
+        fn int(&self, _: i64, _: i64) -> i64 {
+            panic!("cut")
+        }
+        fn text(&self, _: usize, _: Option<usize>) -> String {
+            panic!("cut")
+        }
+        fn index(&self, _: usize) -> usize {
+            panic!("cut")
+        }
+        fn target(&self, _: f64) {}
+    }
+
+    #[test]
+    fn a_runner_gets_stop_before_done_when_the_last_case_ends_in_a_draw() {
+        let (sent, seen) = std::sync::mpsc::channel();
+        let path = served(move |message| {
+            sent.send(message.as_object().unwrap().keys().next().cloned().unwrap())
+                .unwrap();
+            match message.get("apply") {
+                Some(_) => json!({ "draw": { "type": "boolean" } }),
+                None => json!({ "error": "weft stops the step" }),
+            }
+        });
+        let mut wire = wire::Wire::unix(&path).unwrap();
+        let cut = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wire.apply("page", "send", &json!({}), &Cut)
+        }));
+        assert!(cut.is_err());
+        drop(wire);
+        assert_eq!(seen.iter().collect::<Vec<_>>(), ["apply", "stop", "done"]);
     }
 
     #[test]
