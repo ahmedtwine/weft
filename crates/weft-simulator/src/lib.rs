@@ -1,15 +1,20 @@
 mod engine;
+mod memo;
 
 use std::cell::RefCell;
 
 use serde_json::{Map, Value as Json};
 use weft_parse::{Check, Diagram, State, Value, shown};
 
+use memo::Memo;
+
 pub enum Fault {
     Thrown(String),
     Broken(String),
+    Changed,
 }
 
+#[derive(Clone, PartialEq)]
 pub enum Choice {
     Bool,
     Int(i64, i64),
@@ -52,7 +57,10 @@ impl Choice {
     }
 }
 
-struct Stop;
+enum Stop {
+    Fail,
+    Skip,
+}
 
 trait Case {
     fn start(&mut self, source: &dyn Source) -> Result<(), Stop>;
@@ -98,6 +106,7 @@ pub struct Outcome {
     pub runs: u64,
     pub tally: Vec<Tally>,
     pub found: Option<Vec<Line>>,
+    pub caveat: Option<String>,
 }
 
 struct Read {
@@ -387,7 +396,7 @@ struct Run<'a> {
     d: &'a Diagram,
     c: &'a Check,
     tags: Tags,
-    runner: &'a mut dyn Runner,
+    runner: Memo<'a>,
     runs: u64,
     tally: Vec<Tally>,
     found: Option<Vec<Line>>,
@@ -399,20 +408,32 @@ struct Run<'a> {
 
 impl Run<'_> {
     fn fail(&mut self, trace: Vec<Line>) -> Stop {
-        self.found = Some(trace);
-        Stop
+        match self.runner.live() {
+            Ok(()) => {
+                self.found = Some(trace);
+                Stop::Fail
+            }
+            Err(fault) => self.halt(fault),
+        }
     }
 
     fn wire(&mut self, e: String) -> Stop {
         self.fatal = Some(e);
-        Stop
+        Stop::Fail
+    }
+
+    fn halt(&mut self, fault: Fault) -> Stop {
+        match fault {
+            Fault::Thrown(e) | Fault::Broken(e) => self.wire(e),
+            Fault::Changed => Stop::Skip,
+        }
     }
 
     fn judge(&mut self, cur: &State, nxt: &State, verb: &str) -> Result<Option<Vec<String>>, Stop> {
         match self.runner.check(self.c, cur, nxt, verb) {
             Ok(evidence) => Ok(evidence),
             Err(Fault::Thrown(e)) => Ok(Some(vec![format!("throws {e}")])),
-            Err(Fault::Broken(e)) => Err(self.wire(e)),
+            Err(fault) => Err(self.halt(fault)),
         }
     }
 
@@ -425,13 +446,14 @@ impl Case for Run<'_> {
     fn start(&mut self, source: &dyn Source) -> Result<(), Stop> {
         self.runs += 1;
         if self.fatal.is_some() {
-            return Err(Stop);
+            return Err(Stop::Fail);
         }
         let start = match self.runner.reset(source) {
             Ok(raw) => self.read(&raw)?,
             Err(Fault::Thrown(e) | Fault::Broken(e)) => {
                 return Err(self.wire(format!("reset: {e}")));
             }
+            Err(Fault::Changed) => return Err(Stop::Skip),
         };
         if let Some(evidence) = self.judge(&start, &start, "")? {
             let line = Line {
@@ -475,7 +497,7 @@ impl Case for Run<'_> {
                 let trace = std::mem::take(&mut self.trace);
                 return Err(self.fail(trace));
             }
-            Err(Fault::Broken(e)) => return Err(self.wire(e)),
+            Err(fault) => return Err(self.halt(fault)),
         };
         let next = self.read(&raw)?;
         line.state = view(&next);
@@ -498,12 +520,17 @@ impl Case for Run<'_> {
     }
 }
 
-pub fn simulate(d: &Diagram, runner: &mut dyn Runner, cases: u64) -> Result<Outcome, String> {
+pub fn simulate(
+    d: &Diagram,
+    runner: &mut dyn Runner,
+    cases: u64,
+    key: Option<&str>,
+) -> Result<Outcome, String> {
     let mut run = Run {
         d,
         c: d.check.as_ref().ok_or("needs `check`")?,
         tags: Tags::new(d, runner.schema())?,
-        runner,
+        runner: Memo::new(runner),
         runs: 0,
         tally: moves(d)
             .into_iter()
@@ -519,16 +546,16 @@ pub fn simulate(d: &Diagram, runner: &mut dyn Runner, cases: u64) -> Result<Outc
         real: State::new(),
         trace: Vec::new(),
     };
-    let ran = engine::run(cases, &mut run);
+    let ran = engine::run(cases, key, &mut run);
     if let Some(e) = run.fatal {
         return Err(e);
     }
-    ran?;
     Ok(Outcome {
         cases,
         runs: run.runs,
         tally: run.tally,
         found: run.found,
+        caveat: ran?,
     })
 }
 
@@ -652,7 +679,7 @@ check {
     fn simulated(runner: &mut dyn Runner) -> Result<Outcome, String> {
         let config = weft_parse::config(CONFIG).unwrap();
         let d = weft_parse::parse(PAGE, &config).unwrap();
-        simulate(&d, runner, config.cases)
+        simulate(&d, runner, config.cases, None)
     }
 
     #[test]

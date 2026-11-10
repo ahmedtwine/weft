@@ -133,7 +133,7 @@ check {
         .unwrap();
         let d = weft_parse::parse(PAGE, &config).unwrap();
         let mut runner = start(&config, &d, Path::new("page.weft.kdl")).unwrap();
-        let o = weft_simulator::simulate(&d, runner.as_mut(), config.cases).unwrap();
+        let o = weft_simulator::simulate(&d, runner.as_mut(), config.cases, None).unwrap();
         (config, o)
     }
 

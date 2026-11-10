@@ -1,9 +1,12 @@
 use std::{
     env, fs,
     io::{BufRead, BufReader, Write},
+    iter,
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
+    sync::atomic::{AtomicUsize, Ordering},
+    thread,
 };
 
 use globset::{Glob, GlobSetBuilder};
@@ -96,7 +99,7 @@ impl Table {
 
 fn headline(config: &Config, o: &Outcome) -> String {
     format!(
-        "adapter {}{} · {} cases · {} runs · {}",
+        "adapter {}{} · {} cases · {} runs · {}{}",
         config.adapter,
         config
             .transport
@@ -109,7 +112,10 @@ fn headline(config: &Config, o: &Outcome) -> String {
             .map_or("holds".to_string(), |t| match t.len() {
                 1 => "fails after 1 step".to_string(),
                 n => format!("fails after {n} steps"),
-            })
+            }),
+        o.caveat
+            .as_ref()
+            .map_or(String::new(), |c| format!(" · {c}"))
     )
 }
 
@@ -189,39 +195,62 @@ fn section(path: &str, src: &str, d: &Diagram, theme: Theme) -> Result<String, S
 
 fn run(d: &Diagram, file: &Path, config: &Config) -> Result<Outcome, String> {
     let mut runner = weft_runner::start(config, d, file)?;
-    simulate(d, runner.as_mut(), config.cases)
+    simulate(d, runner.as_mut(), config.cases, file.to_str())
 }
 
-fn diagram(file: &PathBuf, config: &Config) -> Result<(String, Diagram), String> {
+fn diagram(file: &Path, config: &Config) -> Result<(String, Diagram), String> {
     let src = fs::read_to_string(file).map_err(|e| e.to_string())?;
     let d = weft_parse::parse(&src, config).map_err(|e| e.to_string())?;
     Ok((src, d))
 }
 
+fn checked(file: &Path, config: &Config, theme: Theme, drawn: bool) -> (String, String) {
+    let path = file.strip_prefix(".").unwrap_or(file).display().to_string();
+    diagram(file, config)
+        .and_then(|(src, d)| match drawn {
+            true => section(&path, &src, &d, theme).map(|s| (summary(&path, &d, None), s)),
+            false => run(&d, file, config)
+                .map(|run| (summary(&path, &d, Some((config, &run))), String::new())),
+        })
+        .unwrap_or_else(|e| (format!("✕ {path} · {e}"), String::new()))
+}
+
 fn report(drawn: bool) -> Result<Report, String> {
     let (files, config, theme) = files()?;
-    let mut out = Report {
-        lines: Vec::new(),
-        sections: String::new(),
-        theme,
+    let width = match drawn || config.transport.is_some() {
+        true => 1,
+        false => thread::available_parallelism().map_or(1, usize::from),
     };
-    for file in files {
-        let path = file
-            .strip_prefix(".")
-            .unwrap_or(&file)
-            .display()
-            .to_string();
-        let line = diagram(&file, &config).and_then(|(src, d)| match drawn {
-            true => section(&path, &src, &d, theme).map(|s| {
-                out.sections.push_str(&s);
-                summary(&path, &d, None)
-            }),
-            false => run(&d, &file, &config).map(|run| summary(&path, &d, Some((&config, &run)))),
-        });
-        out.lines
-            .push(line.unwrap_or_else(|e| format!("✕ {path} · {e}")));
-    }
-    Ok(out)
+    let next = AtomicUsize::new(0);
+    let mut done: Vec<(usize, (String, String))> = thread::scope(|s| {
+        (0..width)
+            .map(|_| {
+                s.spawn(|| {
+                    iter::from_fn(|| {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        files
+                            .get(i)
+                            .map(|file| (i, checked(file, &config, theme, drawn)))
+                    })
+                    .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flat_map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|p| std::panic::resume_unwind(p))
+            })
+            .collect()
+    });
+    done.sort_by_key(|(i, _)| *i);
+    let (lines, sections): (Vec<String>, Vec<String>) = done.into_iter().map(|(_, o)| o).unzip();
+    Ok(Report {
+        lines,
+        sections: sections.concat(),
+        theme,
+    })
 }
 
 fn page(r: &Report) -> String {
