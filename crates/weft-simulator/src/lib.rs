@@ -1,28 +1,66 @@
-mod bun;
+mod engine;
 
-use std::cell::{Cell, RefCell};
-use std::panic::{self, AssertUnwindSafe};
-
-use hegel::generators as gs;
-use hegel::stateful::{self, Invariant, Rule, StateMachine};
-use hegel::{Database, Hegel, Settings, TestCase, Verbosity};
 use serde_json::{Map, Value as Json};
-use weft_parse::{Adapter, Check, Diagram, State, Value, shown};
+use weft_parse::{Check, Diagram, State, Value, shown};
 
-pub use bun::Bun;
+pub use engine::{Hegel, Random};
 
-const STEPS: i64 = 20;
-const STOP: &str = "weft";
+const STEPS: u32 = 20;
 
 pub enum Fault {
     Thrown(String),
     Broken(String),
 }
 
+pub enum Field {
+    Text(usize, Option<usize>),
+    Int(i64, i64),
+    Bool,
+}
+
+pub trait Source {
+    fn draw(&self, field: &Field) -> Json;
+    fn pick(&self, count: usize) -> usize;
+    fn target(&self, score: f64);
+}
+
+pub struct Stop;
+
+pub trait Case {
+    fn start(&mut self, source: &dyn Source) -> Result<(), Stop>;
+    fn step(&mut self, source: &dyn Source) -> Result<(), Stop>;
+}
+
+pub trait Engine {
+    fn run(&mut self, cases: u64, steps: u32, case: &mut dyn Case) -> Result<(), String>;
+}
+
+pub fn engine(engine: &weft_parse::Engine) -> Box<dyn Engine> {
+    match engine {
+        weft_parse::Engine::Hegel => Box::new(Hegel),
+        weft_parse::Engine::Random(seed) => Box::new(Random::new(*seed)),
+    }
+}
+
 pub trait Runner {
     fn schema(&self) -> &Json;
-    fn reset(&mut self) -> Result<Json, Fault>;
-    fn apply(&mut self, object: &str, verb: &str, input: &Json) -> Result<Json, Fault>;
+    fn reset(&mut self, source: &dyn Source) -> Result<Json, Fault>;
+    fn apply(
+        &mut self,
+        object: &str,
+        verb: &str,
+        input: &Json,
+        source: &dyn Source,
+    ) -> Result<Json, Fault>;
+    fn check(
+        &mut self,
+        check: &Check,
+        cur: &State,
+        nxt: &State,
+        verb: &str,
+    ) -> Result<Option<Vec<String>>, Fault> {
+        Ok(check.judge(cur, nxt, verb))
+    }
 }
 
 pub struct Line {
@@ -39,17 +77,10 @@ pub struct Tally {
 }
 
 pub struct Outcome {
-    pub adapter: String,
     pub cases: u64,
     pub runs: u64,
     pub tally: Vec<Tally>,
     pub found: Option<Vec<Line>>,
-}
-
-enum Field {
-    Text(usize, Option<usize>),
-    Int(i64, i64),
-    Bool,
 }
 
 struct Read {
@@ -87,7 +118,7 @@ fn bound(node: &Json, k: &str) -> Option<i64> {
     node.get(k).and_then(Json::as_i64)
 }
 
-fn field(name: &str, node: &Json) -> Result<Field, String> {
+pub fn field(name: &str, node: &Json) -> Result<Field, String> {
     let size = |k: &str| bound(node, k).and_then(|n| usize::try_from(n).ok());
     match node.get("type").and_then(Json::as_str) {
         Some("string") => Ok(Field::Text(
@@ -109,7 +140,7 @@ impl Tags {
     fn new(d: &Diagram, schema: &Json) -> Result<Tags, String> {
         let state = schema
             .get("state")
-            .ok_or("the adapter sends no schema of the state")?;
+            .ok_or("the runner sends no schema of the state")?;
         let mut found = Vec::new();
         tagged(state, &[], &mut found);
         let mut reads: Vec<Read> = Vec::new();
@@ -155,7 +186,7 @@ impl Tags {
         for node in schema
             .get("actions")
             .and_then(Json::as_array)
-            .ok_or("the adapter sends no schemas of the actions")?
+            .ok_or("the runner sends no schemas of the actions")?
         {
             let verb = match tags(node)[..] {
                 [verb] => verb,
@@ -213,7 +244,7 @@ impl Tags {
         Ok(out)
     }
 
-    fn input(&self, tc: &TestCase, verb: &str) -> Json {
+    fn input(&self, source: &dyn Source, verb: &str) -> Json {
         let fields = self
             .actions
             .iter()
@@ -222,19 +253,7 @@ impl Tags {
         Json::Object(
             fields
                 .iter()
-                .map(|(k, f)| {
-                    let v = match f {
-                        Field::Text(min, Some(max)) => {
-                            Json::from(tc.draw(gs::text().min_size(*min).max_size(*max)))
-                        }
-                        Field::Text(min, None) => Json::from(tc.draw(gs::text().min_size(*min))),
-                        Field::Int(min, max) => Json::from(
-                            tc.draw(gs::integers::<i64>().min_value(*min).max_value(*max)),
-                        ),
-                        Field::Bool => Json::from(tc.draw(gs::booleans())),
-                    };
-                    (k.clone(), v)
-                })
+                .map(|(k, f)| (k.clone(), source.draw(f)))
                 .collect::<Map<_, _>>(),
         )
     }
@@ -269,190 +288,153 @@ fn written(input: &Json) -> String {
     })
 }
 
-fn said(p: &(dyn std::any::Any + Send)) -> String {
-    p.downcast_ref::<&str>()
-        .map(|s| s.to_string())
-        .or_else(|| p.downcast_ref::<String>().cloned())
-        .unwrap_or_default()
-}
-
 struct Run<'a> {
     d: &'a Diagram,
     c: &'a Check,
     tags: Tags,
-    runner: RefCell<&'a mut dyn Runner>,
-    runs: Cell<u64>,
-    tally: RefCell<Vec<Tally>>,
-    found: RefCell<Option<Vec<Line>>>,
-    fatal: RefCell<Option<String>>,
-}
-
-impl Run<'_> {
-    fn fail(&self, trace: Vec<Line>) -> ! {
-        *self.found.borrow_mut() = Some(trace);
-        panic!("{STOP}")
-    }
-
-    fn wire(&self, e: String) -> ! {
-        *self.fatal.borrow_mut() = Some(e);
-        panic!("{STOP}")
-    }
-
-    fn case(&self, tc: TestCase) {
-        self.runs.set(self.runs.get() + 1);
-        let known = self.fatal.borrow().clone();
-        if let Some(e) = known {
-            self.wire(e)
-        }
-        let start = match self.runner.borrow_mut().reset() {
-            Ok(raw) => self.tags.read(&raw).unwrap_or_else(|e| self.wire(e)),
-            Err(Fault::Thrown(e) | Fault::Broken(e)) => self.wire(format!("reset: {e}")),
-        };
-        if let Some(evidence) = self.c.judge(&start, &start, "") {
-            self.fail(vec![Line {
-                step: "start".into(),
-                input: String::new(),
-                state: view(&start),
-                evidence,
-            }])
-        }
-        stateful::machine(Case {
-            run: self,
-            model: self.d.init.clone(),
-            real: start,
-            trace: Vec::new(),
-        })
-        .steps(STEPS)
-        .run(tc);
-    }
-}
-
-struct Case<'r, 'a> {
-    run: &'r Run<'a>,
+    runner: &'a mut dyn Runner,
+    runs: u64,
+    tally: Vec<Tally>,
+    found: Option<Vec<Line>>,
+    fatal: Option<String>,
     model: State,
     real: State,
     trace: Vec<Line>,
 }
 
-impl Case<'_, '_> {
-    fn step(&mut self, tc: TestCase) {
-        let r = self.run;
-        let enabled = r.d.enabled(&self.model);
-        if enabled.is_empty() {
-            return;
+impl Run<'_> {
+    fn fail(&mut self, trace: Vec<Line>) -> Stop {
+        self.found = Some(trace);
+        Stop
+    }
+
+    fn wire(&mut self, e: String) -> Stop {
+        self.fatal = Some(e);
+        Stop
+    }
+
+    fn judge(&mut self, cur: &State, nxt: &State, verb: &str) -> Result<Option<Vec<String>>, Stop> {
+        match self.runner.check(self.c, cur, nxt, verb) {
+            Ok(evidence) => Ok(evidence),
+            Err(Fault::Thrown(e)) => Ok(Some(vec![format!("throws {e}")])),
+            Err(Fault::Broken(e)) => Err(self.wire(e)),
         }
-        let k = tc.draw(gs::sampled_from((0..enabled.len()).collect::<Vec<_>>()));
-        let (o, verb, to) = enabled[k].clone();
-        let input = r.tags.input(&tc, verb);
+    }
+
+    fn read(&mut self, raw: &Json) -> Result<State, Stop> {
+        self.tags.read(raw).map_err(|e| self.wire(e))
+    }
+}
+
+impl Case for Run<'_> {
+    fn start(&mut self, source: &dyn Source) -> Result<(), Stop> {
+        self.runs += 1;
+        if self.fatal.is_some() {
+            return Err(Stop);
+        }
+        let start = match self.runner.reset(source) {
+            Ok(raw) => self.read(&raw)?,
+            Err(Fault::Thrown(e) | Fault::Broken(e)) => {
+                return Err(self.wire(format!("reset: {e}")));
+            }
+        };
+        if let Some(evidence) = self.judge(&start, &start, "")? {
+            let line = Line {
+                step: "start".into(),
+                input: String::new(),
+                state: view(&start),
+                evidence,
+            };
+            return Err(self.fail(vec![line]));
+        }
+        self.model = self.d.init.clone();
+        self.real = start;
+        self.trace = Vec::new();
+        Ok(())
+    }
+
+    fn step(&mut self, source: &dyn Source) -> Result<(), Stop> {
+        let d = self.d;
+        let enabled = d.enabled(&self.model);
+        if enabled.is_empty() {
+            return Ok(());
+        }
+        let (o, verb, to) = enabled[source.pick(enabled.len())].clone();
+        let input = self.tags.input(source, verb);
         let mut line = Line {
             step: format!("{verb} to={}", o.name),
             input: written(&input),
             state: String::new(),
             evidence: Vec::new(),
         };
-        let raw = match r.runner.borrow_mut().apply(&o.name, verb, &input) {
+        let raw = match self.runner.apply(&o.name, verb, &input, source) {
             Ok(raw) => raw,
             Err(Fault::Thrown(e)) => {
                 line.evidence = vec![format!("throws {e}")];
                 self.trace.push(line);
-                r.fail(std::mem::take(&mut self.trace))
+                let trace = std::mem::take(&mut self.trace);
+                return Err(self.fail(trace));
             }
-            Err(Fault::Broken(e)) => r.wire(e),
+            Err(Fault::Broken(e)) => return Err(self.wire(e)),
         };
-        let next = r.tags.read(&raw).unwrap_or_else(|e| r.wire(e));
+        let next = self.read(&raw)?;
         line.state = view(&next);
         self.model.insert(o.name.clone(), to);
-        if let Some(t) = r
-            .tally
-            .borrow_mut()
-            .iter_mut()
-            .find(|t| t.step == line.step)
-        {
+        let applies = self.c.applies(&self.real, &next, verb);
+        if let Some(t) = self.tally.iter_mut().find(|t| t.step == line.step) {
             t.steps += 1;
-            t.checks += u64::from(r.c.applies(&self.real, &next, verb));
+            t.checks += u64::from(applies);
         }
-        let judged = r.c.judge(&self.real, &next, verb);
+        let real = std::mem::take(&mut self.real);
+        let judged = self.judge(&real, &next, verb)?;
         line.evidence = judged.clone().unwrap_or_default();
         self.trace.push(line);
         if judged.is_some() {
-            r.fail(std::mem::take(&mut self.trace))
+            let trace = std::mem::take(&mut self.trace);
+            return Err(self.fail(trace));
         }
         self.real = next;
-    }
-}
-
-impl StateMachine for Case<'_, '_> {
-    fn rules(&self) -> Vec<Rule<Self>> {
-        vec![Rule::new("step", 1.0, Case::step)]
-    }
-
-    fn invariants(&self) -> Vec<Invariant<Self>> {
-        Vec::new()
+        Ok(())
     }
 }
 
 pub fn simulate(
     d: &Diagram,
     runner: &mut dyn Runner,
-    adapter: &Adapter,
+    engine: &mut dyn Engine,
+    cases: u64,
 ) -> Result<Outcome, String> {
-    let run = Run {
+    let mut run = Run {
         d,
         c: d.check.as_ref().ok_or("needs `check`")?,
         tags: Tags::new(d, runner.schema())?,
-        runner: RefCell::new(runner),
-        runs: Cell::new(0),
-        tally: RefCell::new(
-            steps(d)
-                .into_iter()
-                .map(|step| Tally {
-                    step,
-                    steps: 0,
-                    checks: 0,
-                })
-                .collect(),
-        ),
-        found: RefCell::new(None),
-        fatal: RefCell::new(None),
+        runner,
+        runs: 0,
+        tally: steps(d)
+            .into_iter()
+            .map(|step| Tally {
+                step,
+                steps: 0,
+                checks: 0,
+            })
+            .collect(),
+        found: None,
+        fatal: None,
+        model: State::new(),
+        real: State::new(),
+        trace: Vec::new(),
     };
-    let ran = panic::catch_unwind(AssertUnwindSafe(|| {
-        Hegel::new(|tc: TestCase| run.case(tc))
-            .settings(
-                Settings::new()
-                    .test_cases(adapter.cases)
-                    .database(Database::Disabled)
-                    .verbosity(Verbosity::Quiet)
-                    .print_blob(false),
-            )
-            .run()
-    }));
-    if let Some(e) = run.fatal.take() {
+    let ran = engine.run(cases, STEPS, &mut run);
+    if let Some(e) = run.fatal {
         return Err(e);
     }
-    let outcome = |found| Outcome {
-        adapter: adapter.name.clone(),
-        cases: adapter.cases,
-        runs: run.runs.get(),
-        tally: run.tally.take(),
-        found,
-    };
-    match ran {
-        Ok(()) => Ok(outcome(None)),
-        Err(p) if said(&*p) == STOP => Ok(outcome(run.found.take())),
-        Err(p) => Err(said(&*p)),
-    }
-}
-
-pub fn run(d: &Diagram, file: &std::path::Path, adapter: &Adapter) -> Result<Outcome, String> {
-    let stem = file
-        .to_str()
-        .and_then(|f| f.strip_suffix(".kdl"))
-        .ok_or_else(|| format!("{} does not end in .kdl", file.display()))?;
-    let mut runner: Box<dyn Runner> = match adapter.name.as_str() {
-        "bun" => Box::new(Bun::start(std::path::Path::new(&format!("{stem}.ts")))?),
-        other => return Err(format!("`adapter {other}` is not `adapter bun`")),
-    };
-    simulate(d, runner.as_mut(), adapter)
+    ran?;
+    Ok(Outcome {
+        cases,
+        runs: run.runs,
+        tally: run.tally,
+        found: run.found,
+    })
 }
 
 #[cfg(test)]
@@ -525,12 +507,18 @@ check {
             &self.schema
         }
 
-        fn reset(&mut self) -> Result<Json, Fault> {
+        fn reset(&mut self, _: &dyn Source) -> Result<Json, Fault> {
             self.count = 0;
             Ok(json!({ "page": { "count": self.count } }))
         }
 
-        fn apply(&mut self, _: &str, verb: &str, input: &Json) -> Result<Json, Fault> {
+        fn apply(
+            &mut self,
+            _: &str,
+            verb: &str,
+            input: &Json,
+            _: &dyn Source,
+        ) -> Result<Json, Fault> {
             let times = input.get("times").and_then(Json::as_i64);
             match (verb, times) {
                 ("send", _) => self.count += 1,
@@ -567,10 +555,28 @@ check {
     }
 
     fn simulated(page: &mut Page) -> Result<Outcome, String> {
+        simulated_by(page, &mut Hegel)
+    }
+
+    fn simulated_by(page: &mut Page, engine: &mut dyn Engine) -> Result<Outcome, String> {
         let config = weft_parse::config(CONFIG).unwrap();
         let d = weft_parse::parse(PAGE, &config).unwrap();
-        let adapter = config.adapter.as_ref().unwrap();
-        simulate(&d, page, adapter)
+        simulate(&d, page, engine, config.cases)
+    }
+
+    #[test]
+    fn the_random_engine_finds_a_lost_count_without_a_shrink() {
+        let o = simulated_by(
+            &mut Page::new(true, false, schema("page.count", &["send", "reload"])),
+            &mut Random::new(7),
+        )
+        .unwrap();
+        let trace = o.found.unwrap();
+        assert_eq!(
+            trace.last().map(|l| l.state.as_str()),
+            Some("page: count = 0")
+        );
+        assert!(o.runs <= o.cases);
     }
 
     #[test]

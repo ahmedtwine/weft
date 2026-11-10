@@ -2,7 +2,7 @@ use std::{
     env, fs,
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
 
@@ -10,7 +10,7 @@ use globset::{Glob, GlobSetBuilder};
 use ignore::WalkBuilder;
 use weft_draw::Theme;
 use weft_parse::{Config, Diagram, Verdict};
-use weft_simulator::Outcome;
+use weft_simulator::{Outcome, simulate};
 
 const USAGE: &str = "usage: weft [--ui]";
 const CONFIG: &str = "weft.kdl";
@@ -94,10 +94,11 @@ impl Table {
     }
 }
 
-fn headline(o: &Outcome) -> String {
+fn headline(config: &Config, o: &Outcome) -> String {
     format!(
-        "adapter {} · {} cases · {} runs · {}",
-        o.adapter,
+        "adapter {} · engine {} · {} cases · {} runs · {}",
+        config.adapter,
+        config.engine,
         o.cases,
         o.runs,
         o.found
@@ -142,14 +143,14 @@ fn tables(o: &Outcome) -> Vec<Table> {
         .collect()
 }
 
-fn summary(path: &str, d: &Diagram, run: Option<&Outcome>) -> String {
+fn summary(path: &str, d: &Diagram, run: Option<(&Config, &Outcome)>) -> String {
     let evidence = match d.verdict() {
         Some(Verdict::Fails { evidence, .. }) => evidence,
         _ => Vec::new(),
     };
     let head = format!(
         "{} {path} · {} · {}",
-        match run.and_then(|o| o.found.as_ref()) {
+        match run.and_then(|(_, o)| o.found.as_ref()) {
             Some(_) => '✕',
             None => '✓',
         },
@@ -158,7 +159,7 @@ fn summary(path: &str, d: &Diagram, run: Option<&Outcome>) -> String {
     );
     match run {
         None => head,
-        Some(o) => [head, format!("  {}", headline(o))]
+        Some((config, o)) => [head, format!("  {}", headline(config, o))]
             .into_iter()
             .chain(tables(o).iter().flat_map(Table::text))
             .collect::<Vec<_>>()
@@ -181,6 +182,16 @@ fn section(path: &str, src: &str, d: &Diagram, theme: Theme) -> Result<String, S
         escape(path),
         escape(src)
     ))
+}
+
+fn run(d: &Diagram, file: &Path, config: &Config) -> Result<Outcome, String> {
+    let mut runner = weft_runner::Adapter::start(&config.adapter, d, file)?;
+    simulate(
+        d,
+        &mut runner,
+        weft_simulator::engine(&config.engine).as_mut(),
+        config.cases,
+    )
 }
 
 fn diagram(file: &PathBuf, config: &Config) -> Result<(String, Diagram), String> {
@@ -207,12 +218,7 @@ fn report(drawn: bool) -> Result<Report, String> {
                 out.sections.push_str(&s);
                 summary(&path, &d, None)
             }),
-            false => config
-                .adapter
-                .as_ref()
-                .map(|a| weft_simulator::run(&d, &file, a))
-                .transpose()
-                .map(|run| summary(&path, &d, run.as_ref())),
+            false => run(&d, &file, &config).map(|run| summary(&path, &d, Some((&config, &run)))),
         });
         out.lines
             .push(line.unwrap_or_else(|e| format!("✕ {path} · {e}")));

@@ -13,4 +13,5 @@ globset = "0.4"
 ignore = "0.4"
 weft-draw = { path = "../weft-draw" }
 weft-parse = { path = "../weft-parse" }
+weft-runner = { path = "../weft-runner" }
 weft-simulator = { path = "../weft-simulator" }

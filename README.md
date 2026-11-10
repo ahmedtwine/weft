@@ -63,15 +63,43 @@ weft ── parse <name>.weft.kdl ── run ── print the run tables
     │
 weft-simulator
     ├── Tags     the JSON Schema of the state and of each input, read by tag
-    ├── Hegel    one stateful rule for each step: a transition, an input, a shrink
+    ├── Engine   runs each case: start, then up to 20 steps
+    │     ├── hegel   one stateful rule for each step, a target, a shrink
+    │     └── random  seeded draws, no shrink
+    ├── Source   draw · pick · target, from the engine to the run and the runner
     ├── Check    the condition on the state before and after each step
-    └── Runner   schema · reset · apply
-          └── Bun    bun test <harness> ── socket, JSON lines ── <name>.weft.ts ── the code
+    └── Runner   schema · reset · apply · check
+weft-runner
+    └── Adapter  one runner for each adapter line
+          ├── Default  the transitions of the setup, in Rust
+          └── Wire     JSON messages to a runner and its answers
+                ├── bun   bun test <harness> ── unix socket ── <name>.weft.ts ── the code
+                ├── unix  a runner that listens on a unix socket
+                └── http  a runner at a URL
 ```
 
-`adapter <name> cases=<count>` in `weft.kdl` makes `weft` run each file against the code. `weft --ui` does not run the code. The crate `weft-simulator` holds the run. A runner is the `Runner` trait: `schema` gives the JSON Schema of the state and of each action, `reset` starts the code and gives its state, and `apply` runs one action and gives the new state. `adapter bun` is the runner that `weft` has now.
+`weft` runs each file. `weft --ui` does not run. The crate `weft-simulator` holds the run. An engine is the `Engine` trait: it runs each case through the `Case` trait, `start` and then each `step`, and gives each of them a `Source`. A source is the `Source` trait: `draw` gives a value for a field of a JSON Schema, `pick` gives an index into a list, and `target` gives a score. The engine keeps the highest score of a case. `engine hegel` is the default. `engine random seed=<number>` draws from a seeded generator and does not shrink. A runner is the `Runner` trait: `schema` gives the JSON Schema of the state and of each action, `reset` starts the run and gives its state, `apply` runs one action and gives the new state, and `check` checks the condition on the state before and after a step. The crate `weft-runner` holds `Adapter`, one enum with a runner for each adapter line.
 
-Each `<name>.weft.kdl` has a driver `<name>.weft.ts` beside it, with these exports:
+Without an `adapter` line, the runner is `adapter default cases=100`. It runs the transitions of the setup in Rust, without a driver and without the code, and its tables show how many steps and checks each action gets. These lines in `weft.kdl` run each file against the code:
+
+| Line | Runner |
+| --- | --- |
+| `adapter bun cases=<count>` | `weft` starts `bun test` on its harness, and the harness connects to `weft` on a unix socket |
+| `adapter unix path=<socket> cases=<count>` | `weft` connects to a runner that listens on the unix socket |
+| `adapter http url=<url> cases=<count>` | `weft` sends `GET <url>` for the schema and `POST <url>` for each message |
+
+Each runner gets the same JSON messages and gives the same answers. On a unix socket, each message and each answer is one line, and the first line from the runner is the schema.
+
+| Message from `weft` | Answer of the runner |
+| --- | --- |
+| `{"reset": true}` | `{"state": <state>}` or `{"error": "<text>"}` |
+| `{"apply": "<verb>", "object": "<object>", "input": <input>}` | `{"state": <state>}` or `{"error": "<text>"}` |
+| `{"drawn": <value>}` | the next answer of the same step |
+| `{"done": true}` | none; the run ends |
+
+The schema is `{"state": <JSON Schema>, "actions": [<JSON Schema>, …]}`. An `error` answer is a throw of the code and fails the step. Before it gives the state of a step, a runner can answer `{"draw": <JSON Schema>}` with the schema of one string, integer or boolean. `weft` draws the value from the engine and sends `{"drawn": <value>}`, so the engine records and shrinks each value that the runner draws. A `state` answer can also carry `"score": <number>`, and `weft` gives it to the engine as a target.
+
+With `adapter bun`, each `<name>.weft.kdl` has a driver `<name>.weft.ts` beside it, with these exports:
 
 ```ts
 export const state = z.strictObject({
