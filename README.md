@@ -31,7 +31,20 @@ invariant {
 }
 ```
 
-A condition is `and { <condition>… }`, `implies { <condition> <condition> }`, `in step <verb>…` or `eq <term> <term>`. A term is `<kind>.<key>`, `(next)<kind>.<key>`, a value, or a child line `iadd <term> <term>` of two integers. Each `eq` names at least one `<kind>.<key>`, and takes two terms of one type. The objects of `forall` are of `<kind>` and have each `<key>`, and each verb of `in step` is the verb of a transition. A condition without `next` holds in each state, as a Quint invariant. A condition with `next` holds at each step, from the state before it to the state after it. `weft` checks the condition in the start state and at each step from it, by each transition of the setup, and then at each `action` line:
+A condition is one [Quint builtin](https://quint.sh/docs/builtin) as a line `<op> <term>… { <op line>… }`. Its arguments are the terms on the line, and then its child lines, in order. A term is `<kind>.<key>`, `(next)<kind>.<key>`, `step` for the verb of the step, or a value. The builtins and their types are those of Quint:
+
+| Builtin | Arguments | Value |
+| --- | --- | --- |
+| `and`, `or` | two or more conditions | a condition |
+| `not` | one condition | a condition |
+| `implies`, `iff` | two conditions | a condition |
+| `eq`, `neq` | two terms of one type | a condition |
+| `in` | a term and one or more terms of its type | a condition |
+| `ilt`, `ilte`, `igt`, `igte` | two integers | a condition |
+| `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` | two integers | an integer |
+| `iuminus` | one integer | an integer |
+
+Each comparison (`eq`, `neq`, `in`, `ilt`, `ilte`, `igt` and `igte`) names at least one `<kind>.<key>` or `step`. The objects of `forall` are of `<kind>` and have each `<key>`, and each verb of `in step` is the verb of a transition. As in the Quint evaluator, `and`, `or` and `implies` evaluate their arguments only as far as they must, `idiv` and `imod` round to zero, and a division by zero, `ipow` of `0` and `0`, `ipow` with a negative exponent, or an integer overflow has no value. A condition without a value breaks the check. A condition without `next` holds in each state, as a Quint invariant. A condition with `next` holds at each step, from the state before it to the state after it. `weft` checks the condition in the start state and at each step from it, by each transition of the setup, and then at each `action` line:
 
 ```kdl
 invariant {
@@ -52,7 +65,7 @@ invariant {
 }
 ```
 
-The report heads each check with this condition, and with a sentence that each operator of the condition writes: `always` as "always", `forall` as "for each … in …", `and` as ", and", `implies` as "if …, then …", `in` as "is … or …", `eq(next(x), x)` as "x is unchanged", `eq(next(x), v)` as "x becomes v", any other `eq` as "equals", and `iadd(a, b)` as "a + b". It shows the values that break it, as `eq(<value>, <value>) = false`. The diagram draws a «check» box over each object of `forall` at each step where the check applies, with the state of the object after the step. At the step that breaks the check, the box adds the values that break it, as `eq(<value>, <value>) = false`.
+The report heads each check with this condition, and with a sentence that each operator of the condition writes: `always` as "always", `forall` as "for each … in …", `and` and `or` as ", and" and ", or", `implies` as "if …, then …", `iff` as "if and only if", `in` as "is … or …", `not(in(…))` as "is not … or …", `not(eq(a, b))` and `neq(a, b)` as "a does not equal b", any other `not` as "not", `eq(next(x), x)` as "x is unchanged", `eq(next(x), v)` as "x becomes v", any other `eq` as "equals", `ilt`, `ilte`, `igt` and `igte` as "is less than", "is at most", "is more than" and "is at least", and `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` and `iuminus` as "+", "-", "*", "/", "mod", "^" and "-". It shows the values that break it, as `eq(<value>, <value>) = false`. The diagram draws a «check» box over each object of `forall` at each step where the check applies, with the state of the object after the step. At the step that breaks the check, the box adds the values that break it, as `eq(<value>, <value>) = false`.
 
 ## Simulate
 

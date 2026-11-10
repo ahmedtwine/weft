@@ -117,19 +117,48 @@ pub struct Step {
     pub set: Vec<(String, Pairs)>,
 }
 
-#[derive(Debug, Clone)]
-pub enum Term {
-    Field(String, bool),
-    Value(Value),
-    Iadd(Box<Term>, Box<Term>),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Op {
+    And,
+    Or,
+    Not,
+    Implies,
+    Iff,
+    Eq,
+    Neq,
+    In,
+    Ilt,
+    Ilte,
+    Igt,
+    Igte,
+    Iadd,
+    Isub,
+    Imul,
+    Idiv,
+    Imod,
+    Ipow,
+    Iuminus,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    And(Vec<Expr>),
-    Implies(Box<Expr>, Box<Expr>),
-    In(Vec<String>),
-    Eq(Term, Term),
+    Field(String, bool),
+    Value(Value),
+    Step,
+    App(Op, Vec<Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ty {
+    Bool,
+    Int,
+    Text,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Lit {
+    Bool(bool),
+    Value(Value),
 }
 
 #[derive(Debug, Clone)]
@@ -177,185 +206,414 @@ fn list(names: &[String], word: &str) -> String {
     }
 }
 
-impl Value {
-    fn ty(&self) -> &'static str {
-        match self {
-            Value::Text(_) => "string",
-            Value::Int(_) => "integer",
+impl fmt::Display for Ty {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            Ty::Bool => "boolean",
+            Ty::Int => "integer",
+            Ty::Text => "string",
+        })
+    }
+}
+
+impl Ty {
+    fn of(v: &Value) -> Ty {
+        match v {
+            Value::Text(_) => Ty::Text,
+            Value::Int(_) => Ty::Int,
         }
     }
 }
 
-impl Term {
-    fn named(&self, o: &str) -> String {
+impl Lit {
+    fn quint(&self) -> String {
         match self {
-            Term::Field(k, false) => format!("{o}.{k}"),
-            Term::Field(k, true) => format!("next({o}.{k})"),
-            Term::Value(v) => v.quint(),
-            Term::Iadd(a, b) => format!("iadd({}, {})", a.named(o), b.named(o)),
+            Lit::Bool(b) => b.to_string(),
+            Lit::Value(v) => v.quint(),
         }
     }
 
-    fn english(&self, o: &str) -> String {
+    fn int(n: Option<i128>) -> Option<Lit> {
+        n.map(|n| Lit::Value(Value::Int(n)))
+    }
+}
+
+impl Op {
+    const ALL: [Op; 19] = [
+        Op::And,
+        Op::Or,
+        Op::Not,
+        Op::Implies,
+        Op::Iff,
+        Op::Eq,
+        Op::Neq,
+        Op::In,
+        Op::Ilt,
+        Op::Ilte,
+        Op::Igt,
+        Op::Igte,
+        Op::Iadd,
+        Op::Isub,
+        Op::Imul,
+        Op::Idiv,
+        Op::Imod,
+        Op::Ipow,
+        Op::Iuminus,
+    ];
+
+    fn name(self) -> &'static str {
         match self {
-            Term::Field(k, true) => format!("the next {o}.{k}"),
-            Term::Iadd(a, b) => format!("{} + {}", a.english(o), b.english(o)),
-            t => t.named(o),
+            Op::And => "and",
+            Op::Or => "or",
+            Op::Not => "not",
+            Op::Implies => "implies",
+            Op::Iff => "iff",
+            Op::Eq => "eq",
+            Op::Neq => "neq",
+            Op::In => "in",
+            Op::Ilt => "ilt",
+            Op::Ilte => "ilte",
+            Op::Igt => "igt",
+            Op::Igte => "igte",
+            Op::Iadd => "iadd",
+            Op::Isub => "isub",
+            Op::Imul => "imul",
+            Op::Idiv => "idiv",
+            Op::Imod => "imod",
+            Op::Ipow => "ipow",
+            Op::Iuminus => "iuminus",
         }
     }
 
-    fn read(&self, c: &Ctx, o: &str) -> Option<Value> {
+    fn word(self) -> &'static str {
         match self {
-            Term::Field(k, next) => match next {
-                true => c.nxt,
-                false => c.cur,
+            Op::And => "and",
+            Op::Or => "or",
+            Op::Not => "not",
+            Op::Implies => "implies",
+            Op::Iff => "if and only if",
+            Op::Eq => "equals",
+            Op::Neq => "does not equal",
+            Op::In => "is",
+            Op::Ilt => "is less than",
+            Op::Ilte => "is at most",
+            Op::Igt => "is more than",
+            Op::Igte => "is at least",
+            Op::Iadd => "+",
+            Op::Isub => "-",
+            Op::Imul => "*",
+            Op::Idiv => "/",
+            Op::Imod => "mod",
+            Op::Ipow => "^",
+            Op::Iuminus => "-",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Op> {
+        Op::ALL.into_iter().find(|o| o.name() == s)
+    }
+
+    fn arity(self) -> (usize, usize) {
+        match self {
+            Op::And | Op::Or | Op::In => (2, usize::MAX),
+            Op::Not | Op::Iuminus => (1, 1),
+            _ => (2, 2),
+        }
+    }
+
+    fn takes(self) -> &'static str {
+        match self {
+            Op::And | Op::Or => "two or more conditions",
+            Op::Not => "one condition",
+            Op::Implies | Op::Iff => "two conditions",
+            Op::Eq | Op::Neq => "two terms of one type",
+            Op::In => "a term and one or more terms of its type",
+            Op::Iuminus => "one integer",
+            _ => "two integers",
+        }
+    }
+
+    fn compares(self) -> bool {
+        matches!(
+            self,
+            Op::Eq | Op::Neq | Op::In | Op::Ilt | Op::Ilte | Op::Igt | Op::Igte
+        )
+    }
+
+    fn boolean(self) -> bool {
+        !matches!(
+            self,
+            Op::Iadd | Op::Isub | Op::Imul | Op::Idiv | Op::Imod | Op::Ipow | Op::Iuminus
+        )
+    }
+
+    fn ty(self, args: &[Ty]) -> Option<Ty> {
+        let all = |t: Ty| args.iter().all(|a| *a == t);
+        match (self, args) {
+            (Op::Eq | Op::Neq | Op::In, [t, rest @ ..]) if rest.iter().all(|r| r == t) => {
+                Some(Ty::Bool)
             }
-            .get(o)?
-            .get(k)
-            .cloned(),
-            Term::Value(v) => Some(v.clone()),
-            Term::Iadd(a, b) => match (a.read(c, o)?, b.read(c, o)?) {
-                (Value::Int(x), Value::Int(y)) => x.checked_add(y).map(Value::Int),
+            (Op::Ilt | Op::Ilte | Op::Igt | Op::Igte, _) if all(Ty::Int) => Some(Ty::Bool),
+            (op, _) if op.boolean() && !op.compares() && all(Ty::Bool) => Some(Ty::Bool),
+            (op, _) if !op.boolean() && all(Ty::Int) => Some(Ty::Int),
+            _ => None,
+        }
+    }
+
+    fn apply(self, args: &[Lit]) -> Option<Lit> {
+        let ints: Option<Vec<i128>> = args
+            .iter()
+            .map(|a| match a {
+                Lit::Value(Value::Int(n)) => Some(*n),
                 _ => None,
-            },
+            })
+            .collect();
+        match (self, args) {
+            (Op::Not, [Lit::Bool(a)]) => Some(Lit::Bool(!a)),
+            (Op::Iff, [Lit::Bool(a), Lit::Bool(b)]) => Some(Lit::Bool(a == b)),
+            (Op::Eq, [a, b]) => Some(Lit::Bool(a == b)),
+            (Op::Neq, [a, b]) => Some(Lit::Bool(a != b)),
+            (Op::In, [a, rest @ ..]) => Some(Lit::Bool(rest.contains(a))),
+            _ => self.compute(&ints?),
         }
     }
 
-    fn fields(&self) -> Vec<(&String, bool)> {
-        match self {
-            Term::Field(k, next) => vec![(k, *next)],
-            Term::Value(_) => Vec::new(),
-            Term::Iadd(a, b) => [a.fields(), b.fields()].concat(),
-        }
-    }
-
-    fn ty(&self, x: &Object, bound: &str) -> Result<&'static str, String> {
-        match self {
-            Term::Field(k, _) => x
-                .initial
-                .get(k)
-                .map(Value::ty)
-                .ok_or_else(|| format!("`{}` has no `{k}`", x.name)),
-            Term::Value(v) => Ok(v.ty()),
-            Term::Iadd(a, b) => match (a.ty(x, bound)?, b.ty(x, bound)?) {
-                ("integer", "integer") => Ok("integer"),
-                _ => Err(format!("`{}` takes two integers", self.named(bound))),
-            },
+    fn compute(self, n: &[i128]) -> Option<Lit> {
+        match (self, n) {
+            (Op::Ilt, [a, b]) => Some(Lit::Bool(a < b)),
+            (Op::Ilte, [a, b]) => Some(Lit::Bool(a <= b)),
+            (Op::Igt, [a, b]) => Some(Lit::Bool(a > b)),
+            (Op::Igte, [a, b]) => Some(Lit::Bool(a >= b)),
+            (Op::Iadd, [a, b]) => Lit::int(a.checked_add(*b)),
+            (Op::Isub, [a, b]) => Lit::int(a.checked_sub(*b)),
+            (Op::Imul, [a, b]) => Lit::int(a.checked_mul(*b)),
+            (Op::Idiv, [a, b]) => Lit::int(a.checked_div(*b)),
+            (Op::Imod, [a, b]) => Lit::int(a.checked_rem(*b)),
+            (Op::Ipow, [a, b]) if (*a, *b) != (0, 0) => {
+                Lit::int(u32::try_from(*b).ok().and_then(|e| a.checked_pow(e)))
+            }
+            (Op::Iuminus, [a]) => Lit::int(a.checked_neg()),
+            _ => None,
         }
     }
 }
 
 impl Expr {
-    fn show(&self, step: &str, term: &dyn Fn(&Term) -> String) -> String {
+    fn leaf(&self, o: &str) -> Option<String> {
         match self {
-            Expr::And(all) => {
-                let each: Vec<String> = all.iter().map(|e| e.show(step, term)).collect();
-                format!("and({})", each.join(", "))
+            Expr::Field(k, false) => Some(format!("{o}.{k}")),
+            Expr::Field(k, true) => Some(format!("next({o}.{k})")),
+            Expr::Value(v) => Some(v.quint()),
+            Expr::Step => Some("step".into()),
+            Expr::App(..) => None,
+        }
+    }
+
+    fn show(&self, part: &dyn Fn(&Expr) -> Option<String>) -> String {
+        let each = |args: &[Expr]| {
+            args.iter()
+                .map(|e| e.show(part))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match (part(self), self) {
+            (Some(s), _) => s,
+            (None, Expr::App(Op::In, args)) => {
+                format!("in({}, Set({}))", args[0].show(part), each(&args[1..]))
             }
-            Expr::Implies(a, b) => {
-                format!("implies({}, {})", a.show(step, term), b.show(step, term))
-            }
-            Expr::In(verbs) => {
-                let set: Vec<String> = verbs.iter().map(|v| format!("{v:?}")).collect();
-                format!("in({step}, Set({}))", set.join(", "))
-            }
-            Expr::Eq(a, b) => format!("eq({}, {})", term(a), term(b)),
+            (None, Expr::App(op, args)) => format!("{}({})", op.name(), each(args)),
+            (None, _) => String::new(),
         }
     }
 
     fn quint(&self, o: &str) -> String {
-        self.show("step", &|t| t.named(o))
+        self.show(&|e| e.leaf(o))
     }
 
     fn valued(&self, c: &Ctx, o: &str) -> String {
-        self.show(&format!("{:?}", c.verb), &|t| {
-            t.read(c, o).map_or(String::new(), |v| v.quint())
+        self.show(&|e| match e {
+            Expr::App(op, _) if op.boolean() => None,
+            e => Some(e.eval(c, o).map_or(String::new(), |v| v.quint())),
         })
     }
 
     fn english(&self, o: &str) -> String {
+        let each = |args: &[Expr], by: &str| {
+            args.iter()
+                .map(|e| e.english(o))
+                .collect::<Vec<_>>()
+                .join(by)
+        };
+        let member = |all: &[Expr], word: &str| {
+            let set: Vec<String> = all[1..]
+                .iter()
+                .map(|e| match e {
+                    Expr::Value(v) => v.to_string(),
+                    e => e.english(o),
+                })
+                .collect();
+            format!("{} {word} {}", all[0].english(o), list(&set, "or"))
+        };
         match self {
-            Expr::And(all) => {
-                let each: Vec<String> = all.iter().map(|e| e.english(o)).collect();
-                each.join(", and ")
+            Expr::Field(k, true) => format!("the next {o}.{k}"),
+            Expr::App(op @ (Op::And | Op::Or), all) => each(all, &format!(", {} ", op.word())),
+            Expr::App(Op::Implies, all) => format!("if {}", each(all, ", then ")),
+            Expr::App(Op::In, all) => member(all, "is"),
+            Expr::App(Op::Not, all) => match &all[0] {
+                Expr::App(Op::In, inner) => member(inner, "is not"),
+                Expr::App(Op::Eq, inner) => each(inner, " does not equal "),
+                e => format!("not {}", e.english(o)),
+            },
+            Expr::App(Op::Eq, all) => match all.as_slice() {
+                [Expr::Field(k, true), Expr::Field(j, false)] if k == j => {
+                    format!("{o}.{k} is unchanged")
+                }
+                [Expr::Field(k, true), b] => format!("{o}.{k} becomes {}", b.english(o)),
+                _ => each(all, " equals "),
+            },
+            Expr::App(op, all) if all.len() == 1 => format!("{}{}", op.word(), all[0].english(o)),
+            Expr::App(op, all) => each(all, &format!(" {} ", op.word())),
+            e => e.leaf(o).unwrap_or_default(),
+        }
+    }
+
+    fn eval(&self, c: &Ctx, o: &str) -> Option<Lit> {
+        let first = |all: &[Expr], stop: bool| {
+            all.iter()
+                .map(|e| e.truth(c, o))
+                .find(|t| *t != Some(!stop))
+                .unwrap_or(Some(!stop))
+                .map(Lit::Bool)
+        };
+        match self {
+            Expr::Field(k, next) => match next {
+                true => c.nxt,
+                false => c.cur,
             }
-            Expr::Implies(a, b) => format!("if {}, then {}", a.english(o), b.english(o)),
-            Expr::In(verbs) => format!("step is {}", list(verbs, "or")),
-            Expr::Eq(Term::Field(k, true), Term::Field(j, false)) if k == j => {
-                format!("{o}.{k} is unchanged")
-            }
-            Expr::Eq(Term::Field(k, true), b) => format!("{o}.{k} becomes {}", b.english(o)),
-            Expr::Eq(a, b) => format!("{} equals {}", a.english(o), b.english(o)),
+            .get(o)?
+            .get(k)
+            .cloned()
+            .map(Lit::Value),
+            Expr::Value(v) => Some(Lit::Value(v.clone())),
+            Expr::Step => Some(Lit::Value(Value::Text(c.verb.to_string()))),
+            Expr::App(Op::And, all) => first(all, false),
+            Expr::App(Op::Or, all) => first(all, true),
+            Expr::App(Op::Implies, all) => match all[0].truth(c, o)? {
+                false => Some(Lit::Bool(true)),
+                true => all[1].eval(c, o),
+            },
+            Expr::App(op, all) => op.apply(
+                &all.iter()
+                    .map(|e| e.eval(c, o))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+        }
+    }
+
+    fn truth(&self, c: &Ctx, o: &str) -> Option<bool> {
+        match self.eval(c, o)? {
+            Lit::Bool(b) => Some(b),
+            Lit::Value(_) => None,
         }
     }
 
     fn holds(&self, c: &Ctx, o: &str) -> bool {
-        match self {
-            Expr::And(all) => all.iter().all(|e| e.holds(c, o)),
-            Expr::Implies(a, b) => !a.holds(c, o) || b.holds(c, o),
-            Expr::In(verbs) => verbs.iter().any(|v| v == c.verb),
-            Expr::Eq(a, b) => a.read(c, o) == b.read(c, o),
-        }
+        self.truth(c, o) == Some(true)
     }
 
     fn guarded(&self, c: &Ctx, o: &str) -> bool {
         match self {
-            Expr::And(all) => all.iter().any(|e| e.guarded(c, o)),
-            Expr::Implies(a, _) => a.holds(c, o),
-            Expr::In(_) => self.holds(c, o),
-            Expr::Eq(..) => true,
+            Expr::App(Op::And | Op::Or, all) => all.iter().any(|e| e.guarded(c, o)),
+            Expr::App(Op::Implies, all) => all[0].holds(c, o),
+            Expr::App(Op::In, all) if matches!(all[0], Expr::Step) => self.holds(c, o),
+            _ => true,
         }
     }
 
     fn failed(&self, c: &Ctx, o: &str) -> &Expr {
         match self {
-            Expr::And(all) => all
+            Expr::App(Op::And, all) => all
                 .iter()
                 .find(|e| !e.holds(c, o))
                 .map_or(self, |e| e.failed(c, o)),
-            Expr::Implies(_, b) => b.failed(c, o),
+            Expr::App(Op::Implies, all) => all[1].failed(c, o),
             e => e,
         }
     }
 
     fn evidence(&self, c: &Ctx, bound: &str, o: &str) -> Vec<String> {
         match self {
-            Expr::And(all) => all
+            Expr::App(Op::And, all) => all
                 .iter()
                 .find(|e| !e.holds(c, o))
                 .map_or_else(Vec::new, |e| e.evidence(c, bound, o)),
-            Expr::Implies(a, b) => [
-                vec![format!("{} = true", a.valued(c, o))],
-                b.evidence(c, bound, o),
+            Expr::App(Op::Implies, all) => [
+                vec![format!("{} = true", all[0].valued(c, o))],
+                all[1].evidence(c, bound, o),
             ]
             .concat(),
             e => vec![format!("{} = {} = false", e.quint(bound), e.valued(c, o))],
         }
     }
 
-    fn eqs(&self) -> Vec<(&Term, &Term)> {
+    fn all(&self) -> Vec<&Expr> {
         match self {
-            Expr::And(all) => all.iter().flat_map(Expr::eqs).collect(),
-            Expr::Implies(a, b) => [a.eqs(), b.eqs()].concat(),
-            Expr::In(_) => Vec::new(),
-            Expr::Eq(a, b) => vec![(a, b)],
+            Expr::App(_, args) => [vec![self], args.iter().flat_map(Expr::all).collect()].concat(),
+            e => vec![e],
         }
     }
 
-    fn ins(&self) -> Vec<&[String]> {
-        match self {
-            Expr::And(all) => all.iter().flat_map(Expr::ins).collect(),
-            Expr::Implies(a, b) => [a.ins(), b.ins()].concat(),
-            Expr::In(verbs) => vec![verbs],
-            Expr::Eq(..) => Vec::new(),
-        }
+    fn reads(&self) -> bool {
+        self.all()
+            .iter()
+            .any(|e| matches!(e, Expr::Field(..) | Expr::Step))
+    }
+
+    fn steps(&self) -> Vec<&[Expr]> {
+        self.all()
+            .into_iter()
+            .filter_map(|e| match e {
+                Expr::App(Op::In, all) if matches!(all[0], Expr::Step) => Some(&all[1..]),
+                _ => None,
+            })
+            .collect()
     }
 
     fn fields(&self) -> Vec<(&String, bool)> {
-        self.eqs()
+        self.all()
             .into_iter()
-            .flat_map(|(a, b)| [a.fields(), b.fields()].concat())
+            .filter_map(|e| match e {
+                Expr::Field(k, next) => Some((k, *next)),
+                _ => None,
+            })
             .collect()
+    }
+
+    fn ty(&self, x: &Object, bound: &str) -> Result<Ty, String> {
+        match self {
+            Expr::Field(k, _) => x
+                .initial
+                .get(k)
+                .map(Ty::of)
+                .ok_or_else(|| format!("`{}` has no `{k}`", x.name)),
+            Expr::Value(v) => Ok(Ty::of(v)),
+            Expr::Step => Ok(Ty::Text),
+            Expr::App(op, args) => {
+                let tys = args
+                    .iter()
+                    .map(|e| e.ty(x, bound))
+                    .collect::<Result<Vec<_>, _>>()?;
+                op.ty(&tys).ok_or_else(|| {
+                    let names: Vec<String> = tys.iter().map(Ty::to_string).collect();
+                    format!(
+                        "`{}` takes {}, not {}",
+                        self.quint(bound),
+                        op.takes(),
+                        list(&names, "and")
+                    )
+                })
+            }
+        }
     }
 }
 
@@ -815,7 +1073,7 @@ fn step(n: &KdlNode) -> Result<Step, String> {
     })
 }
 
-const CHECK: &str = "`invariant` holds `forall <kind> <object>… { <condition> }`; a condition is `and { <condition>… }`, `implies { <condition> <condition> }`, `in step <verb>…` or `eq <term> <term>`; a term is `<kind>.<key>`, `(next)<kind>.<key>`, a value, or a child line `iadd <term> <term>`, and each `eq` names at least one `<kind>.<key>`";
+const CHECK: &str = "`invariant` holds `forall <kind> <object>… { <condition> }`; a condition is a Quint builtin `<op> <term>… { <op line>… }`: `and`, `or`, `not`, `implies`, `iff`, `eq`, `neq`, `in`, `ilt`, `ilte`, `igt`, `igte`, `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` or `iuminus`; a term is `<kind>.<key>`, `(next)<kind>.<key>`, `step`, or a value, and each comparison names at least one `<kind>.<key>` or `step`";
 
 fn only<'a>(n: &'a KdlNode, node: &str) -> Result<&'a KdlNode, String> {
     match lines(n) {
@@ -838,7 +1096,7 @@ fn plain(n: &KdlNode) -> Result<Vec<String>, String> {
         .collect()
 }
 
-fn term(e: &KdlEntry, bound: &str) -> Option<Term> {
+fn term(e: &KdlEntry, bound: &str) -> Result<Expr, String> {
     let field = |s: &str| {
         s.strip_prefix(bound)?
             .strip_prefix('.')
@@ -846,64 +1104,39 @@ fn term(e: &KdlEntry, bound: &str) -> Option<Term> {
             .map(String::from)
     };
     match (e.name(), e.ty().map(|t| t.value()), e.value()) {
-        (None, None, KdlValue::String(s)) => Some(field(s).map_or_else(
-            || Term::Value(Value::Text(s.clone())),
-            |k| Term::Field(k, false),
+        (None, None, KdlValue::String(s)) if s == "step" => Ok(Expr::Step),
+        (None, None, KdlValue::String(s)) => Ok(field(s).map_or_else(
+            || Expr::Value(Value::Text(s.clone())),
+            |k| Expr::Field(k, false),
         )),
-        (None, Some("next"), KdlValue::String(s)) => field(s).map(|k| Term::Field(k, true)),
-        (None, None, KdlValue::Integer(n)) => Some(Term::Value(Value::Int(*n))),
-        _ => None,
-    }
-}
-
-fn sum(n: &KdlNode, bound: &str) -> Result<Term, String> {
-    let terms: Option<Vec<Term>> = n.entries().iter().map(|e| term(e, bound)).collect();
-    match (
-        name(n),
-        n.children().is_none(),
-        terms.map(<[Term; 2]>::try_from),
-    ) {
-        ("iadd", true, Some(Ok([a, b]))) => Ok(Term::Iadd(Box::new(a), Box::new(b))),
-        (other, ..) => Err(format!("`{other}` is not `iadd <term> <term>`: {CHECK}")),
+        (None, Some("next"), KdlValue::String(s)) => field(s)
+            .map(|k| Expr::Field(k, true))
+            .ok_or_else(|| format!("`(next)` takes `{bound}.<key>`, not `{s}`: {CHECK}")),
+        (None, None, KdlValue::Integer(n)) => Ok(Expr::Value(Value::Int(*n))),
+        _ => Err(format!("`{}` is not a term: {CHECK}", e.to_string().trim())),
     }
 }
 
 fn expr(n: &KdlNode, bound: &str) -> Result<Expr, String> {
-    let leaf = n.children().is_none();
-    match (name(n), lines(n)) {
-        ("implies", [a, b]) if n.entries().is_empty() => Ok(Expr::Implies(
-            Box::new(expr(a, bound)?),
-            Box::new(expr(b, bound)?),
-        )),
-        ("in", []) if leaf => match plain(n)?.split_first() {
-            Some((s, verbs)) if s == "step" && !verbs.is_empty() => Ok(Expr::In(verbs.to_vec())),
-            _ => Err(format!("`in` takes `step` and one or more verbs: {CHECK}")),
-        },
-        ("and", all) if n.entries().is_empty() && all.len() > 1 => Ok(Expr::And(
-            all.iter()
-                .map(|e| expr(e, bound))
-                .collect::<Result<_, _>>()?,
-        )),
-        ("eq", sums) => {
-            let wrong =
-                || format!("`eq` takes two terms, and at least one is `{bound}.<key>`: {CHECK}");
-            let mut terms: Vec<Term> = n
-                .entries()
-                .iter()
-                .map(|e| term(e, bound))
-                .collect::<Option<_>>()
-                .ok_or_else(wrong)?;
-            for c in sums {
-                terms.push(sum(c, bound)?);
-            }
-            match <[Term; 2]>::try_from(terms) {
-                Ok([a, b]) if !a.fields().is_empty() || !b.fields().is_empty() => {
-                    Ok(Expr::Eq(a, b))
-                }
-                _ => Err(wrong()),
-            }
+    let op =
+        Op::parse(name(n)).ok_or_else(|| format!("`{}` is not a builtin: {CHECK}", name(n)))?;
+    let args = n
+        .entries()
+        .iter()
+        .map(|e| term(e, bound))
+        .chain(lines(n).iter().map(|c| expr(c, bound)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (min, max) = op.arity();
+    let app = Expr::App(op, args);
+    match &app {
+        Expr::App(_, args) if args.len() < min || args.len() > max => {
+            Err(format!("`{}` takes {}: {CHECK}", op.name(), op.takes()))
         }
-        (other, _) => Err(format!("`{other}` is not a condition: {CHECK}")),
+        _ if op.compares() && !app.reads() => Err(format!(
+            "`{}` names at least one `{bound}.<key>` or `step`: {CHECK}",
+            app.quint(bound)
+        )),
+        _ => Ok(app),
     }
 }
 
@@ -936,9 +1169,15 @@ fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
         .flat_map(|o| &o.moves)
         .map(|m| m.verb.as_str())
         .collect();
-    for steps in c.body.ins() {
-        for (i, s) in steps.iter().enumerate() {
-            if steps[..i].contains(s) {
+    for steps in c.body.steps() {
+        for (i, e) in steps.iter().enumerate() {
+            let Expr::Value(Value::Text(s)) = e else {
+                return Err(format!(
+                    "`in step` takes verbs, not `{}`",
+                    e.quint(&c.kind.to_string())
+                ));
+            };
+            if steps[..i].contains(e) {
                 return Err(format!("`in step` names `{s}` twice"));
             }
             if !verbs.contains(&s.as_str()) {
@@ -964,23 +1203,26 @@ fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
             (true, false) => {}
         }
         let bound = c.kind.to_string();
-        for (a, b) in c.body.eqs() {
-            let (p, q) = (a.ty(x, &bound)?, b.ty(x, &bound)?);
-            if p != q {
-                return Err(format!(
-                    "`eq({}, {})` takes two terms of one type, not {p} and {q}",
-                    a.named(&bound),
-                    b.named(&bound)
-                ));
-            }
+        let ty = c.body.ty(x, &bound)?;
+        if ty != Ty::Bool {
+            return Err(format!(
+                "`forall` holds a condition, not `{}` of type {ty}",
+                c.body.quint(&bound)
+            ));
         }
-        for pair in c.body.eqs() {
-            let ((Term::Field(k, _), Term::Value(v)) | (Term::Value(v), Term::Field(k, _))) = pair
-            else {
+        for e in c.body.all() {
+            let Expr::App(Op::Eq | Op::Neq | Op::In, args) = e else {
                 continue;
             };
-            if !x.states.iter().any(|s| s.get(k) == Some(v)) {
-                return Err(format!("`{k}={}` is in no state of `{o}`", v.quint()));
+            for a in args {
+                for b in args {
+                    let (Expr::Field(k, _), Expr::Value(v)) = (a, b) else {
+                        continue;
+                    };
+                    if !x.states.iter().any(|s| s.get(k) == Some(v)) {
+                        return Err(format!("`{k}={}` is in no state of `{o}`", v.quint()));
+                    }
+                }
             }
         }
     }
@@ -1512,7 +1754,7 @@ check {
             (
                 "iadd browser.count 1",
                 "iadd browser.count \"1\"",
-                Err("`iadd(browser.count, \"1\")` takes two integers"),
+                Err("`iadd(browser.count, \"1\")` takes two integers, not integer and string"),
             ),
             (
                 "eq (next)browser.count browser.count",
@@ -1523,13 +1765,255 @@ check {
             ),
             (
                 "iadd browser.count 1",
-                "isub browser.count 1",
-                Err(&format!("`isub` is not `iadd <term> <term>`: {CHECK}")),
+                "isum browser.count 1",
+                Err(&format!("`isum` is not a builtin: {CHECK}")),
+            ),
+            (
+                "iadd browser.count 1",
+                "iadd browser.count",
+                Err(&format!("`iadd` takes two integers: {CHECK}")),
+            ),
+            (
+                "in step reload",
+                "ilte browser.count browser.snapshot",
+                Err(
+                    "`ilte(browser.count, browser.snapshot)` takes two integers, not integer and string",
+                ),
+            ),
+            (
+                "in step reload",
+                "iadd browser.count 1",
+                Err(
+                    "`implies(iadd(browser.count, 1), eq(next(browser.count), browser.count))` takes two conditions, not integer and boolean",
+                ),
+            ),
+            (
+                "in step reload",
+                "ilte 1 2",
+                Err(&format!(
+                    "`ilte(1, 2)` names at least one `browser.<key>` or `step`: {CHECK}"
+                )),
+            ),
+            (
+                "in step reload",
+                "in step browser.snapshot",
+                Err("`in step` takes verbs, not `browser.snapshot`"),
             ),
         ];
         for (from, to, want) in cases {
             assert_eq!(built(SUBMIT, from, to), want.map_err(String::from), "{to}");
         }
+    }
+
+    fn condition(src: &str) -> Check {
+        let doc = KdlDocument::parse_v2(src).unwrap();
+        Check {
+            kind: Kind::Browser,
+            objects: vec!["page".into()],
+            body: expr(&doc.nodes()[0], "browser").unwrap(),
+        }
+    }
+
+    fn page(count: i128) -> State {
+        State::from([(
+            "page".into(),
+            Pairs::from([
+                ("count".into(), Value::Int(count)),
+                ("snapshot".into(), Value::Text("snap_0".into())),
+            ]),
+        )])
+    }
+
+    #[test]
+    fn each_builtin_gives_the_value_of_the_quint_evaluator() {
+        let cases = [
+            ("ilte (next)browser.count browser.count", 1, 1, true),
+            ("ilte (next)browser.count browser.count", 1, 2, false),
+            ("ilt (next)browser.count browser.count", 1, 0, true),
+            ("ilt (next)browser.count browser.count", 1, 1, false),
+            ("igte (next)browser.count browser.count", 1, 1, true),
+            ("igte (next)browser.count browser.count", 1, 0, false),
+            ("igt (next)browser.count browser.count", 1, 2, true),
+            ("igt (next)browser.count browser.count", 1, 1, false),
+            ("neq (next)browser.count browser.count", 1, 2, true),
+            ("neq (next)browser.count browser.count", 1, 1, false),
+            ("or { eq browser.count 1; eq browser.count 2; }", 0, 2, true),
+            (
+                "or { eq browser.count 1; eq browser.count 2; }",
+                0,
+                3,
+                false,
+            ),
+            ("not { eq browser.count 1; }", 0, 2, true),
+            ("not { eq browser.count 1; }", 0, 1, false),
+            ("iff { eq browser.count 1; in step send; }", 0, 1, true),
+            ("iff { eq browser.count 1; in step send; }", 0, 2, false),
+            (
+                "eq (next)browser.count { isub browser.count 1; }",
+                3,
+                2,
+                true,
+            ),
+            (
+                "eq (next)browser.count { imul browser.count 2; }",
+                3,
+                6,
+                true,
+            ),
+            (
+                "eq (next)browser.count { imul browser.count 2; }",
+                3,
+                5,
+                false,
+            ),
+            (
+                "eq (next)browser.count { idiv browser.count 2; }",
+                7,
+                3,
+                true,
+            ),
+            (
+                "eq (next)browser.count { idiv browser.count 2; }",
+                -7,
+                -3,
+                true,
+            ),
+            (
+                "eq (next)browser.count { imod browser.count 2; }",
+                7,
+                1,
+                true,
+            ),
+            (
+                "eq (next)browser.count { imod browser.count 2; }",
+                -7,
+                -1,
+                true,
+            ),
+            (
+                "eq (next)browser.count { ipow browser.count 3; }",
+                2,
+                8,
+                true,
+            ),
+            (
+                "eq (next)browser.count { iuminus browser.count; }",
+                2,
+                -2,
+                true,
+            ),
+            (
+                "eq (next)browser.count { idiv 6 browser.count; }",
+                0,
+                0,
+                false,
+            ),
+            (
+                "eq (next)browser.count { imod 6 browser.count; }",
+                0,
+                0,
+                false,
+            ),
+            (
+                "eq (next)browser.count { ipow browser.count 0; }",
+                0,
+                1,
+                false,
+            ),
+            (
+                "eq (next)browser.count { ipow 2 browser.count; }",
+                -1,
+                0,
+                false,
+            ),
+            (
+                "eq (next)browser.count { iadd browser.count 1; }",
+                i128::MAX,
+                i128::MIN,
+                false,
+            ),
+            (
+                "implies { neq browser.count 0; eq 3 { idiv 6 browser.count; }; }",
+                0,
+                0,
+                true,
+            ),
+            (
+                "implies { neq browser.count 0; eq 3 { idiv 6 browser.count; }; }",
+                2,
+                2,
+                true,
+            ),
+            (
+                "implies { neq browser.count 0; eq 3 { idiv 6 browser.count; }; }",
+                3,
+                3,
+                false,
+            ),
+            ("in browser.snapshot snap_1 snap_0", 0, 0, true),
+            ("in browser.snapshot snap_1 snap_2", 0, 0, false),
+            ("in step open send", 0, 0, true),
+            ("in step open reload", 0, 0, false),
+        ];
+        for (src, cur, nxt, holds) in cases {
+            let broken = condition(src).judge(&page(cur), &page(nxt), "send");
+            assert_eq!(broken.is_none(), holds, "{src} from {cur} to {nxt}");
+        }
+    }
+
+    #[test]
+    fn each_builtin_reads_as_quint_and_as_english() {
+        let cases = [
+            (
+                "ilte (next)browser.count browser.count",
+                "ilte(next(browser.count), browser.count)",
+                "the next browser.count is at most browser.count",
+            ),
+            (
+                "or { igt browser.count 1; not { eq browser.snapshot snap_0; }; }",
+                r#"or(igt(browser.count, 1), not(eq(browser.snapshot, "snap_0")))"#,
+                r#"browser.count is more than 1, or browser.snapshot does not equal "snap_0""#,
+            ),
+            (
+                "implies { not { in step send open; }; eq (next)browser.count browser.count; }",
+                r#"implies(not(in(step, Set("send", "open"))), eq(next(browser.count), browser.count))"#,
+                "if step is not send or open, then browser.count is unchanged",
+            ),
+            (
+                "not { ilt browser.count 1; }",
+                "not(ilt(browser.count, 1))",
+                "not browser.count is less than 1",
+            ),
+            (
+                "iff { neq browser.count 0; in browser.snapshot snap_0 snap_1; }",
+                r#"iff(neq(browser.count, 0), in(browser.snapshot, Set("snap_0", "snap_1")))"#,
+                "browser.count does not equal 0 if and only if browser.snapshot is snap_0 or snap_1",
+            ),
+            (
+                "eq (next)browser.count { imod { ipow browser.count 2; iuminus 3; }; }",
+                "eq(next(browser.count), imod(ipow(browser.count, 2), iuminus(3)))",
+                "browser.count becomes browser.count ^ 2 mod -3",
+            ),
+        ];
+        for (src, quint, english) in cases {
+            let c = condition(src);
+            assert_eq!(
+                (c.body.quint("browser"), c.body.english("browser")),
+                (quint.to_string(), english.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn the_evidence_shows_the_value_of_each_integer_builtin() {
+        let c = condition("ilte (next)browser.count { isub browser.count 1; }");
+        assert_eq!(
+            c.judge(&page(3), &page(5), "send"),
+            Some(vec![
+                "browser = page".into(),
+                "ilte(next(browser.count), isub(browser.count, 1)) = ilte(5, 2) = false".into()
+            ])
+        );
     }
 
     #[test]
@@ -1666,7 +2150,7 @@ check {
                 "eq (next)element.value element.value",
                 "eq (next)element element",
                 Err(&format!(
-                    "`eq` takes two terms, and at least one is `element.<key>`: {CHECK}"
+                    "`(next)` takes `element.<key>`, not `element`: {CHECK}"
                 )),
             ),
             (
