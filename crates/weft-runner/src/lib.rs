@@ -17,12 +17,18 @@ pub fn start<'a>(
     d: &'a Diagram,
     file: &Path,
 ) -> Result<Box<dyn Runner + 'a>, String> {
+    let dir = file
+        .strip_prefix(".")
+        .unwrap_or(file)
+        .parent()
+        .unwrap_or(Path::new(""));
     Ok(match (&config.transport, &config.adapter) {
-        (Some(transport), _) => Box::new(Wire::new(transport::connect(transport)?)?),
+        (Some(transport), _) => Box::new(Wire::new(transport::connect(transport)?, dir)?),
         (None, Adapter::Default) => Box::new(Setup::new(d, file)),
-        (None, Adapter::Bun) => Box::new(Wire::new(Box::new(Bun::start(
-            &file.with_extension("ts"),
-        )?))?),
+        (None, Adapter::Bun) => Box::new(Wire::new(
+            Box::new(Bun::start(&file.with_extension("ts"))?),
+            dir,
+        )?),
     })
 }
 
@@ -36,6 +42,9 @@ mod tests {
     use std::thread;
     use weft_parse::{Ran, Span};
     use weft_simulator::{Outcome, Source};
+
+    const CODE: &str = "src/page.ts";
+    const FILE: &str = "invariants/page.weft.kdl";
 
     const PAGE: &str = r#"
 setup {
@@ -74,15 +83,18 @@ check {
 "#;
 
     fn schema() -> Json {
-        let actions = ["send", "reload"]
-            .map(|verb| json!({ "type": "object", "weft": verb, "properties": {} }));
+        let actions = ["send", "reload"].map(|verb| {
+            json!({ "type": "object", "weft": verb, "from": [CODE], "run": CODE, "properties": {} })
+        });
         json!({
             "state": {
                 "type": "object",
                 "properties": {
                     "page": {
                         "type": "object",
-                        "properties": { "count": { "type": "integer", "weft": "page.count" } }
+                        "properties": {
+                            "count": { "type": "integer", "weft": "page.count", "from": [CODE] }
+                        }
                     }
                 }
             },
@@ -111,7 +123,11 @@ check {
         json!({ "state": { "page": { "count": *count } }, "score": *count })
     }
 
-    fn served(mut reply: impl FnMut(&Json) -> Json + Send + 'static) -> String {
+    fn served(reply: impl FnMut(&Json) -> Json + Send + 'static) -> String {
+        sent(schema(), reply)
+    }
+
+    fn sent(schema: Json, mut reply: impl FnMut(&Json) -> Json + Send + 'static) -> String {
         let path = std::env::temp_dir().join(format!(
             "weft-unix-{}-{:?}",
             std::process::id(),
@@ -123,7 +139,7 @@ check {
             let (stream, _) = listener.accept().unwrap();
             std::fs::remove_file(bound).unwrap();
             let mut writer = stream.try_clone().unwrap();
-            writeln!(writer, "{}", schema()).unwrap();
+            writeln!(writer, "{schema}").unwrap();
             for line in BufReader::new(stream).lines() {
                 let message: Json = serde_json::from_str(&line.unwrap()).unwrap();
                 let out = reply(&message);
@@ -142,7 +158,7 @@ check {
         ))
         .unwrap();
         let d = weft_parse::parse(PAGE, &config).unwrap();
-        let mut runner = start(&config, &d, Path::new("page.weft.kdl")).unwrap();
+        let mut runner = start(&config, &d, Path::new(FILE)).unwrap();
         let o = weft_simulator::simulate(&d, runner.as_mut(), config.cases, None).unwrap();
         (config, o)
     }
@@ -159,10 +175,10 @@ check {
         assert_eq!(
             o.ran,
             Ran {
-                reset: vec![span("page.weft.kdl", 4, 4)],
+                reset: vec![span(FILE, 4, 4)],
                 actions: vec![
-                    ("send".into(), vec![span("page.weft.kdl", 6, 6)]),
-                    ("reload".into(), vec![span("page.weft.kdl", 9, 9)]),
+                    ("send".into(), vec![span(FILE, 6, 6)]),
+                    ("reload".into(), vec![span(FILE, 9, 9)]),
                 ],
             }
         );
@@ -210,7 +226,7 @@ check {
         ))
         .unwrap();
         let d = weft_parse::parse(PAGE, &config).unwrap();
-        let mut runner = start(&config, &d, Path::new("page.weft.kdl")).unwrap();
+        let mut runner = start(&config, &d, Path::new(FILE)).unwrap();
         let error = weft_simulator::simulate(&d, runner.as_mut(), config.cases, None)
             .err()
             .unwrap();
@@ -275,19 +291,53 @@ check {
         );
     }
 
+    #[test]
+    fn a_tag_and_the_function_of_an_action_are_from_a_file_outside_the_driver() {
+        let driver = "invariants/page.weft.ts";
+        let changed = |path: &str, value: Json| {
+            let mut schema = schema();
+            *schema.pointer_mut(path).unwrap() = value;
+            schema
+        };
+        let cases = [
+            (
+                changed("/state/properties/page/properties/count/from", json!([])),
+                "the tag `page.count` has no `from`: the runner names the file that registers each tag".to_string(),
+            ),
+            (
+                changed("/state/properties/page/properties/count/from", json!([CODE, driver])),
+                format!("the tag `page.count` is from `{driver}`, a file of the driver: only the code outside `invariants` gives it"),
+            ),
+            (
+                changed("/actions/0/from", json!([driver])),
+                format!("the tag `send` is from `{driver}`, a file of the driver: only the code outside `invariants` gives it"),
+            ),
+            (
+                changed("/actions/1/run", Json::Null),
+                "the function of the action `reload` has no `run`: the runner names the file that exports the function".to_string(),
+            ),
+            (
+                changed("/actions/1/run", json!(driver)),
+                format!("the function of the action `reload` is from `{driver}`, a file of the driver: only the code outside `invariants` gives it"),
+            ),
+        ];
+        for (schema, error) in cases {
+            let mut count = 0;
+            let path = sent(schema, move |message| answer(&mut count, message));
+            let config = weft_parse::config(&format!(
+                "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\ntransport unix path=\"{path}\""
+            ))
+            .unwrap();
+            let d = weft_parse::parse(PAGE, &config).unwrap();
+            let file = format!("./{FILE}");
+            assert_eq!(start(&config, &d, Path::new(&file)).err(), Some(error));
+        }
+    }
+
     struct Cut;
 
     impl Source for Cut {
-        fn draw(&self, choice: &weft_simulator::Choice) -> Json {
-            choice.draw(self)
-        }
-        fn bool(&self) -> bool {
-            panic!("cut")
-        }
-        fn int(&self, _: i64, _: i64) -> i64 {
-            panic!("cut")
-        }
-        fn text(&self, _: usize, _: Option<usize>) -> String {
+        fn draw(&self, _: &weft_simulator::Choice) -> Json {
             panic!("cut")
         }
         fn index(&self, _: usize) -> usize {
@@ -307,8 +357,11 @@ check {
                 None => json!({ "error": "weft stops the step" }),
             }
         });
-        let mut wire =
-            Wire::new(transport::connect(&weft_parse::Transport::Unix(path)).unwrap()).unwrap();
+        let mut wire = Wire::new(
+            transport::connect(&weft_parse::Transport::Unix(path)).unwrap(),
+            Path::new(FILE).parent().unwrap(),
+        )
+        .unwrap();
         let cut = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             wire.apply("page", "send", &json!({}), &Cut)
         }));

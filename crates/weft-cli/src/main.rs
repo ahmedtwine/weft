@@ -12,7 +12,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 use globset::{Glob, GlobSetBuilder};
@@ -31,12 +31,13 @@ struct Report {
     lines: Vec<String>,
     sections: String,
     theme: Theme,
+    checks: u64,
 }
 
-impl Report {
-    fn failed(&self) -> bool {
-        self.lines.iter().any(|l| l.starts_with('✕'))
-    }
+struct Checked {
+    line: String,
+    section: String,
+    checks: u64,
 }
 
 fn files() -> Result<(Vec<PathBuf>, Config, Theme), String> {
@@ -100,9 +101,13 @@ impl Table {
     }
 }
 
-fn headline(config: &Config, o: &Outcome) -> String {
+fn checks(o: &Outcome) -> u64 {
+    o.tally.iter().map(|t| t.checks).sum()
+}
+
+fn headline(config: &Config, o: &Outcome, took: Duration) -> String {
     format!(
-        "adapter {}{} · {} cases · {} runs · {}{}",
+        "adapter {}{} · {} cases · {} runs · {} steps · {} checks{}{} [{:.2}s]",
         config.adapter,
         config
             .transport
@@ -110,15 +115,18 @@ fn headline(config: &Config, o: &Outcome) -> String {
             .map_or(String::new(), |t| format!(" · transport {t}")),
         o.cases,
         o.runs,
+        o.tally.iter().map(|t| t.steps).sum::<u64>(),
+        checks(o),
         match (o.failed, o.trace.len() - 1) {
-            (false, _) => "holds".to_string(),
-            (true, 0) => "fails at start".to_string(),
-            (true, 1) => "fails after 1 step".to_string(),
-            (true, n) => format!("fails after {n} steps"),
+            (false, _) => String::new(),
+            (true, 0) => " · fails at start".to_string(),
+            (true, 1) => " · fails after 1 step".to_string(),
+            (true, n) => format!(" · fails after {n} steps"),
         },
         o.caveat
             .as_ref()
-            .map_or(String::new(), |c| format!(" · {c}"))
+            .map_or(String::new(), |c| format!(" · {c}")),
+        took.as_secs_f64()
     )
 }
 
@@ -128,7 +136,6 @@ fn tables(o: &Outcome) -> Vec<Table> {
         rows: o
             .trace
             .iter()
-            .filter(|_| o.failed)
             .enumerate()
             .map(|(k, l)| {
                 vec![
@@ -171,7 +178,7 @@ fn tables(o: &Outcome) -> Vec<Table> {
         .collect()
 }
 
-fn summary(path: &str, d: &Diagram, config: &Config, o: &Outcome) -> String {
+fn summary(path: &str, d: &Diagram, config: &Config, o: &Outcome, took: Duration) -> String {
     let evidence = match d.verdict() {
         Some(Verdict::Fails { evidence, .. }) => evidence,
         _ => Vec::new(),
@@ -185,7 +192,7 @@ fn summary(path: &str, d: &Diagram, config: &Config, o: &Outcome) -> String {
         d.check.as_ref().map_or(String::new(), |c| c.english()),
         evidence.join(" · ")
     );
-    [head, format!("  {}", headline(config, o))]
+    [head, format!("  {}", headline(config, o, took))]
         .into_iter()
         .chain(tables(o).iter().flat_map(Table::text))
         .collect::<Vec<_>>()
@@ -228,18 +235,26 @@ fn diagram(file: &Path, config: &Config) -> Result<(String, Diagram), String> {
     Ok((src, d))
 }
 
-fn checked(file: &Path, config: &Config, theme: Theme, drawn: bool) -> (String, String) {
+fn checked(file: &Path, config: &Config, theme: Theme, drawn: bool) -> Checked {
     let path = file.strip_prefix(".").unwrap_or(file).display().to_string();
+    let started = Instant::now();
     diagram(file, config)
         .and_then(|(src, d)| {
             let o = run(&d, file, config)?;
-            let line = summary(&path, &d, config, &o);
-            match drawn {
-                true => section(&path, &src, &d, &o, theme).map(|s| (line, s)),
-                false => Ok((line, String::new())),
-            }
+            Ok(Checked {
+                line: summary(&path, &d, config, &o, started.elapsed()),
+                section: match drawn {
+                    true => section(&path, &src, &d, &o, theme)?,
+                    false => String::new(),
+                },
+                checks: checks(&o),
+            })
         })
-        .unwrap_or_else(|e| (format!("✕ {path} · {e}"), String::new()))
+        .unwrap_or_else(|e| Checked {
+            line: format!("✕ {path} · {e}"),
+            section: String::new(),
+            checks: 0,
+        })
 }
 
 fn report(drawn: bool) -> Result<Report, String> {
@@ -249,7 +264,7 @@ fn report(drawn: bool) -> Result<Report, String> {
         None => thread::available_parallelism().map_or(1, usize::from),
     };
     let next = AtomicUsize::new(0);
-    let mut done: Vec<(usize, (String, String))> = thread::scope(|s| {
+    let mut done: Vec<(usize, Checked)> = thread::scope(|s| {
         (0..width)
             .map(|_| {
                 s.spawn(|| {
@@ -272,10 +287,10 @@ fn report(drawn: bool) -> Result<Report, String> {
             .collect()
     });
     done.sort_by_key(|(i, _)| *i);
-    let (lines, sections): (Vec<String>, Vec<String>) = done.into_iter().map(|(_, o)| o).unzip();
     Ok(Report {
-        lines,
-        sections: sections.concat(),
+        checks: done.iter().map(|(_, c)| c.checks).sum(),
+        lines: done.iter().map(|(_, c)| c.line.clone()).collect(),
+        sections: done.into_iter().map(|(_, c)| c.section).collect(),
         theme,
     })
 }
@@ -387,9 +402,21 @@ fn serve() -> Result<(), String> {
 }
 
 fn check() -> Result<bool, String> {
+    let started = Instant::now();
     let r = report(false)?;
     r.lines.iter().for_each(|l| println!("{l}"));
-    Ok(r.failed())
+    let fail = r.lines.iter().filter(|l| l.starts_with('✕')).count();
+    println!(
+        "\n {} pass\n {fail} fail\n {} checks\nRan {} in {:.2}s",
+        r.lines.len() - fail,
+        r.checks,
+        match r.lines.len() {
+            1 => "1 file".to_string(),
+            n => format!("{n} files"),
+        },
+        started.elapsed().as_secs_f64()
+    );
+    Ok(fail > 0)
 }
 
 fn main() -> ExitCode {

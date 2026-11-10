@@ -2,11 +2,12 @@ mod engine;
 mod memo;
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use serde_json::{Map, Value as Json};
 use weft_parse::{Check, Diagram, Ran, Span, State, Value, shown};
 
-use memo::Memo;
+use memo::{Memo, Next};
 
 const REPLAYS: usize = 10;
 
@@ -16,45 +17,126 @@ pub enum Fault {
     Changed,
 }
 
+pub struct Answer {
+    pub state: Json,
+    pub refused: Option<String>,
+}
+
+impl From<Json> for Answer {
+    fn from(state: Json) -> Answer {
+        Answer {
+            state,
+            refused: None,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub enum Choice {
+    Any,
     Bool,
     Int(i64, i64),
     Text(usize, Option<usize>),
+    Pattern(String),
+    Format(Format),
+    Number(Bound, Bound),
     Enum(Vec<Json>),
     AnyOf(Vec<Choice>),
-    Array(Box<Choice>, usize, usize),
+    Array(Box<Choice>, usize, Option<usize>, bool),
+    Tuple(Vec<Choice>),
+    Record(Box<Choice>, Box<Choice>),
     Object(Vec<(String, Choice, bool)>),
+    Rec(String, Box<Choice>, Box<Choice>),
+    Var(String),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Bound {
+    Open,
+    At(f64),
+    Past(f64),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Format {
+    Email,
+    Uri,
+    Uuid,
+    Date,
+    Time,
+    DateTime,
+    Ipv4,
+    Ipv6,
+    Hostname,
+}
+
+impl Format {
+    const ALL: [(&'static str, Format); 9] = [
+        ("email", Format::Email),
+        ("uri", Format::Uri),
+        ("uuid", Format::Uuid),
+        ("date", Format::Date),
+        ("time", Format::Time),
+        ("date-time", Format::DateTime),
+        ("ipv4", Format::Ipv4),
+        ("ipv6", Format::Ipv6),
+        ("hostname", Format::Hostname),
+    ];
+
+    fn parse(name: &str) -> Option<Format> {
+        Format::ALL
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, f)| *f)
+    }
 }
 
 pub trait Source {
     fn draw(&self, choice: &Choice) -> Json;
-    fn bool(&self) -> bool;
-    fn int(&self, min: i64, max: i64) -> i64;
-    fn text(&self, min: usize, max: Option<usize>) -> String;
     fn index(&self, count: usize) -> usize;
     fn target(&self, score: f64);
 }
 
 impl Choice {
-    pub fn draw(&self, s: &dyn Source) -> Json {
+    pub fn ends(&self) -> bool {
         match self {
-            Choice::Bool => Json::from(s.bool()),
-            Choice::Int(min, max) => Json::from(s.int(*min, *max)),
-            Choice::Text(min, max) => Json::from(s.text(*min, *max)),
-            Choice::Enum(values) => values[s.index(values.len())].clone(),
-            Choice::AnyOf(all) => all[s.index(all.len())].draw(s),
-            Choice::Array(item, min, max) => {
-                let size = s.int(*min as i64, *max as i64) as usize;
-                Json::Array((0..size).map(|_| item.draw(s)).collect())
+            Choice::Var(_) => false,
+            Choice::Rec(_, _, shown) => shown.ends(),
+            Choice::AnyOf(all) => all.iter().any(Choice::ends),
+            Choice::Array(item, min, ..) => *min == 0 || item.ends(),
+            Choice::Tuple(all) => all.iter().all(Choice::ends),
+            Choice::Object(fields) => fields.iter().all(|(_, c, required)| !required || c.ends()),
+            _ => true,
+        }
+    }
+
+    fn merged(self, other: Choice, name: &str) -> Result<Choice, String> {
+        match (self, other) {
+            (Choice::Rec(key, body, shown), other) | (other, Choice::Rec(key, body, shown)) => {
+                Ok(Choice::Rec(key, body, Box::new(shown.merged(other, name)?)))
             }
-            Choice::Object(fields) => Json::Object(
-                fields
-                    .iter()
-                    .filter(|(_, _, required)| *required || s.bool())
-                    .map(|(k, c, _)| (k.clone(), c.draw(s)))
-                    .collect::<Map<_, _>>(),
-            ),
+            (Choice::AnyOf(all), other) | (other, Choice::AnyOf(all)) => all
+                .into_iter()
+                .map(|c| c.merged(other.clone(), name))
+                .collect::<Result<_, _>>()
+                .map(Choice::AnyOf),
+            (Choice::Object(mut fields), Choice::Object(more)) => {
+                for (key, choice, required) in more {
+                    match fields.iter_mut().find(|(k, ..)| *k == key) {
+                        Some((_, known, needed)) if *known == choice => *needed |= required,
+                        Some(_) => {
+                            return Err(format!(
+                                "the field `{name}.{key}` has two schemas in one `allOf`"
+                            ));
+                        }
+                        None => fields.push((key, choice, required)),
+                    }
+                }
+                Ok(Choice::Object(fields))
+            }
+            _ => Err(format!(
+                "the field `{name}` has an `allOf` that is not of objects"
+            )),
         }
     }
 }
@@ -71,14 +153,14 @@ trait Case {
 
 pub trait Runner {
     fn schema(&self) -> &Json;
-    fn reset(&mut self, source: &dyn Source) -> Result<Json, Fault>;
+    fn reset(&mut self, source: &dyn Source) -> Result<Answer, Fault>;
     fn apply(
         &mut self,
         object: &str,
         verb: &str,
         input: &Json,
         source: &dyn Source,
-    ) -> Result<Json, Fault>;
+    ) -> Result<Answer, Fault>;
     fn check(
         &mut self,
         check: &Check,
@@ -137,7 +219,7 @@ struct Tags {
     actions: Vec<(String, Choice)>,
 }
 
-fn tags(node: &Json) -> Vec<&str> {
+pub fn tags(node: &Json) -> Vec<&str> {
     match node.get("weft") {
         Some(Json::String(t)) => vec![t.as_str()],
         Some(Json::Array(all)) => all.iter().filter_map(Json::as_str).collect(),
@@ -156,67 +238,184 @@ fn tagged<'a>(node: &'a Json, path: &[String], out: &mut Vec<(Vec<String>, &'a s
     }
 }
 
+const SHAPED: [&str; 7] = ["type", "enum", "const", "anyOf", "oneOf", "allOf", "not"];
+
 pub fn choice(name: &str, node: &Json) -> Result<Choice, String> {
-    let int = |k: &str| node.get(k).and_then(Json::as_i64);
-    let size = |k: &str| int(k).and_then(|n| usize::try_from(n).ok());
-    let wrong = || format!("the field `{name}` is not a JSON Schema that weft draws: `{node}`");
-    let listed = |k: &str| {
-        node.get(k)
-            .and_then(Json::as_array)
-            .filter(|all| !all.is_empty())
-    };
-    match (
-        listed("enum"),
-        node.get("const"),
-        listed("anyOf").or_else(|| listed("oneOf")),
-        node.get("type").and_then(Json::as_str),
-    ) {
-        (Some(values), ..) => Ok(Choice::Enum(values.clone())),
-        (_, Some(value), ..) => Ok(Choice::Enum(vec![value.clone()])),
-        (_, _, Some(all), _) => Ok(Choice::AnyOf(
-            all.iter()
-                .map(|b| choice(name, b))
-                .collect::<Result<_, _>>()?,
-        )),
-        (.., Some("integer")) => Ok(Choice::Int(
-            int("minimum").unwrap_or(i64::MIN),
-            int("maximum").unwrap_or(i64::MAX),
-        )),
-        (.., Some("string")) => Ok(Choice::Text(
-            size("minLength").unwrap_or(0),
-            size("maxLength"),
-        )),
-        (.., Some("boolean")) => Ok(Choice::Bool),
-        (.., Some("array")) => {
-            let item = node.get("items").ok_or_else(wrong)?;
-            let max = size("maxItems")
-                .ok_or_else(|| format!("the array `{name}` takes `maxItems`: `{node}`"))?;
-            Ok(Choice::Array(
-                Box::new(choice(&format!("{name}[]"), item)?),
-                size("minItems").unwrap_or(0),
-                max,
-            ))
+    Drawn {
+        defs: node.get("$defs"),
+        open: Vec::new(),
+    }
+    .choice(name, node)
+}
+
+struct Drawn<'a> {
+    defs: Option<&'a Json>,
+    open: Vec<(String, bool)>,
+}
+
+impl Drawn<'_> {
+    fn named(&mut self, name: &str, key: &str, wrong: &str) -> Result<Choice, String> {
+        if let Some((_, used)) = self.open.iter_mut().find(|(o, _)| o == key) {
+            *used = true;
+            return Ok(Choice::Var(key.to_string()));
         }
-        (.., Some("object")) => {
-            let required: Vec<&str> = node
-                .get("required")
+        let def = self
+            .defs
+            .and_then(|all| all.get(key))
+            .ok_or_else(|| wrong.to_string())?;
+        self.open.push((key.to_string(), false));
+        let body = self.choice(name, def);
+        let used = self.open.pop().is_some_and(|(_, used)| used);
+        match (body?, used) {
+            (body, false) => Ok(body),
+            (body, true) if body.ends() => Ok(Choice::Rec(
+                key.to_string(),
+                Box::new(body.clone()),
+                Box::new(body),
+            )),
+            _ => Err(format!(
+                "the field `{name}` has the schema `{key}` in each value of `{key}`, and weft draws no value without an end"
+            )),
+        }
+    }
+
+    fn each(&mut self, name: &str, all: &[Json]) -> Result<Vec<Choice>, String> {
+        all.iter().map(|b| self.choice(name, b)).collect()
+    }
+
+    fn choice(&mut self, name: &str, node: &Json) -> Result<Choice, String> {
+        let int = |k: &str| node.get(k).and_then(Json::as_i64);
+        let number = |k: &str| node.get(k).and_then(Json::as_f64);
+        let size = |k: &str| int(k).and_then(|n| usize::try_from(n).ok());
+        let wrong = format!("the field `{name}` is not a JSON Schema that weft draws: `{node}`");
+        let listed = |k: &str| {
+            node.get(k)
                 .and_then(Json::as_array)
-                .map_or(Vec::new(), |all| {
-                    all.iter().filter_map(Json::as_str).collect()
-                });
-            match node.get("properties") {
-                Some(Json::Object(all)) => all
-                    .iter()
-                    .map(|(k, v)| {
-                        choice(&format!("{name}.{k}"), v)
-                            .map(|c| (k.clone(), c, required.contains(&k.as_str())))
-                    })
-                    .collect::<Result<_, _>>()
-                    .map(Choice::Object),
-                _ => Ok(Choice::Object(Vec::new())),
-            }
+                .filter(|all| !all.is_empty())
+        };
+        let bound = |at: &str, past: &str| match (number(past), number(at)) {
+            (Some(n), _) => Bound::Past(n),
+            (_, Some(n)) => Bound::At(n),
+            _ => Bound::Open,
+        };
+        if let Some(path) = node.get("$ref").and_then(Json::as_str) {
+            let key = path.strip_prefix("#/$defs/").ok_or(&wrong)?;
+            return self.named(name, key, &wrong);
         }
-        _ => Err(wrong()),
+        if node.is_object() && !SHAPED.iter().any(|k| node.get(k).is_some()) {
+            return Ok(Choice::Any);
+        }
+        if let Some(all) = listed("allOf") {
+            let mut rest = node.clone();
+            rest.as_object_mut().ok_or(&wrong)?.remove("allOf");
+            let own = match rest.get("type").is_some() || rest.get("properties").is_some() {
+                true => vec![self.choice(name, &rest)?],
+                false => Vec::new(),
+            };
+            return [own, self.each(name, all)?]
+                .concat()
+                .into_iter()
+                .map(Ok)
+                .reduce(|a, b| a?.merged(b?, name))
+                .ok_or(wrong)?;
+        }
+        if let Some(types) = node.get("type").and_then(Json::as_array) {
+            return types
+                .iter()
+                .map(|t| {
+                    let mut one = node.clone();
+                    one["type"] = t.clone();
+                    self.choice(name, &one)
+                })
+                .collect::<Result<_, _>>()
+                .map(Choice::AnyOf);
+        }
+        match (
+            listed("enum"),
+            node.get("const"),
+            listed("anyOf").or_else(|| listed("oneOf")),
+            node.get("type").and_then(Json::as_str),
+        ) {
+            (Some(values), ..) => Ok(Choice::Enum(values.clone())),
+            (_, Some(value), ..) => Ok(Choice::Enum(vec![value.clone()])),
+            (_, _, Some(all), _) => self.each(name, all).map(Choice::AnyOf),
+            (.., Some("integer")) => Ok(Choice::Int(
+                int("exclusiveMinimum")
+                    .map(|n| n.saturating_add(1))
+                    .or(int("minimum"))
+                    .unwrap_or(i64::MIN),
+                int("exclusiveMaximum")
+                    .map(|n| n.saturating_sub(1))
+                    .or(int("maximum"))
+                    .unwrap_or(i64::MAX),
+            )),
+            (.., Some("string")) => Ok(
+                match (
+                    node.get("pattern").and_then(Json::as_str),
+                    node.get("format").and_then(Json::as_str),
+                ) {
+                    (Some(pattern), _) => Choice::Pattern(pattern.to_string()),
+                    (None, Some(format)) => Choice::Format(Format::parse(format).ok_or(&wrong)?),
+                    (None, None) => Choice::Text(size("minLength").unwrap_or(0), size("maxLength")),
+                },
+            ),
+            (.., Some("number")) => Ok(Choice::Number(
+                bound("minimum", "exclusiveMinimum"),
+                bound("maximum", "exclusiveMaximum"),
+            )),
+            (.., Some("boolean")) => Ok(Choice::Bool),
+            (.., Some("null")) => Ok(Choice::Enum(vec![Json::Null])),
+            (.., Some("array")) => match (listed("prefixItems"), node.get("items")) {
+                (Some(all), _) => all
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| self.choice(&format!("{name}[{i}]"), item))
+                    .collect::<Result<_, _>>()
+                    .map(Choice::Tuple),
+                (None, Some(item)) => Ok(Choice::Array(
+                    Box::new(self.choice(&format!("{name}[]"), item)?),
+                    size("minItems").unwrap_or(0),
+                    size("maxItems"),
+                    node.get("uniqueItems").and_then(Json::as_bool) == Some(true),
+                )),
+                (None, None) => Err(wrong),
+            },
+            (.., Some("object"))
+                if node.get("properties").is_none()
+                    && node
+                        .get("additionalProperties")
+                        .is_some_and(Json::is_object) =>
+            {
+                let key = match node.get("propertyNames") {
+                    Some(names) => self.choice(&format!("{name}{{}}"), names)?,
+                    None => Choice::Text(0, None),
+                };
+                Ok(Choice::Record(
+                    Box::new(key),
+                    Box::new(self.choice(&format!("{name}{{}}"), &node["additionalProperties"])?),
+                ))
+            }
+            (.., Some("object")) => {
+                let required: Vec<&str> = node
+                    .get("required")
+                    .and_then(Json::as_array)
+                    .map_or(Vec::new(), |all| {
+                        all.iter().filter_map(Json::as_str).collect()
+                    });
+                match node.get("properties") {
+                    Some(Json::Object(all)) => all
+                        .iter()
+                        .map(|(k, v)| {
+                            self.choice(&format!("{name}.{k}"), v)
+                                .map(|c| (k.clone(), c, required.contains(&k.as_str())))
+                        })
+                        .collect::<Result<_, _>>()
+                        .map(Choice::Object),
+                    _ => Ok(Choice::Object(Vec::new())),
+                }
+            }
+            _ => Err(wrong),
+        }
     }
 }
 
@@ -277,9 +476,7 @@ impl Tags {
                 _ => return Err(format!("the action `{node}` has not one tag")),
             };
             if !verbs.iter().any(|v| *v == verb) {
-                return Err(format!(
-                    "the tag `{verb}` of an action is the verb of no `on` line"
-                ));
+                continue;
             }
             if actions.iter().any(|(v, _)| v == verb) {
                 return Err(format!("the tag `{verb}` is on two actions"));
@@ -325,7 +522,7 @@ impl Tags {
         self.actions
             .iter()
             .find(|(v, _)| v == verb)
-            .map_or(Json::Object(Map::new()), |(_, c)| c.draw(source))
+            .map_or(Json::Object(Map::new()), |(_, c)| source.draw(c))
     }
 }
 
@@ -378,18 +575,6 @@ impl Source for Seen<'_> {
         value
     }
 
-    fn bool(&self) -> bool {
-        self.source.bool()
-    }
-
-    fn int(&self, min: i64, max: i64) -> i64 {
-        self.source.int(min, max)
-    }
-
-    fn text(&self, min: usize, max: Option<usize>) -> String {
-        self.source.text(min, max)
-    }
-
     fn index(&self, count: usize) -> usize {
         self.source.index(count)
     }
@@ -420,6 +605,7 @@ struct Run<'a> {
     real: State,
     trace: Vec<Line>,
     longest: Vec<Line>,
+    refused: BTreeMap<String, String>,
 }
 
 impl Run<'_> {
@@ -476,15 +662,25 @@ impl Case for Run<'_> {
         if self.fatal.is_some() {
             return Err(Stop::Fail);
         }
-        let start = match self.runner.reset(source) {
-            Ok(start) => start,
-            Err(Fault::Thrown(e)) => return Err(self.wire(format!("reset: {e}"))),
+        let seen = Seen {
+            source,
+            drawn: RefCell::new(Vec::new()),
+        };
+        let start = match self.runner.reset(&seen) {
+            Ok(Next {
+                state,
+                refused: None,
+            }) => state,
+            Ok(Next {
+                refused: Some(e), ..
+            })
+            | Err(Fault::Thrown(e)) => return Err(self.wire(format!("reset: {e}"))),
             Err(fault) => return Err(self.halt(fault)),
         };
         let judged = self.judge(&start, &start, "")?;
         let line = Line {
             action: None,
-            input: String::new(),
+            input: seen.written(&Json::Null),
             state: start.clone(),
             evidence: judged.clone().unwrap_or_default(),
         };
@@ -518,7 +714,16 @@ impl Case for Run<'_> {
             evidence: Vec::new(),
         };
         let next = match applied {
-            Ok(next) => next,
+            Ok(Next {
+                refused: Some(e), ..
+            }) => {
+                self.refused.insert(verb.to_string(), e);
+                return Ok(());
+            }
+            Ok(Next {
+                state,
+                refused: None,
+            }) => state,
             Err(Fault::Thrown(e)) => {
                 line.evidence = vec![format!("throws {e}")];
                 self.trace.push(line);
@@ -618,6 +823,7 @@ pub fn simulate(
         real: State::new(),
         trace: Vec::new(),
         longest: Vec::new(),
+        refused: BTreeMap::new(),
     };
     let ended = engine::run(cases, key, &mut run);
     let caveat = run.caveat();
@@ -625,6 +831,15 @@ pub fn simulate(
         return Err(e);
     }
     ended?;
+    if let Some((verb, e)) = run.refused.iter().find(|(verb, _)| {
+        run.tally
+            .iter()
+            .any(|t| t.steps == 0 && t.step.split(' ').next() == Some(verb.as_str()))
+    }) {
+        return Err(format!(
+            "each input of `{verb}` fails the schema of its action: {e}"
+        ));
+    }
     let ran = listed(run.runner.ran()?, &run.tally)?;
     Ok(Outcome {
         cases,
@@ -689,6 +904,7 @@ check {
         calls: u64,
         losses: u64,
         thrown: bool,
+        refused: fn(i64) -> bool,
         schema: Json,
         ran: Ran,
     }
@@ -719,14 +935,15 @@ check {
                 calls: 0,
                 losses,
                 thrown,
+                refused: |_| false,
                 schema,
                 ran: code(&["send", "reload"]),
             }
         }
 
-        fn state(&mut self) -> Result<Json, Fault> {
+        fn state(&mut self) -> Result<Answer, Fault> {
             self.calls += 1;
-            Ok(json!({ "page": { "count": self.count }, "calls": self.calls }))
+            Ok(json!({ "page": { "count": self.count }, "calls": self.calls }).into())
         }
     }
 
@@ -735,7 +952,7 @@ check {
             &self.schema
         }
 
-        fn reset(&mut self, _: &dyn Source) -> Result<Json, Fault> {
+        fn reset(&mut self, _: &dyn Source) -> Result<Answer, Fault> {
             self.count = 0;
             self.state()
         }
@@ -746,12 +963,18 @@ check {
             verb: &str,
             input: &Json,
             _: &dyn Source,
-        ) -> Result<Json, Fault> {
+        ) -> Result<Answer, Fault> {
             let times = input.get("times").and_then(Json::as_i64);
             match (verb, times) {
                 ("send", _) => self.count += 1,
                 (_, Some(t)) if self.thrown && t > 6 => {
                     return Err(Fault::Thrown(format!("reload {t}")));
+                }
+                (_, t) if (self.refused)(t.unwrap_or(0)) => {
+                    return self.state().map(|answer| Answer {
+                        refused: Some("too many".into()),
+                        ..answer
+                    });
                 }
                 (_, Some(t)) if self.losses > 0 && t > 3 => {
                     self.count = 0;
@@ -903,6 +1126,21 @@ check {
         );
     }
 
+    #[test]
+    fn an_input_that_the_action_refuses_is_no_step() {
+        let page = |refused| Page {
+            refused,
+            ..Page::new(0, false, schema("page.count", &["send", "reload"]))
+        };
+        let o = simulated(&mut page(|t| t > 2)).unwrap();
+        assert!(!o.failed);
+        assert!(o.tally.iter().all(|t| t.steps > 0));
+        assert_eq!(
+            simulated(&mut page(|_| true)).err().as_deref(),
+            Some("each input of `reload` fails the schema of its action: too many")
+        );
+    }
+
     struct Picks {
         schema: Json,
         drawn: Json,
@@ -915,9 +1153,9 @@ check {
             &self.schema
         }
 
-        fn reset(&mut self, _: &dyn Source) -> Result<Json, Fault> {
+        fn reset(&mut self, _: &dyn Source) -> Result<Answer, Fault> {
             self.count = 0;
-            Ok(json!({ "page": { "count": self.count } }))
+            Ok(json!({ "page": { "count": self.count } }).into())
         }
 
         fn apply(
@@ -926,7 +1164,7 @@ check {
             verb: &str,
             _: &Json,
             source: &dyn Source,
-        ) -> Result<Json, Fault> {
+        ) -> Result<Answer, Fault> {
             if verb == "send" {
                 let c = choice("draw", &self.drawn).map_err(Fault::Broken)?;
                 self.count += match (self.fails)(&source.draw(&c)) {
@@ -934,7 +1172,7 @@ check {
                     false => 1,
                 };
             }
-            Ok(json!({ "page": { "count": self.count } }))
+            Ok(json!({ "page": { "count": self.count } }).into())
         }
 
         fn ran(&mut self) -> Result<Ran, String> {
@@ -972,7 +1210,8 @@ check {
 
     #[test]
     fn hegel_shrinks_an_array_to_the_fewest_items_that_fail() {
-        let drawn = json!({ "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 9 }, "maxItems": 5 });
+        let drawn =
+            json!({ "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 9 } });
         let v = shrunk(drawn, |v| {
             v.as_array()
                 .unwrap()
@@ -992,22 +1231,116 @@ check {
 
     #[test]
     fn each_draw_is_a_json_schema_that_weft_draws() {
-        let cases = [
-            (
-                json!({ "type": "array", "items": { "type": "boolean" } }),
-                "the array `draw` takes `maxItems`",
-            ),
-            (
-                json!({ "type": "null" }),
-                "the field `draw` is not a JSON Schema that weft draws",
-            ),
-        ];
-        for (node, error) in cases {
+        assert!(choice("draw", &json!({ "weft": "any" })) == Ok(Choice::Any));
+        for node in [json!({ "type": "array" }), json!({ "not": {} })] {
             assert_eq!(
                 choice("draw", &node).err(),
-                Some(format!("{error}: `{node}`"))
+                Some(format!(
+                    "the field `draw` is not a JSON Schema that weft draws: `{node}`"
+                ))
             );
         }
+    }
+
+    #[test]
+    fn hegel_shrinks_a_number_a_null_and_a_record_to_the_least_that_fails() {
+        let number = json!({ "type": "number", "minimum": 0, "maximum": 9 });
+        assert_eq!(shrunk(number, |v| v.as_f64() >= Some(2.5)), json!(3.0));
+        let null = json!({ "anyOf": [{ "type": "integer", "minimum": 0, "maximum": 9 }, { "type": "null" }] });
+        assert_eq!(shrunk(null, Json::is_null), Json::Null);
+        let record = json!({
+            "type": "object",
+            "propertyNames": { "enum": ["a", "b"] },
+            "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 9 }
+        });
+        assert_eq!(
+            shrunk(record, |v| v["b"].as_i64() >= Some(4)),
+            json!({ "b": 4 })
+        );
+    }
+
+    #[test]
+    fn hegel_shrinks_a_schema_of_itself_a_pattern_a_tuple_and_an_all_of() {
+        let tree = json!({
+            "$ref": "#/$defs/node",
+            "$defs": { "node": {
+                "type": "object",
+                "properties": {
+                    "tag": { "enum": ["div", "input"] },
+                    "children": { "type": "array", "items": { "$ref": "#/$defs/node" } }
+                },
+                "required": ["tag", "children"]
+            } }
+        });
+        assert_eq!(
+            shrunk(tree, |v| v["children"][0]["children"][0]["tag"] == "input"),
+            json!({ "tag": "div", "children": [
+                { "tag": "div", "children": [{ "tag": "input", "children": [] }] }
+            ] })
+        );
+        let pattern = json!({ "type": "string", "pattern": "^snap_[0-9]+$" });
+        assert_eq!(
+            shrunk(pattern, |v| v.as_str().is_some_and(|s| s.len() > 6)),
+            json!("snap_00")
+        );
+        let digits = json!({ "type": "string", "pattern": "^(0|[1-9]\\d*)$" });
+        assert_eq!(
+            shrunk(digits, |v| v
+                .as_str()
+                .is_some_and(
+                    |s| !s.bytes().all(|b| b.is_ascii_digit()) || s.len() > 1
+                )),
+            json!("10")
+        );
+        let tuple = json!({ "type": "array", "prefixItems": [
+            { "type": "integer", "minimum": 0, "maximum": 9 },
+            { "type": "boolean" }
+        ] });
+        assert_eq!(
+            shrunk(tuple, |v| v[0].as_i64() >= Some(2) && v[1] == true),
+            json!([2, true])
+        );
+        let all = json!({ "allOf": [
+            { "type": "object", "properties": { "key": { "const": "k" } }, "required": ["key"] },
+            { "anyOf": [
+                { "type": "object", "properties": { "kind": { "const": "a" } }, "required": ["kind"] },
+                { "type": "object", "properties": {
+                    "kind": { "const": "b" },
+                    "size": { "type": "integer", "minimum": 0, "maximum": 9 }
+                }, "required": ["kind", "size"] }
+            ] }
+        ] });
+        assert_eq!(
+            shrunk(all, |v| v["size"].as_i64() >= Some(5)),
+            json!({ "key": "k", "kind": "b", "size": 5 })
+        );
+        let unique = json!({
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "integer", "minimum": 0, "maximum": 3 }
+        });
+        assert_eq!(
+            shrunk(unique, |v| v.as_array().is_some_and(|all| all.len() >= 3)),
+            json!([0, 1, 2])
+        );
+    }
+
+    #[test]
+    fn a_schema_that_has_itself_in_each_value_has_no_value_that_weft_draws() {
+        let node = json!({
+            "$ref": "#/$defs/node",
+            "$defs": { "node": {
+                "type": "object",
+                "properties": { "next": { "$ref": "#/$defs/node" } },
+                "required": ["next"]
+            } }
+        });
+        assert_eq!(
+            choice("draw", &node).err().as_deref(),
+            Some(
+                "the field `draw` has the schema `node` in each value of `node`, and weft draws no value without an end"
+            )
+        );
     }
 
     #[test]
@@ -1024,10 +1357,6 @@ check {
             (
                 schema("page.count", &["send"]),
                 "the verb `reload` has no action with the tag `reload`",
-            ),
-            (
-                schema("page.count", &["send", "reload", "open"]),
-                "the tag `open` of an action is the verb of no `on` line",
             ),
         ];
         for (schema, error) in cases {

@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::{Map, Value as Json, json};
 use weft_parse::{Diagram, Ran, Span, State, Value};
 
-use weft_simulator::{Fault, Runner, Source};
+use weft_simulator::{Answer, Fault, Runner, Source};
 
 pub struct Setup<'a> {
     d: &'a Diagram,
@@ -92,12 +92,18 @@ impl Runner for Setup<'_> {
         &self.schema
     }
 
-    fn reset(&mut self, _: &dyn Source) -> Result<Json, Fault> {
+    fn reset(&mut self, _: &dyn Source) -> Result<Answer, Fault> {
         self.now = self.d.init.clone();
-        self.read()
+        self.read().map(Answer::from)
     }
 
-    fn apply(&mut self, object: &str, verb: &str, _: &Json, _: &dyn Source) -> Result<Json, Fault> {
+    fn apply(
+        &mut self,
+        object: &str,
+        verb: &str,
+        _: &Json,
+        _: &dyn Source,
+    ) -> Result<Answer, Fault> {
         let to = self
             .d
             .enabled(&self.now)
@@ -108,7 +114,7 @@ impl Runner for Setup<'_> {
                 Fault::Broken(format!("`{object}` has no `on {verb}` line from its state"))
             })?;
         self.now.insert(object.to_string(), to);
-        self.read()
+        self.read().map(Answer::from)
     }
 
     fn ran(&mut self) -> Result<Ran, String> {

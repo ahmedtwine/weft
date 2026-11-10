@@ -508,6 +508,7 @@ dependencies = [
  "hegeltest-c",
  "hegeltest-macros",
  "parking_lot",
+ "serde_json",
 ]
 
 [[package]]

@@ -5,6 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-hegeltest = { version = "=0.52.0", features = ["static-engine"] }
+hegeltest = { version = "=0.52.0", features = ["serde_json", "static-engine"] }
 serde_json = "1"
 weft-parse = { path = "../weft-parse" }

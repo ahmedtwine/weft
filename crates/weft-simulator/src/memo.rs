@@ -4,11 +4,17 @@ use std::collections::{HashMap, VecDeque};
 use serde_json::Value as Json;
 use weft_parse::{Check, Ran, State};
 
-use crate::{Choice, Fault, Runner, Source, Tags};
+use crate::{Answer, Choice, Fault, Runner, Source, Tags};
 
 const TRIES: usize = 3;
 
-type Done = Result<State, String>;
+#[derive(Clone, PartialEq)]
+pub struct Next {
+    pub state: State,
+    pub refused: Option<String>,
+}
+
+type Done = Result<Next, String>;
 type Draws = Vec<(Choice, Json)>;
 
 #[derive(Clone)]
@@ -42,7 +48,10 @@ impl Call {
             Call::Apply(object, verb, input) => runner.apply(object, verb, input, source),
         };
         match raw {
-            Ok(raw) => tags.read(&raw).map(Ok).map_err(Fault::Broken),
+            Ok(Answer { state, refused }) => tags
+                .read(&state)
+                .map(|state| Ok(Next { state, refused }))
+                .map_err(Fault::Broken),
             Err(Fault::Thrown(e)) => Ok(Err(e)),
             Err(fault) => Err(fault),
         }
@@ -123,23 +132,10 @@ impl Source for Told<'_> {
         value
     }
 
-    fn bool(&self) -> bool {
-        self.draw(&Choice::Bool).as_bool().unwrap_or_default()
-    }
-
-    fn int(&self, min: i64, max: i64) -> i64 {
-        self.draw(&Choice::Int(min, max)).as_i64().unwrap_or(min)
-    }
-
-    fn text(&self, min: usize, max: Option<usize>) -> String {
-        match self.draw(&Choice::Text(min, max)) {
-            Json::String(text) => text,
-            _ => String::new(),
-        }
-    }
-
     fn index(&self, count: usize) -> usize {
-        self.int(0, count as i64 - 1) as usize
+        self.draw(&Choice::Int(0, count as i64 - 1))
+            .as_u64()
+            .map_or(0, |n| n as usize)
     }
 
     fn target(&self, score: f64) {
@@ -185,7 +181,7 @@ impl<'a> Memo<'a> {
         self.runner.ran()
     }
 
-    pub fn reset(&mut self, source: &dyn Source) -> Result<State, Fault> {
+    pub fn reset(&mut self, source: &dyn Source) -> Result<Next, Fault> {
         self.made.clear();
         self.at = 0;
         self.live = false;
@@ -198,7 +194,7 @@ impl<'a> Memo<'a> {
         verb: &str,
         input: &Json,
         source: &dyn Source,
-    ) -> Result<State, Fault> {
+    ) -> Result<Next, Fault> {
         self.call(
             Call::Apply(object.to_string(), verb.to_string(), input.clone()),
             source,
@@ -230,7 +226,7 @@ impl<'a> Memo<'a> {
         self.known.entry((at, said)).or_insert((reply, fresh)).1
     }
 
-    fn end(&mut self, call: Call, drawn: Draws, done: Done, at: usize) -> Result<State, Fault> {
+    fn end(&mut self, call: Call, drawn: Draws, done: Done, at: usize) -> Result<Next, Fault> {
         self.at = at;
         self.made.push(Made {
             call,
@@ -264,7 +260,7 @@ impl<'a> Memo<'a> {
         Ok((drawn, done, at))
     }
 
-    fn call(&mut self, call: Call, source: &dyn Source) -> Result<State, Fault> {
+    fn call(&mut self, call: Call, source: &dyn Source) -> Result<Next, Fault> {
         let mut at = self.at;
         let mut said = call.said();
         let mut ahead = VecDeque::new();

@@ -1,6 +1,8 @@
+use std::path::Path;
+
 use serde_json::{Value as Json, json};
 use weft_parse::{Ran, Span};
-use weft_simulator::{Fault, Runner, Source, choice};
+use weft_simulator::{Answer, Fault, Runner, Source, choice, tags};
 
 use crate::transport::Transport;
 
@@ -37,14 +39,87 @@ fn code(answer: &Json) -> Option<Ran> {
     })
 }
 
+fn outside(file: &str, said: &str, dir: &Path) -> Result<(), String> {
+    match Path::new(file).starts_with(dir) {
+        true => Err(format!(
+            "{said} is from `{file}`, a file of the driver: only the code outside `{}` gives it",
+            dir.display()
+        )),
+        false => Ok(()),
+    }
+}
+
+fn tagged(node: &Json, dir: &Path) -> Result<(), String> {
+    for tag in tags(node) {
+        let said = format!("the tag `{tag}`");
+        let from: Vec<&str> = node
+            .get("from")
+            .and_then(Json::as_array)
+            .map_or(Vec::new(), |all| {
+                all.iter().filter_map(Json::as_str).collect()
+            });
+        if from.is_empty() {
+            return Err(format!(
+                "{said} has no `from`: the runner names the file that registers each tag"
+            ));
+        }
+        from.into_iter()
+            .try_for_each(|file| outside(file, &said, dir))?;
+    }
+    let named = node
+        .get("properties")
+        .and_then(Json::as_object)
+        .into_iter()
+        .flat_map(|all| all.values());
+    let listed = ["anyOf", "oneOf"]
+        .into_iter()
+        .filter_map(|k| node.get(k)?.as_array())
+        .flatten();
+    let single = ["items", "additionalProperties"]
+        .into_iter()
+        .filter_map(|k| node.get(k));
+    named
+        .chain(listed)
+        .chain(single)
+        .try_for_each(|n| tagged(n, dir))
+}
+
+fn run(node: &Json, kind: &str, dir: &Path) -> Result<(), String> {
+    let said = format!("the function of the {kind} `{}`", tags(node).join(", "));
+    let file = node.get("run").and_then(Json::as_str).ok_or_else(|| {
+        format!("{said} has no `run`: the runner names the file that exports the function")
+    })?;
+    outside(file, &said, dir)
+}
+
+fn real(schema: &Json, dir: &Path) -> Result<(), String> {
+    schema
+        .get("state")
+        .into_iter()
+        .try_for_each(|state| tagged(state, dir))?;
+    for (kind, key) in [("action", "actions"), ("mock", "mocks")] {
+        for node in schema
+            .get(key)
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+        {
+            tagged(node, dir)?;
+            run(node, kind, dir)?;
+        }
+    }
+    Ok(())
+}
+
 impl Wire {
-    pub fn new(transport: Box<dyn Transport>) -> Result<Wire, String> {
+    pub fn new(transport: Box<dyn Transport>, dir: &Path) -> Result<Wire, String> {
         let mut wire = Wire {
             transport,
             schema: Json::Null,
             cut: false,
         };
         wire.schema = wire.transport.schema()?;
+        real(&wire.schema, dir)?;
         Ok(wire)
     }
 
@@ -56,7 +131,7 @@ impl Wire {
         Ok(())
     }
 
-    fn ask(&mut self, message: Json, source: &dyn Source) -> Result<Json, Fault> {
+    fn ask(&mut self, message: Json, source: &dyn Source) -> Result<Answer, Fault> {
         self.uncut().map_err(Fault::Broken)?;
         let mut message = message;
         loop {
@@ -71,7 +146,15 @@ impl Wire {
                 answer.get("error").and_then(Json::as_str),
                 answer.get("draw"),
             ) {
-                (Some(state), None, None) => return Ok(state.clone()),
+                (Some(state), None, None) => {
+                    return Ok(Answer {
+                        state: state.clone(),
+                        refused: answer
+                            .get("refused")
+                            .and_then(Json::as_str)
+                            .map(String::from),
+                    });
+                }
                 (None, Some(error), None) => return Err(Fault::Thrown(error.to_string())),
                 (None, None, Some(draw)) => {
                     let c = choice("draw", draw).map_err(Fault::Broken)?;
@@ -91,7 +174,7 @@ impl Runner for Wire {
         &self.schema
     }
 
-    fn reset(&mut self, source: &dyn Source) -> Result<Json, Fault> {
+    fn reset(&mut self, source: &dyn Source) -> Result<Answer, Fault> {
         self.ask(json!({ "reset": true }), source)
     }
 
@@ -101,7 +184,7 @@ impl Runner for Wire {
         verb: &str,
         input: &Json,
         source: &dyn Source,
-    ) -> Result<Json, Fault> {
+    ) -> Result<Answer, Fault> {
         self.ask(
             json!({ "apply": verb, "object": object, "input": input }),
             source,

@@ -1,31 +1,30 @@
 import { plugin } from "bun";
-import { test } from "bun:test";
+import { spyOn, test } from "bun:test";
 import inspector from "node:inspector";
 import { createConnection } from "node:net";
 import { dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-type Schema<T = unknown> = {
-  meta: () => { weft?: string } | undefined;
-  parse: (value: unknown) => T;
-};
+type Schema<T = unknown> = { parse: (value: unknown) => T };
 type Source = {
   draw: <T>(schema: Schema<T>) => Promise<T>;
 };
-type Action = {
-  input: Schema;
-  run: (object: string, input: unknown, source: Source) => unknown;
-};
+type Action = { input: Schema; run: (input: unknown) => unknown };
+type Mock = { output: Schema; of: Record<string, unknown>; name: string };
 type Driver = Record<string, unknown> & {
   state: Schema;
-  read: () => unknown;
+  read: (thrown?: unknown) => unknown;
   reset: (source: Source) => unknown;
   score?: () => unknown;
+};
+type Node = { [key: string]: unknown };
+type Override = {
+  zodSchema: { _zod: { def: { type: string } } };
+  jsonSchema: Node;
 };
 type Message = {
   reset?: true;
   apply?: string;
-  object?: string;
   input?: unknown;
   drawn?: unknown;
   stop?: true;
@@ -178,20 +177,104 @@ const spans = (known: Code) => {
 };
 
 const path = at("WEFT_DRIVER");
+const { z } = await import(Bun.resolveSync("zod", dirname(path)));
+const listed = (tag: unknown): string[] =>
+  [tag].flat().filter((each): each is string => typeof each === "string");
+const registered = new Map<string, Set<string>>();
+const add = z.globalRegistry.add.bind(z.globalRegistry);
+z.globalRegistry.add = (schema: unknown, ...meta: [Node | undefined]) => {
+  const prepare = Error.prepareStackTrace;
+  Error.prepareStackTrace = (_error, sites) =>
+    sites.map((site) => site.getFileName());
+  const files = new Error().stack as unknown as (string | null)[];
+  Error.prepareStackTrace = prepare;
+  const file = files.find((each) => each && SOURCE.test(each));
+  for (const tag of file ? listed(meta[0]?.weft) : []) {
+    const from = registered.get(tag) ?? new Set<string>();
+    registered.set(tag, from);
+    from.add(relative(process.cwd(), file));
+  }
+  return add(schema, ...meta);
+};
+
 const driver: Driver = await import(path);
 await post("Profiler.takePreciseCoverage");
-const { z } = await import(Bun.resolveSync("zod", dirname(path)));
-const actions = new Map(
-  Object.values(driver)
-    .filter(
-      (value): value is Action =>
-        typeof value === "object" &&
-        value !== null &&
-        "input" in value &&
-        "run" in value
-    )
-    .map((action) => [action.input.meta()?.weft, action])
-);
+const exported = new Map<unknown, string[]>();
+for (const [file, each] of served)
+  for (const value of Object.values(await import(file)))
+    if (typeof value === "function")
+      exported.set(value, [...(exported.get(value) ?? []), each.file]);
+const beside = `${relative(process.cwd(), dirname(path))}/`;
+const run = (value: unknown) => {
+  const files = exported.get(value) ?? [];
+  return files.find((file) => !file.startsWith(beside)) ?? files[0];
+};
+
+const from = (node: unknown): unknown => {
+  if (Array.isArray(node)) return node.map(from);
+  if (typeof node !== "object" || node === null) return node;
+  const out: Node = Object.fromEntries(
+    Object.entries(node).map(([key, value]) => [key, from(value)])
+  );
+  const tags = listed(out.weft);
+  return tags.length
+    ? { ...out, from: tags.flatMap((tag) => [...(registered.get(tag) ?? [])]) }
+    : out;
+};
+const drawable = (schema: Schema) =>
+  from(
+    z.toJSONSchema(schema, {
+      io: "input",
+      unrepresentable: "any",
+      override: ({ zodSchema, jsonSchema }: Override) => {
+        if (zodSchema._zod.def.type === "custom") jsonSchema.not = {};
+      },
+    })
+  ) as Node;
+const branches = (node: Node): Node[] => {
+  const tagged = [node.oneOf, node.anyOf]
+    .flatMap((all): Node[] => (Array.isArray(all) ? all : []))
+    .filter((each) => listed(each.weft).length)
+    .map((each) => ({ ...each, $defs: node.$defs }));
+  return tagged.length ? tagged : [node];
+};
+
+const actions = new Map<string, Action>();
+const sent: Node[] = [];
+const mocks: (Mock & { spy: ReturnType<typeof spyOn>; real: unknown })[] = [];
+for (const value of Object.values(driver)) {
+  if (typeof value !== "object" || value === null) continue;
+  if ("input" in value && "run" in value) {
+    const action = value as Action;
+    for (const node of branches(drawable(action.input))) {
+      sent.push({ ...node, run: run(action.run) });
+      for (const verb of listed(node.weft)) actions.set(verb, action);
+    }
+  }
+  if ("output" in value && "of" in value && "name" in value) {
+    const mock = value as Mock;
+    const real = mock.of[mock.name];
+    mocks.push({ ...mock, real, spy: spyOn(mock.of, mock.name) });
+  }
+}
+const refused = ({ input }: Action, value: unknown) => {
+  try {
+    return { input: input.parse(value) };
+  } catch (error) {
+    return { refused: error instanceof Error ? error.message : String(error) };
+  }
+};
+const thrown = async (run: () => unknown) => {
+  try {
+    await run();
+    return [];
+  } catch (error) {
+    if (driver.read.length === 0) throw error;
+    return [error];
+  }
+};
+const asynchronous = (value: unknown) =>
+  Object.prototype.toString.call(value) === "[object AsyncFunction]";
 
 async function* lines(socket: AsyncIterable<string>) {
   let rest = "";
@@ -224,10 +307,9 @@ test("weft", async () => {
     draw: async (schema) => schema.parse(await drawn(z.toJSONSchema(schema))),
   };
   send({
-    state: z.toJSONSchema(driver.state),
-    actions: [...actions.values()].map((action) =>
-      z.toJSONSchema(action.input)
-    ),
+    state: from(z.toJSONSchema(driver.state)),
+    actions: sent,
+    mocks: mocks.map(({ output, real }) => ({ ...drawable(output), run: run(real) })),
   });
   const step = async (message: Message) => {
     if (message.ran)
@@ -239,7 +321,7 @@ test("weft", async () => {
           ),
         },
       };
-    const action = actions.get(message.apply);
+    const action = actions.get(message.apply ?? "");
     if (!message.reset && !action)
       throw new Error(`no action has the tag ${message.apply}`);
     const known: Code = message.reset
@@ -247,11 +329,25 @@ test("weft", async () => {
       : (code.actions.get(message.apply ?? "") ?? new Map());
     if (action) code.actions.set(message.apply ?? "", known);
     return measured(known, async () => {
-      if (message.reset) await driver.reset(source);
-      if (action)
-        await action.run(message.object ?? "", action.input.parse(message.input), source);
-      const state = driver.state.parse(await driver.read());
-      return driver.score ? { state, score: await driver.score() } : { state };
+      if (message.reset) {
+        for (const { output, real, spy } of mocks) {
+          const value = await source.draw(output);
+          spy.mockImplementation(
+            asynchronous(real) ? async () => value : () => value
+          );
+        }
+        await driver.reset(source);
+      }
+      const parsed = action ? refused(action, message.input) : {};
+      const error =
+        action && "input" in parsed
+          ? await thrown(() => action.run(parsed.input))
+          : [];
+      const state = driver.state.parse(await driver.read(...error));
+      const end = "refused" in parsed ? { refused: parsed.refused } : {};
+      return driver.score
+        ? { state, ...end, score: await driver.score() }
+        : { state, ...end };
     });
   };
   for (let message = await receive(); !message.done; message = await receive()) {
