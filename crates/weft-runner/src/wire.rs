@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
-use weft_simulator::{Fault, Runner, Source, field};
+use weft_simulator::{Fault, Runner, Source, choice};
 
 const HARNESS: &str = include_str!("bun.test.ts");
 const WAIT: Duration = Duration::from_secs(60);
@@ -185,13 +185,16 @@ impl Wire {
         Wire::new(Line::unix(stream)?, Some(bun))
     }
 
-    fn ask(&mut self, message: Json, source: &dyn Source) -> Result<Json, Fault> {
+    fn uncut(&mut self) -> Result<(), String> {
         if self.cut {
-            self.line
-                .ask(&json!({ "stop": true }))
-                .map_err(|e| Fault::Broken(self.told(e)))?;
+            self.line.ask(&json!({ "stop": true }))?;
             self.cut = false;
         }
+        Ok(())
+    }
+
+    fn ask(&mut self, message: Json, source: &dyn Source) -> Result<Json, Fault> {
+        self.uncut().map_err(|e| Fault::Broken(self.told(e)))?;
         let mut message = message;
         loop {
             let answer = self
@@ -211,9 +214,9 @@ impl Wire {
                 (Some(state), None, None) => return Ok(state.clone()),
                 (None, Some(error), None) => return Err(Fault::Thrown(error.to_string())),
                 (None, None, Some(draw)) => {
-                    let f = field("draw", draw).map_err(Fault::Broken)?;
+                    let c = choice("draw", draw).map_err(Fault::Broken)?;
                     self.cut = true;
-                    let drawn = source.draw(&f);
+                    let drawn = source.draw(&c);
                     self.cut = false;
                     message = json!({ "drawn": drawn });
                 }
@@ -248,6 +251,7 @@ impl Runner for Wire {
 
 impl Drop for Wire {
     fn drop(&mut self) {
+        let _ = self.uncut();
         if let Line::Unix { writer, .. } = &mut self.line {
             let _ = writeln!(writer, "{}", json!({ "done": true }));
         }

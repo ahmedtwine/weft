@@ -1449,6 +1449,7 @@ pub struct Config {
     pub styles: Vec<(Kind, String)>,
     pub adapter: Adapter,
     pub cases: u64,
+    pub steps: u32,
     pub engine: Engine,
 }
 
@@ -1460,6 +1461,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
         styles: Vec::new(),
         adapter: Adapter::Default,
         cases: 100,
+        steps: 20,
         engine: Engine::Hegel,
     };
     let mut set = false;
@@ -1514,15 +1516,15 @@ pub fn config(src: &str) -> Result<Config, Error> {
             "adapter" => {
                 let (adapter, keys): (Adapter, &[&str]) = match args(n).first().map(String::as_str)
                 {
-                    Some("default") => (Adapter::Default, &["cases"]),
-                    Some("bun") => (Adapter::Bun, &["cases"]),
+                    Some("default") => (Adapter::Default, &["cases", "steps"]),
+                    Some("bun") => (Adapter::Bun, &["cases", "steps"]),
                     Some("unix") => (
                         Adapter::Unix(need(n, "path").map_err(Error)?),
-                        &["cases", "path"],
+                        &["cases", "steps", "path"],
                     ),
                     Some("http") => (
                         Adapter::Http(need(n, "url").map_err(Error)?),
-                        &["cases", "url"],
+                        &["cases", "steps", "url"],
                     ),
                     _ => {
                         return Err(Error(
@@ -1532,17 +1534,23 @@ pub fn config(src: &str) -> Result<Config, Error> {
                     }
                 };
                 let name = shape(n, 1, keys, false).map_err(Error)?.remove(0);
-                let cases = match n.get("cases") {
-                    Some(KdlValue::Integer(k)) => u64::try_from(*k).ok().filter(|k| *k > 0),
-                    _ => None,
-                }
-                .ok_or_else(|| {
-                    Error(format!(
-                        "`adapter {name}` takes `cases=<count>`, a count above 0"
-                    ))
+                let count = |key: &str, unset: Option<u64>| {
+                    match n.get(key) {
+                        Some(KdlValue::Integer(k)) => u64::try_from(*k).ok().filter(|k| *k > 0),
+                        None => unset,
+                        _ => None,
+                    }
+                    .ok_or_else(|| {
+                        Error(format!(
+                            "`adapter {name}` takes `{key}=<count>`, a count above 0"
+                        ))
+                    })
+                };
+                c.cases = count("cases", None)?;
+                c.steps = u32::try_from(count("steps", Some(20))?).map_err(|_| {
+                    Error(format!("`adapter {name}` takes `steps=<count>` below 2^32"))
                 })?;
                 c.adapter = adapter;
-                c.cases = cases;
                 set = true;
             }
             other => {

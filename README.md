@@ -70,16 +70,17 @@ The report heads each check with this condition, and with a sentence that each o
 ## Simulate
 
 ```
-weft.kdl: adapter bun cases=100
+weft.kdl: adapter bun cases=100 steps=20
     │
 weft ── parse <name>.weft.kdl ── run ── print the run tables
     │
 weft-simulator
     ├── Tags     the JSON Schema of the state and of each input, read by tag
-    ├── Engine   runs each case: start, then up to 20 steps
+    ├── Engine   runs each case: start, then up to `steps` steps
     │     ├── hegel   one stateful rule for each step, a target, a shrink
     │     └── random  seeded draws, no shrink
-    ├── Source   draw · pick · target, from the engine to the run and the runner
+    ├── Choice   each JSON Schema that the run or the runner draws from
+    ├── Source   bool · int · text · index · target, from the engine to each choice
     ├── Check    the condition on the state before and after each step
     └── Runner   schema · reset · apply · check
 weft-runner
@@ -91,9 +92,9 @@ weft-runner
                 └── http  a runner at a URL
 ```
 
-`weft` runs each file. `weft --ui` does not run. The crate `weft-simulator` holds the run. An engine is the `Engine` trait: it runs each case through the `Case` trait, `start` and then each `step`, and gives each of them a `Source`. A source is the `Source` trait: `draw` gives a value for a field of a JSON Schema, `pick` gives an index into a list, and `target` gives a score. The engine keeps the highest score of a case. `engine hegel` is the default. `engine random seed=<number>` draws from a seeded generator and does not shrink. A runner is the `Runner` trait: `schema` gives the JSON Schema of the state and of each action, `reset` starts the run and gives its state, `apply` runs one action and gives the new state, and `check` checks the condition on the state before and after a step. The crate `weft-runner` holds `Adapter`, one enum with a runner for each adapter line.
+`weft` runs each file. `weft --ui` does not run. The crate `weft-simulator` holds the run. An engine is the `Engine` trait: it runs each case through the `Case` trait, `start` and then each `step`, and gives each of them a `Source`. A source is the `Source` trait: `bool`, `int`, `text` and `index` give one value each, `draw` gives the value of a `Choice` from them, and `target` gives a score. `index <count>` draws below 256 in one draw, and above it in a draw of the block of 256 and a draw in the block, so that each index has the same chance and the shrink goes to index 0. The engine keeps the highest score of a case. `engine hegel` is the default. `engine random seed=<number>` draws from a seeded generator and does not shrink. A runner is the `Runner` trait: `schema` gives the JSON Schema of the state and of each action, `reset` starts the run and gives its state, `apply` runs one action and gives the new state, and `check` checks the condition on the state before and after a step. The crate `weft-runner` holds `Adapter`, one enum with a runner for each adapter line.
 
-Without an `adapter` line, the runner is `adapter default cases=100`. It runs the transitions of the setup in Rust, without a driver and without the code, and its tables show how many steps and checks each action gets. These lines in `weft.kdl` run each file against the code:
+Without an `adapter` line, the runner is `adapter default cases=100`. Each adapter line takes `steps=<count>`, the most steps of a case, and 20 without it. It runs the transitions of the setup in Rust, without a driver and without the code, and its tables show how many steps and checks each action gets. These lines in `weft.kdl` run each file against the code:
 
 | Line | Runner |
 | --- | --- |
@@ -111,7 +112,22 @@ Each runner gets the same JSON messages and gives the same answers. On a unix so
 | `{"stop": true}` | any answer; `weft` drops it |
 | `{"done": true}` | none; the run ends |
 
-The schema is `{"state": <JSON Schema>, "actions": [<JSON Schema>, …]}`. An `error` answer is a throw of the code and fails the step. Before it gives the state of a step, a runner can answer `{"draw": <JSON Schema>}` with the schema of one string, integer or boolean. `weft` draws the value from the engine and sends `{"drawn": <value>}`, so the engine records and shrinks each value that the runner draws. The run table shows these values as `drawn=<value>,…` in the input of the step. When the engine ends a case during a draw, `weft` sends `{"stop": true}` in place of `{"drawn": …}` before its next message, and the runner ends the step. A `state` answer can also carry `"score": <number>`, and `weft` gives it to the engine as a target.
+The schema is `{"state": <JSON Schema>, "actions": [<JSON Schema>, …]}`. An `error` answer is a throw of the code and fails the step. Before it gives the state of a step, a runner can answer `{"draw": <JSON Schema>}`. `weft` draws the value from the engine and sends `{"drawn": <value>}`, so the engine records and shrinks each value that the runner draws. The run table shows these values as `drawn=<value>,…` in the input of the step. When the engine ends a case during a draw, `weft` sends `{"stop": true}` in place of `{"drawn": …}` before its next message, and the runner ends the step. A `state` answer can also carry `"score": <number>`, and `weft` gives it to the engine as a target.
+
+Each input and each draw is a `Choice` from its JSON Schema:
+
+| JSON Schema | Draw | Shrinks to |
+| --- | --- | --- |
+| `boolean` | a boolean | `false` |
+| `integer` with `minimum` and `maximum` | an integer in the bounds | the value nearest 0 |
+| `string` with `minLength` and `maxLength` | a string in the bounds | the shortest string |
+| `integer` with `"index": true`, `minimum` 0 and `maximum` | `index` | index 0 |
+| `enum` or `const` | `index` into the values | the first value |
+| `anyOf` or `oneOf` | `index` into the branches, then the branch | the first branch |
+| `array` with `items` and `maxItems` | a length, then each item | the fewest items |
+| `object` with `properties` | each required property, and each other property after a boolean | the fewest properties |
+
+An `enum`, an `anyOf` and an index take `"weights": [<count>, …]`, one count for each option: `weft` draws `index` below the sum of the counts, so that each option has the chance of its count, and the shrink goes to the first option. The runner gives the options, their order and their weights, and `weft` draws and shrinks them.
 
 With `adapter bun`, each `<name>.weft.kdl` has a driver `<name>.weft.ts` beside it, with these exports:
 
@@ -120,12 +136,13 @@ export const state = z.strictObject({
   page: z.strictObject({ count: z.number().int().meta({ weft: "page.count" }) }),
 });
 export const read = () => ({ page: { count: rows().length } });
-export const reset = (draw: Draw) => { … };
+export const reset = (source: Source) => { … };
 export const score = () => added;
 export const send = {
   input: z.strictObject({ text: z.string() }).meta({ weft: "send" }),
-  run: async (object: string, input: { text: string }, draw: Draw) => {
-    const amount = await draw(z.number().int().min(0).max(9));
+  run: async (object: string, input: { text: string }, source: Source) => {
+    const amount = await source.draw(z.number().int().min(0).max(9));
+    const key = await source.pick(["Enter", "Escape"], [3, 1]);
     …
   },
 };
@@ -133,9 +150,9 @@ export const send = {
 
 A tag is `.meta({ weft: "<object>.<key>" })` on a field of the state, or a list of tags, so that one field of the code can carry the tags of more than one file. A file takes only the tags of its own objects. Each action is an object with `input` and `run`, and the tag of its `input` is its verb. The tags do not change how Zod parses.
 
-`weft` writes its harness to a temporary directory and runs `bun test` on it in the directory of `weft.kdl`, so the preload and the module resolution of the app apply. The harness loads the driver, sends the JSON Schema of `state` and of each `input` through `z.toJSONSchema`, and then calls `reset`, `run` and `read` for each message from `weft`. `draw(<Zod schema>)` sends the JSON Schema of one string, integer or boolean to `weft` and gives the value that the engine draws, parsed by the schema. The export `score` is optional: when the driver has it, the harness sends its value with each state.
+`weft` writes its harness to a temporary directory and runs `bun test` on it in the directory of `weft.kdl`, so the preload and the module resolution of the app apply. The harness loads the driver, sends the JSON Schema of `state` and of each `input` through `z.toJSONSchema`, and then calls `reset`, `run` and `read` for each message from `weft`. `reset` and `run` get a `Source`: `source.draw(<Zod schema>)` sends the JSON Schema to `weft` and gives the value that the engine draws, parsed and typed by the schema, and `source.pick(<options>, <weights>)` draws an index into the options and gives the option. The export `score` is optional: when the driver has it, the harness sends its value with each state.
 
-Before the run, `weft` checks that each `<object>.<key>` of the check has a tag, that each tag names a key of its object, that each verb has one action, and that each action is a verb of the file. Each case is a [Hegel](https://hegel.dev) state machine of up to 20 steps. In each step, Hegel draws a transition of the setup that starts from the state of the model, and a value for each field of its input: a string, an integer or a boolean, in the bounds of its JSON Schema. After each step, `weft` reads the state from the code and checks the condition on the state before and after the step. A throw of the code fails the step. Hegel shrinks a failing case to the fewest steps and the smallest values.
+Before the run, `weft` checks that each `<object>.<key>` of the check has a tag, that each tag names a key of its object, that each verb has one action, and that each action is a verb of the file. Each case is a [Hegel](https://hegel.dev) state machine of up to `steps` steps. In each step, Hegel draws a transition of the setup that starts from the state of the model, and the value of its input from its `Choice`. After each step, `weft` reads the state from the code and checks the condition on the state before and after the step. A throw of the code fails the step. Hegel shrinks a failing case to the fewest steps and the smallest values.
 
 `weft` prints the run, a table of the steps of the failing case with the input, the state and the values that break the check, and a table of each action with its steps and the steps where the check applies. It gives `✕` for a failing case.
 

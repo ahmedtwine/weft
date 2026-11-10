@@ -176,7 +176,9 @@ check {
         let d = weft_parse::parse(PAGE, &config).unwrap();
         let mut runner = Adapter::start(&config.adapter, &d, Path::new("page.weft.kdl")).unwrap();
         let mut engine = weft_simulator::engine(&config.engine);
-        let o = weft_simulator::simulate(&d, &mut runner, engine.as_mut(), config.cases).unwrap();
+        let o =
+            weft_simulator::simulate(&d, &mut runner, engine.as_mut(), config.cases, config.steps)
+                .unwrap();
         (config.adapter.clone(), o)
     }
 

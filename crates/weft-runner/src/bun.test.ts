@@ -2,19 +2,22 @@ import { test } from "bun:test";
 import { createConnection } from "node:net";
 import { dirname } from "node:path";
 
-type Schema = {
+type Schema<T = unknown> = {
   meta: () => { weft?: string } | undefined;
-  parse: (value: unknown) => unknown;
+  parse: (value: unknown) => T;
 };
-type Draw = (schema: Schema) => Promise<unknown>;
+type Source = {
+  draw: <T>(schema: Schema<T>) => Promise<T>;
+  pick: <T>(options: readonly T[], weights?: readonly number[]) => Promise<T>;
+};
 type Action = {
   input: Schema;
-  run: (object: string, input: unknown, draw: Draw) => unknown;
+  run: (object: string, input: unknown, source: Source) => unknown;
 };
 type Driver = Record<string, unknown> & {
   state: Schema;
   read: () => unknown;
-  reset: (draw: Draw) => unknown;
+  reset: (source: Source) => unknown;
   score?: () => unknown;
 };
 type Message = {
@@ -68,11 +71,26 @@ test("weft", async () => {
   };
   const send = (message: unknown) =>
     socket.write(`${JSON.stringify(message)}\n`);
-  const draw: Draw = async (schema) => {
-    send({ draw: z.toJSONSchema(schema) });
+  const drawn = async (schema: unknown) => {
+    send({ draw: schema });
     const answer = await receive();
     if (answer.stop) throw new Error("weft stops the step");
-    return schema.parse(answer.drawn);
+    return answer.drawn;
+  };
+  const source: Source = {
+    draw: async (schema) => schema.parse(await drawn(z.toJSONSchema(schema))),
+    pick: async (options, weights) => {
+      const index = await drawn({
+        type: "integer",
+        index: true,
+        minimum: 0,
+        maximum: options.length - 1,
+        ...(weights && { weights }),
+      });
+      if (typeof index !== "number" || !(index in options))
+        throw new Error(`weft draws ${index} of ${options.length} options`);
+      return options[index] as (typeof options)[number];
+    },
   };
   send({
     state: z.toJSONSchema(driver.state),
@@ -82,11 +100,11 @@ test("weft", async () => {
   });
   const step = async (message: Message) => {
     const action = actions.get(message.apply);
-    if (message.reset) await driver.reset(draw);
+    if (message.reset) await driver.reset(source);
     if (!message.reset && !action)
       throw new Error(`no action has the tag ${message.apply}`);
     if (action)
-      await action.run(message.object ?? "", action.input.parse(message.input), draw);
+      await action.run(message.object ?? "", action.input.parse(message.input), source);
     const state = driver.state.parse(await driver.read());
     return driver.score ? { state, score: await driver.score() } : { state };
   };

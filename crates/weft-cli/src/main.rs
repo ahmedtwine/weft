@@ -191,6 +191,7 @@ fn run(d: &Diagram, file: &Path, config: &Config) -> Result<Outcome, String> {
         &mut runner,
         weft_simulator::engine(&config.engine).as_mut(),
         config.cases,
+        config.steps,
     )
 }
 

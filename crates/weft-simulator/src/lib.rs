@@ -7,23 +7,70 @@ use weft_parse::{Check, Diagram, State, Value, shown};
 
 pub use engine::{Hegel, Random};
 
-const STEPS: u32 = 20;
-
 pub enum Fault {
     Thrown(String),
     Broken(String),
 }
 
-pub enum Field {
-    Text(usize, Option<usize>),
-    Int(i64, i64),
+pub enum Choice {
     Bool,
+    Int(i64, i64),
+    Text(usize, Option<usize>),
+    Index(usize, Vec<u64>),
+    Enum(Vec<Json>, Vec<u64>),
+    AnyOf(Vec<Choice>, Vec<u64>),
+    Array(Box<Choice>, usize, usize),
+    Object(Vec<(String, Choice, bool)>),
 }
 
 pub trait Source {
-    fn draw(&self, field: &Field) -> Json;
-    fn pick(&self, count: usize) -> usize;
+    fn draw(&self, choice: &Choice) -> Json;
+    fn bool(&self) -> bool;
+    fn int(&self, min: i64, max: i64) -> i64;
+    fn text(&self, min: usize, max: Option<usize>) -> String;
+    fn index(&self, count: usize) -> usize;
     fn target(&self, score: f64);
+}
+
+impl Choice {
+    pub fn draw(&self, s: &dyn Source) -> Json {
+        match self {
+            Choice::Bool => Json::from(s.bool()),
+            Choice::Int(min, max) => Json::from(s.int(*min, *max)),
+            Choice::Text(min, max) => Json::from(s.text(*min, *max)),
+            Choice::Index(count, weights) => Json::from(weighted(s, *count, weights)),
+            Choice::Enum(values, weights) => values[weighted(s, values.len(), weights)].clone(),
+            Choice::AnyOf(all, weights) => all[weighted(s, all.len(), weights)].draw(s),
+            Choice::Array(item, min, max) => {
+                let size = s.int(*min as i64, *max as i64) as usize;
+                Json::Array((0..size).map(|_| item.draw(s)).collect())
+            }
+            Choice::Object(fields) => Json::Object(
+                fields
+                    .iter()
+                    .filter(|(_, _, required)| *required || s.bool())
+                    .map(|(k, c, _)| (k.clone(), c.draw(s)))
+                    .collect::<Map<_, _>>(),
+            ),
+        }
+    }
+}
+
+fn weighted(s: &dyn Source, count: usize, weights: &[u64]) -> usize {
+    match weights.iter().sum::<u64>() {
+        0 => s.index(count),
+        total => {
+            let at = s.index(total as usize) as u64;
+            weights
+                .iter()
+                .scan(0, |sum, w| {
+                    *sum += w;
+                    Some(*sum)
+                })
+                .take_while(|sum| *sum <= at)
+                .count()
+        }
+    }
 }
 
 pub struct Stop;
@@ -94,7 +141,7 @@ struct Read {
 
 struct Tags {
     reads: Vec<Read>,
-    actions: Vec<(String, Vec<(String, Field)>)>,
+    actions: Vec<(String, Choice)>,
 }
 
 fn tags(node: &Json) -> Vec<&str> {
@@ -116,25 +163,86 @@ fn tagged<'a>(node: &'a Json, path: &[String], out: &mut Vec<(Vec<String>, &'a s
     }
 }
 
-fn bound(node: &Json, k: &str) -> Option<i64> {
-    node.get(k).and_then(Json::as_i64)
-}
-
-pub fn field(name: &str, node: &Json) -> Result<Field, String> {
-    let size = |k: &str| bound(node, k).and_then(|n| usize::try_from(n).ok());
-    match node.get("type").and_then(Json::as_str) {
-        Some("string") => Ok(Field::Text(
+pub fn choice(name: &str, node: &Json) -> Result<Choice, String> {
+    let int = |k: &str| node.get(k).and_then(Json::as_i64);
+    let size = |k: &str| int(k).and_then(|n| usize::try_from(n).ok());
+    let wrong = || format!("the field `{name}` is not a JSON Schema that weft draws: `{node}`");
+    let weights = |count: usize| match node.get("weights") {
+        None => Ok(Vec::new()),
+        Some(w) => w
+            .as_array()
+            .and_then(|all| all.iter().map(Json::as_u64).collect::<Option<Vec<u64>>>())
+            .filter(|all| all.len() == count && all.iter().sum::<u64>() > 0)
+            .ok_or_else(|| {
+                format!("the weights of `{name}` are {count} counts, not all 0: `{node}`")
+            }),
+    };
+    let listed = |k: &str| {
+        node.get(k)
+            .and_then(Json::as_array)
+            .filter(|all| !all.is_empty())
+    };
+    match (
+        listed("enum"),
+        node.get("const"),
+        listed("anyOf").or_else(|| listed("oneOf")),
+        node.get("type").and_then(Json::as_str),
+    ) {
+        (Some(values), ..) => Ok(Choice::Enum(values.clone(), weights(values.len())?)),
+        (_, Some(value), ..) => Ok(Choice::Enum(vec![value.clone()], Vec::new())),
+        (_, _, Some(all), _) => Ok(Choice::AnyOf(
+            all.iter()
+                .map(|b| choice(name, b))
+                .collect::<Result<_, _>>()?,
+            weights(all.len())?,
+        )),
+        (.., Some("integer")) if node.get("index") == Some(&Json::Bool(true)) => {
+            match (int("minimum"), size("maximum")) {
+                (Some(0), Some(last)) => Ok(Choice::Index(last + 1, weights(last + 1)?)),
+                _ => Err(format!(
+                    "the index `{name}` has `minimum` 0 and a `maximum`: `{node}`"
+                )),
+            }
+        }
+        (.., Some("integer")) => Ok(Choice::Int(
+            int("minimum").unwrap_or(i64::MIN),
+            int("maximum").unwrap_or(i64::MAX),
+        )),
+        (.., Some("string")) => Ok(Choice::Text(
             size("minLength").unwrap_or(0),
             size("maxLength"),
         )),
-        Some("integer") => Ok(Field::Int(
-            bound(node, "minimum").unwrap_or(i64::MIN),
-            bound(node, "maximum").unwrap_or(i64::MAX),
-        )),
-        Some("boolean") => Ok(Field::Bool),
-        _ => Err(format!(
-            "the field `{name}` is a string, an integer or a boolean, not `{node}`"
-        )),
+        (.., Some("boolean")) => Ok(Choice::Bool),
+        (.., Some("array")) => {
+            let item = node.get("items").ok_or_else(wrong)?;
+            let max = size("maxItems")
+                .ok_or_else(|| format!("the array `{name}` takes `maxItems`: `{node}`"))?;
+            Ok(Choice::Array(
+                Box::new(choice(&format!("{name}[]"), item)?),
+                size("minItems").unwrap_or(0),
+                max,
+            ))
+        }
+        (.., Some("object")) => {
+            let required: Vec<&str> = node
+                .get("required")
+                .and_then(Json::as_array)
+                .map_or(Vec::new(), |all| {
+                    all.iter().filter_map(Json::as_str).collect()
+                });
+            match node.get("properties") {
+                Some(Json::Object(all)) => all
+                    .iter()
+                    .map(|(k, v)| {
+                        choice(&format!("{name}.{k}"), v)
+                            .map(|c| (k.clone(), c, required.contains(&k.as_str())))
+                    })
+                    .collect::<Result<_, _>>()
+                    .map(Choice::Object),
+                _ => Ok(Choice::Object(Vec::new())),
+            }
+        }
+        _ => Err(wrong()),
     }
 }
 
@@ -184,7 +292,7 @@ impl Tags {
             .flat_map(|o| &o.moves)
             .map(|m| &m.verb)
             .collect();
-        let mut actions: Vec<(String, Vec<(String, Field)>)> = Vec::new();
+        let mut actions: Vec<(String, Choice)> = Vec::new();
         for node in schema
             .get("actions")
             .and_then(Json::as_array)
@@ -202,14 +310,7 @@ impl Tags {
             if actions.iter().any(|(v, _)| v == verb) {
                 return Err(format!("the tag `{verb}` is on two actions"));
             }
-            let fields = match node.get("properties") {
-                Some(Json::Object(all)) => all
-                    .iter()
-                    .map(|(k, v)| field(k, v).map(|f| (k.clone(), f)))
-                    .collect::<Result<_, _>>()?,
-                _ => Vec::new(),
-            };
-            actions.push((verb.to_string(), fields));
+            actions.push((verb.to_string(), choice(verb, node)?));
         }
         if let Some(v) = verbs
             .iter()
@@ -247,21 +348,14 @@ impl Tags {
     }
 
     fn input(&self, source: &dyn Source, verb: &str) -> Json {
-        let fields = self
-            .actions
+        self.actions
             .iter()
             .find(|(v, _)| v == verb)
-            .map_or(&[][..], |(_, f)| f);
-        Json::Object(
-            fields
-                .iter()
-                .map(|(k, f)| (k.clone(), source.draw(f)))
-                .collect::<Map<_, _>>(),
-        )
+            .map_or(Json::Object(Map::new()), |(_, c)| c.draw(source))
     }
 }
 
-fn steps(d: &Diagram) -> Vec<String> {
+fn moves(d: &Diagram) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for o in &d.objects {
         for m in &o.moves {
@@ -304,14 +398,26 @@ impl Seen<'_> {
 }
 
 impl Source for Seen<'_> {
-    fn draw(&self, field: &Field) -> Json {
-        let value = self.source.draw(field);
+    fn draw(&self, choice: &Choice) -> Json {
+        let value = self.source.draw(choice);
         self.drawn.borrow_mut().push(value.to_string());
         value
     }
 
-    fn pick(&self, count: usize) -> usize {
-        self.source.pick(count)
+    fn bool(&self) -> bool {
+        self.source.bool()
+    }
+
+    fn int(&self, min: i64, max: i64) -> i64 {
+        self.source.int(min, max)
+    }
+
+    fn text(&self, min: usize, max: Option<usize>) -> String {
+        self.source.text(min, max)
+    }
+
+    fn index(&self, count: usize) -> usize {
+        self.source.index(count)
     }
 
     fn target(&self, score: f64) {
@@ -399,7 +505,7 @@ impl Case for Run<'_> {
         if enabled.is_empty() {
             return Ok(());
         }
-        let (o, verb, to) = enabled[source.pick(enabled.len())].clone();
+        let (o, verb, to) = enabled[source.index(enabled.len())].clone();
         let input = self.tags.input(source, verb);
         let seen = Seen {
             source,
@@ -448,6 +554,7 @@ pub fn simulate(
     runner: &mut dyn Runner,
     engine: &mut dyn Engine,
     cases: u64,
+    steps: u32,
 ) -> Result<Outcome, String> {
     let mut run = Run {
         d,
@@ -455,7 +562,7 @@ pub fn simulate(
         tags: Tags::new(d, runner.schema())?,
         runner,
         runs: 0,
-        tally: steps(d)
+        tally: moves(d)
             .into_iter()
             .map(|step| Tally {
                 step,
@@ -469,7 +576,7 @@ pub fn simulate(
         real: State::new(),
         trace: Vec::new(),
     };
-    let ran = engine.run(cases, STEPS, &mut run);
+    let ran = engine.run(cases, steps, &mut run);
     if let Some(e) = run.fatal {
         return Err(e);
     }
@@ -603,10 +710,10 @@ check {
         simulated_by(page, &mut Hegel)
     }
 
-    fn simulated_by(page: &mut Page, engine: &mut dyn Engine) -> Result<Outcome, String> {
+    fn simulated_by(runner: &mut dyn Runner, engine: &mut dyn Engine) -> Result<Outcome, String> {
         let config = weft_parse::config(CONFIG).unwrap();
         let d = weft_parse::parse(PAGE, &config).unwrap();
-        simulate(&d, page, engine, config.cases)
+        simulate(&d, runner, engine, config.cases, config.steps)
     }
 
     #[test]
@@ -676,6 +783,129 @@ check {
             trace.last().map(|l| (l.input.as_str(), l.evidence.clone())),
             Some(("times=7", vec!["throws reload 7".to_string()]))
         );
+    }
+
+    struct Picks {
+        schema: Json,
+        drawn: Json,
+        fails: fn(&Json) -> bool,
+        count: i64,
+    }
+
+    impl Runner for Picks {
+        fn schema(&self) -> &Json {
+            &self.schema
+        }
+
+        fn reset(&mut self, _: &dyn Source) -> Result<Json, Fault> {
+            self.count = 0;
+            Ok(json!({ "page": { "count": self.count } }))
+        }
+
+        fn apply(
+            &mut self,
+            _: &str,
+            verb: &str,
+            _: &Json,
+            source: &dyn Source,
+        ) -> Result<Json, Fault> {
+            if verb == "send" {
+                let c = choice("draw", &self.drawn).map_err(Fault::Broken)?;
+                self.count += match (self.fails)(&source.draw(&c)) {
+                    true => 2,
+                    false => 1,
+                };
+            }
+            Ok(json!({ "page": { "count": self.count } }))
+        }
+    }
+
+    fn shrunk(drawn: Json, fails: fn(&Json) -> bool) -> Json {
+        let mut picks = Picks {
+            schema: schema("page.count", &["send", "reload"]),
+            drawn,
+            fails,
+            count: 0,
+        };
+        let o = simulated_by(&mut picks, &mut Hegel).unwrap();
+        let trace = o.found.unwrap();
+        let input = &trace[0].input;
+        serde_json::from_str(input.strip_prefix("drawn=").unwrap()).unwrap()
+    }
+
+    #[test]
+    fn hegel_shrinks_a_wide_index_to_the_first_failing_option() {
+        let drawn = json!({ "type": "integer", "index": true, "minimum": 0, "maximum": 41785 });
+        assert_eq!(shrunk(drawn, |v| v.as_u64() >= Some(30000)), json!(30000));
+    }
+
+    #[test]
+    fn hegel_shrinks_a_weighted_enum_to_the_first_failing_option() {
+        let drawn = json!({ "enum": ["delete", "call", "value", "condition"], "weights": [230, 64, 64, 34] });
+        assert_eq!(shrunk(drawn, |v| v != "delete"), json!("call"));
+    }
+
+    #[test]
+    fn hegel_shrinks_a_union_to_its_first_failing_branch_and_value() {
+        let drawn = json!({ "anyOf": [
+            { "type": "object", "properties": { "op": { "const": "delete" } }, "required": ["op"] },
+            { "type": "object", "properties": {
+                "op": { "const": "replace" },
+                "donor": { "type": "integer", "index": true, "minimum": 0, "maximum": 999 }
+            }, "required": ["op", "donor"] }
+        ] });
+        assert_eq!(
+            shrunk(drawn, |v| v["donor"].as_u64() >= Some(3)),
+            json!({ "op": "replace", "donor": 3 })
+        );
+    }
+
+    #[test]
+    fn hegel_shrinks_an_array_to_the_fewest_items_that_fail() {
+        let drawn = json!({ "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 9 }, "maxItems": 5 });
+        let v = shrunk(drawn, |v| {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Json::as_i64)
+                .sum::<i64>()
+                >= 10
+        });
+        let all: Vec<i64> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Json::as_i64)
+            .collect();
+        assert_eq!((all.len(), all.iter().sum::<i64>()), (2, 10));
+    }
+
+    #[test]
+    fn each_draw_is_a_json_schema_that_weft_draws() {
+        let cases = [
+            (
+                json!({ "type": "array", "items": { "type": "boolean" } }),
+                "the array `draw` takes `maxItems`",
+            ),
+            (
+                json!({ "enum": ["a", "b"], "weights": [1] }),
+                "the weights of `draw` are 2 counts, not all 0",
+            ),
+            (
+                json!({ "type": "integer", "index": true, "minimum": 1, "maximum": 3 }),
+                "the index `draw` has `minimum` 0 and a `maximum`",
+            ),
+            (
+                json!({ "type": "null" }),
+                "the field `draw` is not a JSON Schema that weft draws",
+            ),
+        ];
+        for (node, error) in cases {
+            assert_eq!(
+                choice("draw", &node).err(),
+                Some(format!("{error}: `{node}`"))
+            );
+        }
     }
 
     #[test]

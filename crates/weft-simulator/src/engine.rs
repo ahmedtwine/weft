@@ -3,12 +3,13 @@ use std::panic::{self, AssertUnwindSafe};
 
 use hegel::generators as gs;
 use hegel::stateful::{self, Invariant, Rule, StateMachine};
-use hegel::{Database, Settings, TestCase, Verbosity};
+use hegel::{Database, HealthCheck, Settings, TestCase, Verbosity};
 use serde_json::Value as Json;
 
-use crate::{Case, Engine, Field, Source};
+use crate::{Case, Choice, Engine, Source};
 
 const STOP: &str = "weft";
+const NARROW: usize = 256;
 
 pub struct Hegel;
 
@@ -17,24 +18,43 @@ struct Drawn<'b> {
     best: &'b Cell<Option<f64>>,
 }
 
+impl Drawn<'_> {
+    fn below(&self, count: usize) -> usize {
+        self.tc
+            .draw(gs::integers::<usize>().min_value(0).max_value(count - 1))
+    }
+}
+
 impl Source for Drawn<'_> {
-    fn draw(&self, field: &Field) -> Json {
-        match field {
-            Field::Text(min, Some(max)) => {
-                Json::from(self.tc.draw(gs::text().min_size(*min).max_size(*max)))
-            }
-            Field::Text(min, None) => Json::from(self.tc.draw(gs::text().min_size(*min))),
-            Field::Int(min, max) => Json::from(
-                self.tc
-                    .draw(gs::integers::<i64>().min_value(*min).max_value(*max)),
-            ),
-            Field::Bool => Json::from(self.tc.draw(gs::booleans())),
+    fn draw(&self, choice: &Choice) -> Json {
+        choice.draw(self)
+    }
+
+    fn bool(&self) -> bool {
+        self.tc.draw(gs::booleans())
+    }
+
+    fn int(&self, min: i64, max: i64) -> i64 {
+        self.tc
+            .draw(gs::integers::<i64>().min_value(min).max_value(max))
+    }
+
+    fn text(&self, min: usize, max: Option<usize>) -> String {
+        match max {
+            Some(max) => self.tc.draw(gs::text().min_size(min).max_size(max)),
+            None => self.tc.draw(gs::text().min_size(min)),
         }
     }
 
-    fn pick(&self, count: usize) -> usize {
-        self.tc
-            .draw(gs::integers::<usize>().min_value(0).max_value(count - 1))
+    fn index(&self, count: usize) -> usize {
+        match count <= NARROW {
+            true => self.below(count),
+            false => {
+                let at = self.below(count.div_ceil(NARROW)) * NARROW + self.below(NARROW);
+                self.tc.assume(at < count);
+                at
+            }
+        }
     }
 
     fn target(&self, score: f64) {
@@ -105,6 +125,7 @@ impl Engine for Hegel {
                 Settings::new()
                     .test_cases(cases)
                     .database(Database::Disabled)
+                    .suppress_health_check([HealthCheck::TooSlow])
                     .verbosity(Verbosity::Quiet)
                     .print_blob(false),
             )
@@ -143,26 +164,28 @@ impl Random {
 }
 
 impl Source for Random {
-    fn draw(&self, field: &Field) -> Json {
-        match field {
-            Field::Text(min, max) => {
-                let top = max.unwrap_or(min + 8);
-                let size = min + self.pick(top - min + 1);
-                Json::from(
-                    (0..size)
-                        .map(|_| char::from(b'a' + self.below(26) as u8))
-                        .collect::<String>(),
-                )
-            }
-            Field::Int(min, max) => {
-                let span = (i128::from(*max) - i128::from(*min) + 1) as u128;
-                Json::from((i128::from(*min) + self.below(span) as i128) as i64)
-            }
-            Field::Bool => Json::from(self.next() & 1 == 1),
-        }
+    fn draw(&self, choice: &Choice) -> Json {
+        choice.draw(self)
     }
 
-    fn pick(&self, count: usize) -> usize {
+    fn bool(&self) -> bool {
+        self.next() & 1 == 1
+    }
+
+    fn int(&self, min: i64, max: i64) -> i64 {
+        let span = (i128::from(max) - i128::from(min) + 1) as u128;
+        (i128::from(min) + self.below(span) as i128) as i64
+    }
+
+    fn text(&self, min: usize, max: Option<usize>) -> String {
+        let top = max.unwrap_or(min + 8);
+        let size = min + self.index(top - min + 1);
+        (0..size)
+            .map(|_| char::from(b'a' + self.below(26) as u8))
+            .collect()
+    }
+
+    fn index(&self, count: usize) -> usize {
         self.below(count as u128) as usize
     }
 
@@ -175,7 +198,7 @@ impl Engine for Random {
             if case.start(self).is_err() {
                 return Ok(());
             }
-            for _ in 0..=self.pick(steps as usize) {
+            for _ in 0..=self.index(steps as usize) {
                 if case.step(self).is_err() {
                     return Ok(());
                 }
