@@ -8,6 +8,8 @@ use weft_parse::{Check, Diagram, State, Value, shown};
 
 use memo::Memo;
 
+const REPLAYS: usize = 10;
+
 pub enum Fault {
     Thrown(String),
     Broken(String),
@@ -59,7 +61,7 @@ impl Choice {
 
 enum Stop {
     Fail,
-    Skip,
+    End,
 }
 
 trait Case {
@@ -395,7 +397,6 @@ fn written(input: &Json) -> String {
 struct Run<'a> {
     d: &'a Diagram,
     c: &'a Check,
-    tags: Tags,
     runner: Memo<'a>,
     runs: u64,
     tally: Vec<Tally>,
@@ -408,13 +409,9 @@ struct Run<'a> {
 
 impl Run<'_> {
     fn fail(&mut self, trace: Vec<Line>) -> Stop {
-        match self.runner.live() {
-            Ok(()) => {
-                self.found = Some(trace);
-                Stop::Fail
-            }
-            Err(fault) => self.halt(fault),
-        }
+        self.runner.keep();
+        self.found = Some(trace);
+        Stop::Fail
     }
 
     fn wire(&mut self, e: String) -> Stop {
@@ -425,7 +422,7 @@ impl Run<'_> {
     fn halt(&mut self, fault: Fault) -> Stop {
         match fault {
             Fault::Thrown(e) | Fault::Broken(e) => self.wire(e),
-            Fault::Changed => Stop::Skip,
+            Fault::Changed => Stop::End,
         }
     }
 
@@ -437,8 +434,18 @@ impl Run<'_> {
         }
     }
 
-    fn read(&mut self, raw: &Json) -> Result<State, Stop> {
-        self.tags.read(raw).map_err(|e| self.wire(e))
+    fn caveat(&mut self) -> Option<String> {
+        if self.fatal.is_some() || self.found.is_none() {
+            return None;
+        }
+        match self.runner.repeats(REPLAYS) {
+            Ok(REPLAYS) => None,
+            Ok(seen) => Some(format!("fails in {seen} of {REPLAYS} replays")),
+            Err(fault) => {
+                self.halt(fault);
+                None
+            }
+        }
     }
 }
 
@@ -449,11 +456,9 @@ impl Case for Run<'_> {
             return Err(Stop::Fail);
         }
         let start = match self.runner.reset(source) {
-            Ok(raw) => self.read(&raw)?,
-            Err(Fault::Thrown(e) | Fault::Broken(e)) => {
-                return Err(self.wire(format!("reset: {e}")));
-            }
-            Err(Fault::Changed) => return Err(Stop::Skip),
+            Ok(start) => start,
+            Err(Fault::Thrown(e)) => return Err(self.wire(format!("reset: {e}"))),
+            Err(fault) => return Err(self.halt(fault)),
         };
         if let Some(evidence) = self.judge(&start, &start, "")? {
             let line = Line {
@@ -477,7 +482,7 @@ impl Case for Run<'_> {
             return Ok(());
         }
         let (o, verb, to) = enabled[source.index(enabled.len())].clone();
-        let input = self.tags.input(source, verb);
+        let input = self.runner.tags.input(source, verb);
         let seen = Seen {
             source,
             drawn: RefCell::new(Vec::new()),
@@ -489,8 +494,8 @@ impl Case for Run<'_> {
             state: String::new(),
             evidence: Vec::new(),
         };
-        let raw = match applied {
-            Ok(raw) => raw,
+        let next = match applied {
+            Ok(next) => next,
             Err(Fault::Thrown(e)) => {
                 line.evidence = vec![format!("throws {e}")];
                 self.trace.push(line);
@@ -499,7 +504,6 @@ impl Case for Run<'_> {
             }
             Err(fault) => return Err(self.halt(fault)),
         };
-        let next = self.read(&raw)?;
         line.state = view(&next);
         self.model.insert(o.name.clone(), to);
         let applies = self.c.applies(&self.real, &next, verb);
@@ -526,11 +530,11 @@ pub fn simulate(
     cases: u64,
     key: Option<&str>,
 ) -> Result<Outcome, String> {
+    let tags = Tags::new(d, runner.schema())?;
     let mut run = Run {
         d,
         c: d.check.as_ref().ok_or("needs `check`")?,
-        tags: Tags::new(d, runner.schema())?,
-        runner: Memo::new(runner),
+        runner: Memo::new(runner, tags),
         runs: 0,
         tally: moves(d)
             .into_iter()
@@ -547,15 +551,17 @@ pub fn simulate(
         trace: Vec::new(),
     };
     let ran = engine::run(cases, key, &mut run);
+    let caveat = run.caveat();
     if let Some(e) = run.fatal {
         return Err(e);
     }
+    ran?;
     Ok(Outcome {
         cases,
         runs: run.runs,
         tally: run.tally,
         found: run.found,
-        caveat: ran?,
+        caveat,
     })
 }
 
@@ -608,19 +614,26 @@ check {
 
     struct Page {
         count: i64,
-        lost: bool,
+        calls: u64,
+        losses: u64,
         thrown: bool,
         schema: Json,
     }
 
     impl Page {
-        fn new(lost: bool, thrown: bool, schema: Json) -> Page {
+        fn new(losses: u64, thrown: bool, schema: Json) -> Page {
             Page {
                 count: 0,
-                lost,
+                calls: 0,
+                losses,
                 thrown,
                 schema,
             }
+        }
+
+        fn state(&mut self) -> Result<Json, Fault> {
+            self.calls += 1;
+            Ok(json!({ "page": { "count": self.count }, "calls": self.calls }))
         }
     }
 
@@ -631,7 +644,7 @@ check {
 
         fn reset(&mut self, _: &dyn Source) -> Result<Json, Fault> {
             self.count = 0;
-            Ok(json!({ "page": { "count": self.count } }))
+            self.state()
         }
 
         fn apply(
@@ -647,10 +660,13 @@ check {
                 (_, Some(t)) if self.thrown && t > 6 => {
                     return Err(Fault::Thrown(format!("reload {t}")));
                 }
-                (_, Some(t)) if self.lost && t > 3 => self.count = 0,
+                (_, Some(t)) if self.losses > 0 && t > 3 => {
+                    self.count = 0;
+                    self.losses -= 1;
+                }
                 _ => {}
             }
-            Ok(json!({ "page": { "count": self.count } }))
+            self.state()
         }
     }
 
@@ -685,7 +701,7 @@ check {
     #[test]
     fn a_page_that_keeps_its_count_holds_in_each_case() {
         let o = simulated(&mut Page::new(
-            false,
+            0,
             false,
             schema("page.count", &["send", "reload"]),
         ))
@@ -697,11 +713,12 @@ check {
     #[test]
     fn hegel_shrinks_a_lost_count_to_the_smallest_steps_and_values() {
         let o = simulated(&mut Page::new(
-            true,
+            u64::MAX,
             false,
             schema("page.count", &["send", "reload"]),
         ))
         .unwrap();
+        assert!(o.caveat.is_none());
         let trace = o.found.unwrap();
         let rows: Vec<(&str, &str, &str)> = trace
             .iter()
@@ -722,9 +739,21 @@ check {
     }
 
     #[test]
+    fn a_count_that_is_lost_one_time_is_found_and_fails_in_no_replay() {
+        let o = simulated(&mut Page::new(
+            1,
+            false,
+            schema("page.count", &["send", "reload"]),
+        ))
+        .unwrap();
+        assert!(o.found.is_some());
+        assert_eq!(o.caveat.as_deref(), Some("fails in 0 of 10 replays"));
+    }
+
+    #[test]
     fn a_throw_of_the_code_is_a_failing_step() {
         let o = simulated(&mut Page::new(
-            false,
+            0,
             true,
             schema("page.count", &["send", "reload"]),
         ))
@@ -861,9 +890,7 @@ check {
         ];
         for (schema, error) in cases {
             assert_eq!(
-                simulated(&mut Page::new(false, false, schema))
-                    .err()
-                    .as_deref(),
+                simulated(&mut Page::new(0, false, schema)).err().as_deref(),
                 Some(error)
             );
         }

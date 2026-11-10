@@ -1,15 +1,16 @@
 use std::cell::Cell;
+use std::env;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 
 use hegel::generators as gs;
-use hegel::{Database, HealthCheck, Settings, TestCase};
+use hegel::{Database, HealthCheck, NondeterminismStrictness, Settings, TestCase, Verbosity};
 use serde_json::Value as Json;
 
 use crate::{Case, Choice, Source, Stop};
 
 const STOP: &str = "weft";
-const NOTE: &str = "note: ";
+const STORE: &str = "weft";
 const STEPS: i64 = 20;
 
 struct Drawn<'b> {
@@ -60,13 +61,25 @@ fn settings(cases: u64, key: Option<&str>) -> Settings {
     let settings = Settings::new()
         .test_cases(cases)
         .suppress_health_check([HealthCheck::TooSlow])
+        .nondeterminism_strictness(NondeterminismStrictness::Error)
+        .verbosity(Verbosity::Quiet)
         .print_blob(false);
     match key {
         Some(key) => settings
-            .database(Database::Default)
-            .database_key(format!("weft:{key}")),
+            .database(Database::Path(store()))
+            .database_key(key.to_string()),
         None => settings.database(Database::Disabled),
     }
+}
+
+fn store() -> String {
+    env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::home_dir().map(|home| home.join(".cache")))
+        .unwrap_or_else(env::temp_dir)
+        .join(STORE)
+        .display()
+        .to_string()
 }
 
 fn steps(source: &Drawn) -> i64 {
@@ -75,15 +88,7 @@ fn steps(source: &Drawn) -> i64 {
     if full { STEPS } else { some }
 }
 
-pub fn run(cases: u64, key: Option<&str>, case: &mut dyn Case) -> Result<Option<String>, String> {
-    let noted = Arc::new(Mutex::new(None));
-    let note = Arc::clone(&noted);
-    let heard = Arc::new(move |line: &str| {
-        let caveat = line.strip_prefix(NOTE).filter(|c| c.contains("failure"));
-        if let (Some(caveat), Ok(mut note)) = (caveat, note.lock()) {
-            *note = Some(caveat.to_string());
-        }
-    });
+pub fn run(cases: u64, key: Option<&str>, case: &mut dyn Case) -> Result<(), String> {
     let hegel = || {
         hegel::Hegel::new(|tc: TestCase| {
             let best = Cell::new(None);
@@ -96,17 +101,15 @@ pub fn run(cases: u64, key: Option<&str>, case: &mut dyn Case) -> Result<Option<
                 .and_then(|()| (0..steps(&source)).try_for_each(|_| case.step(&source)));
             match (ended, best.get()) {
                 (Err(Stop::Fail), _) => panic!("{STOP}"),
-                (Err(Stop::Skip), _) => tc.reject(),
-                (Ok(()), Some(score)) => tc.target(score),
-                (Ok(()), None) => {}
+                (_, Some(score)) => tc.target(score),
+                _ => {}
             }
         })
         .settings(settings(cases, key))
         .run()
     };
-    let ran = hegel::with_output_override(heard, || panic::catch_unwind(AssertUnwindSafe(hegel)));
-    match ran {
+    match panic::catch_unwind(AssertUnwindSafe(hegel)) {
         Err(p) if said(&*p) != STOP => Err(said(&*p)),
-        _ => Ok(noted.lock().ok().and_then(|mut note| note.take())),
+        _ => Ok(()),
     }
 }

@@ -195,7 +195,8 @@ fn section(path: &str, src: &str, d: &Diagram, theme: Theme) -> Result<String, S
 
 fn run(d: &Diagram, file: &Path, config: &Config) -> Result<Outcome, String> {
     let mut runner = weft_runner::start(config, d, file)?;
-    simulate(d, runner.as_mut(), config.cases, file.to_str())
+    let key = fs::canonicalize(file).map_err(|e| e.to_string())?;
+    simulate(d, runner.as_mut(), config.cases, key.to_str())
 }
 
 fn diagram(file: &Path, config: &Config) -> Result<(String, Diagram), String> {

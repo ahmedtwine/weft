@@ -4,14 +4,18 @@ use std::collections::{HashMap, VecDeque};
 use serde_json::Value as Json;
 use weft_parse::{Check, State};
 
-use crate::{Choice, Fault, Runner, Source};
+use crate::{Choice, Fault, Runner, Source, Tags};
 
-type Done = Result<Json, String>;
+const TRIES: usize = 3;
 
-#[derive(Clone, PartialEq)]
+type Done = Result<State, String>;
+type Draws = Vec<(Choice, Json)>;
+
+#[derive(Clone)]
 enum Reply {
     Draw(Choice),
     Done(Done, Option<f64>),
+    Skip,
 }
 
 enum Call {
@@ -27,13 +31,18 @@ impl Call {
         }
     }
 
-    fn run(&self, runner: &mut dyn Runner, source: &dyn Source) -> Result<Done, Fault> {
-        let done = match self {
+    fn run(
+        &self,
+        runner: &mut dyn Runner,
+        tags: &Tags,
+        source: &dyn Source,
+    ) -> Result<Done, Fault> {
+        let raw = match self {
             Call::Reset => runner.reset(source),
             Call::Apply(object, verb, input) => runner.apply(object, verb, input, source),
         };
-        match done {
-            Ok(state) => Ok(Ok(state)),
+        match raw {
+            Ok(raw) => tags.read(&raw).map(Ok).map_err(Fault::Broken),
             Err(Fault::Thrown(e)) => Ok(Err(e)),
             Err(fault) => Err(fault),
         }
@@ -42,26 +51,44 @@ impl Call {
 
 struct Made {
     call: Call,
-    drawn: Vec<Json>,
+    drawn: Draws,
     done: Done,
+}
+
+fn same(a: &Done, b: &Done) -> bool {
+    match (a, b) {
+        (Ok(a), Ok(b)) => a == b,
+        (a, b) => a.is_err() && b.is_err(),
+    }
+}
+
+fn again(runner: &mut dyn Runner, tags: &Tags, made: &[Made]) -> Result<bool, Fault> {
+    for made in made {
+        let told = Told::new(None, made.drawn.iter().cloned().collect());
+        let done = made.call.run(runner, tags, &told)?;
+        if !told.kept() || !same(&done, &made.done) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 struct Told<'s> {
     source: Option<&'s dyn Source>,
-    ahead: RefCell<VecDeque<Json>>,
-    drawn: RefCell<Vec<(Choice, Json)>>,
+    ahead: RefCell<VecDeque<(Choice, Json)>>,
+    drawn: RefCell<Draws>,
     score: Cell<Option<f64>>,
-    over: Cell<bool>,
+    strayed: Cell<bool>,
 }
 
 impl<'s> Told<'s> {
-    fn new(source: Option<&'s dyn Source>, ahead: VecDeque<Json>) -> Told<'s> {
+    fn new(source: Option<&'s dyn Source>, ahead: VecDeque<(Choice, Json)>) -> Told<'s> {
         Told {
             source,
             ahead: RefCell::new(ahead),
             drawn: RefCell::new(Vec::new()),
             score: Cell::new(None),
-            over: Cell::new(false),
+            strayed: Cell::new(false),
         }
     }
 
@@ -69,17 +96,27 @@ impl<'s> Told<'s> {
         match self.source {
             Some(source) => source.draw(choice),
             None => {
-                self.over.set(true);
+                self.strayed.set(true);
                 Json::Null
             }
         }
+    }
+
+    fn kept(&self) -> bool {
+        !self.strayed.get() && self.ahead.borrow().is_empty()
     }
 }
 
 impl Source for Told<'_> {
     fn draw(&self, choice: &Choice) -> Json {
         let ahead = self.ahead.borrow_mut().pop_front();
-        let value = ahead.unwrap_or_else(|| self.fresh(choice));
+        let value = match ahead {
+            Some((known, value)) => {
+                self.strayed.set(self.strayed.get() || known != *choice);
+                value
+            }
+            None => self.fresh(choice),
+        };
         self.drawn
             .borrow_mut()
             .push((choice.clone(), value.clone()));
@@ -112,19 +149,23 @@ impl Source for Told<'_> {
 }
 
 pub struct Memo<'a> {
+    pub tags: Tags,
     runner: &'a mut dyn Runner,
-    known: Option<HashMap<(usize, String), (Reply, usize)>>,
+    known: HashMap<(usize, String), (Reply, usize)>,
     made: Vec<Made>,
+    kept: Vec<Made>,
     at: usize,
     live: bool,
 }
 
 impl<'a> Memo<'a> {
-    pub fn new(runner: &'a mut dyn Runner) -> Memo<'a> {
+    pub fn new(runner: &'a mut dyn Runner, tags: Tags) -> Memo<'a> {
         Memo {
+            tags,
             runner,
-            known: Some(HashMap::new()),
+            known: HashMap::new(),
             made: Vec::new(),
+            kept: Vec::new(),
             at: 0,
             live: false,
         }
@@ -140,7 +181,7 @@ impl<'a> Memo<'a> {
         self.runner.check(check, cur, nxt, verb)
     }
 
-    pub fn reset(&mut self, source: &dyn Source) -> Result<Json, Fault> {
+    pub fn reset(&mut self, source: &dyn Source) -> Result<State, Fault> {
         self.made.clear();
         self.at = 0;
         self.live = false;
@@ -153,45 +194,39 @@ impl<'a> Memo<'a> {
         verb: &str,
         input: &Json,
         source: &dyn Source,
-    ) -> Result<Json, Fault> {
+    ) -> Result<State, Fault> {
         self.call(
             Call::Apply(object.to_string(), verb.to_string(), input.clone()),
             source,
         )
     }
 
-    pub fn live(&mut self) -> Result<(), Fault> {
-        if self.live {
-            return Ok(());
-        }
-        for made in &self.made {
-            let told = Told::new(None, made.drawn.iter().cloned().collect());
-            let done = made.call.run(self.runner, &told)?;
-            if told.over.get() || !told.ahead.borrow().is_empty() || done != made.done {
-                self.known = None;
-                return Err(Fault::Changed);
+    pub fn keep(&mut self) {
+        self.kept = std::mem::take(&mut self.made);
+    }
+
+    pub fn repeats(&mut self, times: usize) -> Result<usize, Fault> {
+        (0..times).try_fold(0, |seen, _| {
+            again(self.runner, &self.tags, &self.kept).map(|met| seen + usize::from(met))
+        })
+    }
+
+    fn live(&mut self) -> Result<(), Fault> {
+        for _ in 0..TRIES {
+            if self.live || again(self.runner, &self.tags, &self.made)? {
+                self.live = true;
+                return Ok(());
             }
         }
-        self.live = true;
-        Ok(())
+        Err(Fault::Changed)
     }
 
     fn learn(&mut self, at: usize, said: String, reply: Reply) -> usize {
-        let Some(known) = &mut self.known else {
-            return 0;
-        };
-        let fresh = known.len() + 1;
-        let (old, next) = known.entry((at, said)).or_insert((reply.clone(), fresh));
-        match *old == reply {
-            true => *next,
-            false => {
-                self.known = None;
-                0
-            }
-        }
+        let fresh = self.known.len() + 1;
+        self.known.entry((at, said)).or_insert((reply, fresh)).1
     }
 
-    fn end(&mut self, call: Call, drawn: Vec<Json>, done: Done, at: usize) -> Result<Json, Fault> {
+    fn end(&mut self, call: Call, drawn: Draws, done: Done, at: usize) -> Result<State, Fault> {
         self.at = at;
         self.made.push(Made {
             call,
@@ -201,39 +236,56 @@ impl<'a> Memo<'a> {
         done.map_err(Fault::Thrown)
     }
 
-    fn call(&mut self, call: Call, source: &dyn Source) -> Result<Json, Fault> {
+    fn heard(
+        &mut self,
+        call: &Call,
+        source: &dyn Source,
+        ahead: VecDeque<(Choice, Json)>,
+    ) -> Result<(Draws, Done, usize), Fault> {
+        let told = Told::new(Some(source), ahead);
+        let done = call.run(self.runner, &self.tags, &told)?;
+        if !told.kept() {
+            return Err(Fault::Changed);
+        }
+        let score = told.score.get();
+        score.into_iter().for_each(|s| source.target(s));
+        let drawn = told.drawn.into_inner();
+        let mut at = self.at;
+        let mut said = call.said();
+        for (choice, value) in &drawn {
+            at = self.learn(at, said, Reply::Draw(choice.clone()));
+            said = value.to_string();
+        }
+        let at = self.learn(at, said, Reply::Done(done.clone(), score));
+        Ok((drawn, done, at))
+    }
+
+    fn call(&mut self, call: Call, source: &dyn Source) -> Result<State, Fault> {
         let mut at = self.at;
         let mut said = call.said();
         let mut ahead = VecDeque::new();
         while !self.live {
-            let known = self.known.as_ref().and_then(|k| k.get(&(at, said.clone())));
-            match known.cloned() {
+            match self.known.get(&(at, said.clone())).cloned() {
                 Some((Reply::Draw(choice), next)) => {
                     let value = source.draw(&choice);
                     said = value.to_string();
-                    ahead.push_back(value);
+                    ahead.push_back((choice, value));
                     at = next;
                 }
                 Some((Reply::Done(done, score), next)) => {
                     score.into_iter().for_each(|s| source.target(s));
                     return self.end(call, ahead.into(), done, next);
                 }
-                None => self.live()?,
+                Some((Reply::Skip, _)) => return Err(Fault::Changed),
+                None => break,
             }
         }
-        let told = Told::new(Some(source), ahead);
-        let done = call.run(self.runner, &told)?;
-        let score = told.score.get();
-        score.into_iter().for_each(|s| source.target(s));
-        let mut at = self.at;
-        let mut said = call.said();
-        let mut drawn = Vec::new();
-        for (choice, value) in told.drawn.into_inner() {
-            at = self.learn(at, said, Reply::Draw(choice));
-            said = value.to_string();
-            drawn.push(value);
-        }
-        let at = self.learn(at, said, Reply::Done(done.clone(), score));
+        let (drawn, done, at) = self
+            .live()
+            .and_then(|()| self.heard(&call, source, ahead))
+            .inspect_err(|_| {
+                self.known.insert((at, said), (Reply::Skip, 0));
+            })?;
         self.end(call, drawn, done, at)
     }
 }
