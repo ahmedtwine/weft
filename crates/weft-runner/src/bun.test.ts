@@ -6,20 +6,24 @@ type Schema = {
   meta: () => { weft?: string } | undefined;
   parse: (value: unknown) => unknown;
 };
+type Draw = (schema: Schema) => Promise<unknown>;
 type Action = {
   input: Schema;
-  run: (object: string, input: unknown) => unknown;
+  run: (object: string, input: unknown, draw: Draw) => unknown;
 };
 type Driver = Record<string, unknown> & {
   state: Schema;
   read: () => unknown;
-  reset: () => unknown;
+  reset: (draw: Draw) => unknown;
+  score?: () => unknown;
 };
 type Message = {
   reset?: true;
   apply?: string;
   object?: string;
   input?: unknown;
+  drawn?: unknown;
+  stop?: true;
   done?: true;
 };
 
@@ -56,8 +60,20 @@ async function* lines(socket: AsyncIterable<string>) {
 
 test("weft", async () => {
   const socket = createConnection(at("WEFT_SOCKET")).setEncoding("utf8");
+  const incoming = lines(socket);
+  const receive = async (): Promise<Message> => {
+    const line = await incoming.next();
+    if (line.done) throw new Error("weft closes the socket");
+    return JSON.parse(line.value);
+  };
   const send = (message: unknown) =>
     socket.write(`${JSON.stringify(message)}\n`);
+  const draw: Draw = async (schema) => {
+    send({ draw: z.toJSONSchema(schema) });
+    const answer = await receive();
+    if (answer.stop) throw new Error("weft stops the step");
+    return schema.parse(answer.drawn);
+  };
   send({
     state: z.toJSONSchema(driver.state),
     actions: [...actions.values()].map((action) =>
@@ -66,15 +82,15 @@ test("weft", async () => {
   });
   const step = async (message: Message) => {
     const action = actions.get(message.apply);
-    if (message.reset) await driver.reset();
+    if (message.reset) await driver.reset(draw);
     if (!message.reset && !action)
       throw new Error(`no action has the tag ${message.apply}`);
-    if (action) await action.run(message.object ?? "", action.input.parse(message.input));
-    return { state: driver.state.parse(await driver.read()) };
+    if (action)
+      await action.run(message.object ?? "", action.input.parse(message.input), draw);
+    const state = driver.state.parse(await driver.read());
+    return driver.score ? { state, score: await driver.score() } : { state };
   };
-  for await (const line of lines(socket)) {
-    const message: Message = JSON.parse(line);
-    if (message.done) break;
+  for (let message = await receive(); !message.done; message = await receive()) {
     send(
       await step(message).catch((error: unknown) => ({
         error: error instanceof Error ? (error.stack ?? error.message) : String(error),

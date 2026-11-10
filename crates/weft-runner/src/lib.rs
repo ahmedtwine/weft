@@ -77,7 +77,6 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::os::unix::net::UnixListener;
-    use std::sync::{Arc, Mutex};
     use std::thread;
     use weft_simulator::Outcome;
 
@@ -211,34 +210,37 @@ check {
 
     #[test]
     fn hegel_shrinks_a_value_that_the_runner_draws_in_a_step() {
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let kept = Arc::clone(&seen);
         let mut count = 0;
+        let mut waiting = false;
         let path = served(move |message| {
-            match (
-                message.get("apply").and_then(Json::as_str),
-                message.get("drawn"),
-            ) {
-                (Some("send"), _) => {
-                    json!({ "draw": { "type": "integer", "minimum": 0, "maximum": 9 } })
-                }
-                (_, Some(n)) => {
-                    let n = n.as_i64().unwrap();
-                    kept.lock().unwrap().push(n);
+            let drawn = message.get("drawn").and_then(Json::as_i64);
+            let stop = message.get("stop").is_some();
+            let send = message.get("apply").and_then(Json::as_str) == Some("send");
+            match (waiting, drawn, stop, send) {
+                (true, Some(n), _, _) => {
+                    waiting = false;
                     count += if n >= 4 { 2 } else { 1 };
                     json!({ "state": { "page": { "count": count } } })
                 }
-                _ => answer(&mut count, message),
+                (true, None, true, _) => {
+                    waiting = false;
+                    json!({ "error": "weft stops the step" })
+                }
+                (true, None, false, _) => json!({ "error": format!("{message} is not drawn") }),
+                (false, _, _, true) => {
+                    waiting = true;
+                    json!({ "draw": { "type": "integer", "minimum": 0, "maximum": 9 } })
+                }
+                (false, _, _, false) => answer(&mut count, message),
             }
         });
         let (_, o) = simulated(&format!("adapter unix path=\"{path}\" cases=100"));
         let trace = o.found.unwrap();
-        let rows: Vec<(&str, &str)> = trace
+        let rows: Vec<(&str, &str, &str)> = trace
             .iter()
-            .map(|l| (l.step.as_str(), l.state.as_str()))
+            .map(|l| (l.step.as_str(), l.input.as_str(), l.state.as_str()))
             .collect();
-        assert_eq!(rows, [("send to=page", "page: count = 2")]);
-        assert_eq!(seen.lock().unwrap().last(), Some(&4));
+        assert_eq!(rows, [("send to=page", "drawn=4", "page: count = 2")]);
     }
 
     #[test]

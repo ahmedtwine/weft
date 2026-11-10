@@ -95,9 +95,10 @@ Each runner gets the same JSON messages and gives the same answers. On a unix so
 | `{"reset": true}` | `{"state": <state>}` or `{"error": "<text>"}` |
 | `{"apply": "<verb>", "object": "<object>", "input": <input>}` | `{"state": <state>}` or `{"error": "<text>"}` |
 | `{"drawn": <value>}` | the next answer of the same step |
+| `{"stop": true}` | any answer; `weft` drops it |
 | `{"done": true}` | none; the run ends |
 
-The schema is `{"state": <JSON Schema>, "actions": [<JSON Schema>, …]}`. An `error` answer is a throw of the code and fails the step. Before it gives the state of a step, a runner can answer `{"draw": <JSON Schema>}` with the schema of one string, integer or boolean. `weft` draws the value from the engine and sends `{"drawn": <value>}`, so the engine records and shrinks each value that the runner draws. A `state` answer can also carry `"score": <number>`, and `weft` gives it to the engine as a target.
+The schema is `{"state": <JSON Schema>, "actions": [<JSON Schema>, …]}`. An `error` answer is a throw of the code and fails the step. Before it gives the state of a step, a runner can answer `{"draw": <JSON Schema>}` with the schema of one string, integer or boolean. `weft` draws the value from the engine and sends `{"drawn": <value>}`, so the engine records and shrinks each value that the runner draws. The run table shows these values as `drawn=<value>,…` in the input of the step. When the engine ends a case during a draw, `weft` sends `{"stop": true}` in place of `{"drawn": …}` before its next message, and the runner ends the step. A `state` answer can also carry `"score": <number>`, and `weft` gives it to the engine as a target.
 
 With `adapter bun`, each `<name>.weft.kdl` has a driver `<name>.weft.ts` beside it, with these exports:
 
@@ -106,16 +107,20 @@ export const state = z.strictObject({
   page: z.strictObject({ count: z.number().int().meta({ weft: "page.count" }) }),
 });
 export const read = () => ({ page: { count: rows().length } });
-export const reset = () => { … };
+export const reset = (draw: Draw) => { … };
+export const score = () => added;
 export const send = {
   input: z.strictObject({ text: z.string() }).meta({ weft: "send" }),
-  run: (object: string, input: { text: string }) => { … },
+  run: async (object: string, input: { text: string }, draw: Draw) => {
+    const amount = await draw(z.number().int().min(0).max(9));
+    …
+  },
 };
 ```
 
 A tag is `.meta({ weft: "<object>.<key>" })` on a field of the state, or a list of tags, so that one field of the code can carry the tags of more than one file. A file takes only the tags of its own objects. Each action is an object with `input` and `run`, and the tag of its `input` is its verb. The tags do not change how Zod parses.
 
-`weft` writes its harness to a temporary directory and runs `bun test` on it in the directory of `weft.kdl`, so the preload and the module resolution of the app apply. The harness loads the driver, sends the JSON Schema of `state` and of each `input` through `z.toJSONSchema`, and then calls `reset`, `run` and `read` for each message from `weft`.
+`weft` writes its harness to a temporary directory and runs `bun test` on it in the directory of `weft.kdl`, so the preload and the module resolution of the app apply. The harness loads the driver, sends the JSON Schema of `state` and of each `input` through `z.toJSONSchema`, and then calls `reset`, `run` and `read` for each message from `weft`. `draw(<Zod schema>)` sends the JSON Schema of one string, integer or boolean to `weft` and gives the value that the engine draws, parsed by the schema. The export `score` is optional: when the driver has it, the harness sends its value with each state.
 
 Before the run, `weft` checks that each `<object>.<key>` of the check has a tag, that each tag names a key of its object, that each verb has one action, and that each action is a verb of the file. Each case is a [Hegel](https://hegel.dev) state machine of up to 20 steps. In each step, Hegel draws a transition of the setup that starts from the state of the model, and a value for each field of its input: a string, an integer or a boolean, in the bounds of its JSON Schema. After each step, `weft` reads the state from the code and checks the condition on the state before and after the step. A throw of the code fails the step. Hegel shrinks a failing case to the fewest steps and the smallest values.
 

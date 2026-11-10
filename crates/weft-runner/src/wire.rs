@@ -80,6 +80,7 @@ pub struct Wire {
     line: Line,
     schema: Json,
     bun: Option<Bun>,
+    cut: bool,
 }
 
 impl Wire {
@@ -88,6 +89,7 @@ impl Wire {
             line,
             schema: Json::Null,
             bun,
+            cut: false,
         };
         let schema = wire.line.receive();
         wire.schema = schema.map_err(|e| wire.told(e))?;
@@ -184,6 +186,12 @@ impl Wire {
     }
 
     fn ask(&mut self, message: Json, source: &dyn Source) -> Result<Json, Fault> {
+        if self.cut {
+            self.line
+                .ask(&json!({ "stop": true }))
+                .map_err(|e| Fault::Broken(self.told(e)))?;
+            self.cut = false;
+        }
         let mut message = message;
         loop {
             let answer = self
@@ -204,7 +212,10 @@ impl Wire {
                 (None, Some(error), None) => return Err(Fault::Thrown(error.to_string())),
                 (None, None, Some(draw)) => {
                     let f = field("draw", draw).map_err(Fault::Broken)?;
-                    message = json!({ "drawn": source.draw(&f) });
+                    self.cut = true;
+                    let drawn = source.draw(&f);
+                    self.cut = false;
+                    message = json!({ "drawn": drawn });
                 }
                 _ => return Err(Fault::Broken(format!("the runner answers `{answer}`"))),
             }

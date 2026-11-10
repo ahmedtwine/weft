@@ -1,5 +1,7 @@
 mod engine;
 
+use std::cell::RefCell;
+
 use serde_json::{Map, Value as Json};
 use weft_parse::{Check, Diagram, State, Value, shown};
 
@@ -279,6 +281,44 @@ fn view(s: &State) -> String {
         .join("; ")
 }
 
+struct Seen<'s> {
+    source: &'s dyn Source,
+    drawn: RefCell<Vec<String>>,
+}
+
+impl Seen<'_> {
+    fn written(&self, input: &Json) -> String {
+        let drawn = self.drawn.borrow();
+        [
+            written(input),
+            match drawn.is_empty() {
+                true => String::new(),
+                false => format!("drawn={}", drawn.join(",")),
+            },
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+    }
+}
+
+impl Source for Seen<'_> {
+    fn draw(&self, field: &Field) -> Json {
+        let value = self.source.draw(field);
+        self.drawn.borrow_mut().push(value.to_string());
+        value
+    }
+
+    fn pick(&self, count: usize) -> usize {
+        self.source.pick(count)
+    }
+
+    fn target(&self, score: f64) {
+        self.source.target(score);
+    }
+}
+
 fn written(input: &Json) -> String {
     input.as_object().map_or(String::new(), |all| {
         all.iter()
@@ -361,13 +401,18 @@ impl Case for Run<'_> {
         }
         let (o, verb, to) = enabled[source.pick(enabled.len())].clone();
         let input = self.tags.input(source, verb);
+        let seen = Seen {
+            source,
+            drawn: RefCell::new(Vec::new()),
+        };
+        let applied = self.runner.apply(&o.name, verb, &input, &seen);
         let mut line = Line {
             step: format!("{verb} to={}", o.name),
-            input: written(&input),
+            input: seen.written(&input),
             state: String::new(),
             evidence: Vec::new(),
         };
-        let raw = match self.runner.apply(&o.name, verb, &input, source) {
+        let raw = match applied {
             Ok(raw) => raw,
             Err(Fault::Thrown(e)) => {
                 line.evidence = vec![format!("throws {e}")];
