@@ -1,84 +1,40 @@
+mod bun;
 mod setup;
+mod transport;
 mod wire;
 
 use std::path::Path;
 
-use serde_json::Value as Json;
-use weft_parse::{Check, Diagram, State};
-use weft_simulator::{Fault, Runner, Source};
+use weft_parse::{Adapter, Config, Diagram};
+use weft_simulator::Runner;
 
-pub use setup::Setup;
-pub use wire::Wire;
+use bun::Bun;
+use setup::Setup;
+use wire::Wire;
 
-pub enum Adapter<'a> {
-    Default(Setup<'a>),
-    Wire(Wire),
-}
-
-impl<'a> Adapter<'a> {
-    pub fn start(
-        adapter: &weft_parse::Adapter,
-        d: &'a Diagram,
-        file: &Path,
-    ) -> Result<Adapter<'a>, String> {
-        match adapter {
-            weft_parse::Adapter::Default => Ok(Adapter::Default(Setup::new(d))),
-            weft_parse::Adapter::Bun => Wire::bun(&file.with_extension("ts")).map(Adapter::Wire),
-            weft_parse::Adapter::Unix(path) => Wire::unix(path).map(Adapter::Wire),
-            weft_parse::Adapter::Http(url) => Wire::http(url).map(Adapter::Wire),
-        }
-    }
-
-    fn runner(&mut self) -> &mut dyn Runner {
-        match self {
-            Adapter::Default(s) => s,
-            Adapter::Wire(w) => w,
-        }
-    }
-}
-
-impl Runner for Adapter<'_> {
-    fn schema(&self) -> &Json {
-        match self {
-            Adapter::Default(s) => s.schema(),
-            Adapter::Wire(w) => w.schema(),
-        }
-    }
-
-    fn reset(&mut self, source: &dyn Source) -> Result<Json, Fault> {
-        self.runner().reset(source)
-    }
-
-    fn apply(
-        &mut self,
-        object: &str,
-        verb: &str,
-        input: &Json,
-        source: &dyn Source,
-    ) -> Result<Json, Fault> {
-        self.runner().apply(object, verb, input, source)
-    }
-
-    fn check(
-        &mut self,
-        check: &Check,
-        cur: &State,
-        nxt: &State,
-        verb: &str,
-    ) -> Result<Option<Vec<String>>, Fault> {
-        self.runner().check(check, cur, nxt, verb)
-    }
+pub fn start<'a>(
+    config: &Config,
+    d: &'a Diagram,
+    file: &Path,
+) -> Result<Box<dyn Runner + 'a>, String> {
+    Ok(match (&config.transport, &config.adapter) {
+        (Some(transport), _) => Box::new(Wire::new(transport::connect(transport)?)?),
+        (None, Adapter::Default) => Box::new(Setup::new(d)),
+        (None, Adapter::Bun) => Box::new(Wire::new(Box::new(Bun::start(
+            &file.with_extension("ts"),
+        )?))?),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value as Json, json};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::os::unix::net::UnixListener;
     use std::thread;
-    use weft_simulator::Outcome;
+    use weft_simulator::{Outcome, Source};
 
     const PAGE: &str = r#"
 setup {
@@ -151,10 +107,11 @@ check {
             std::process::id(),
             thread::current().id()
         ));
-        let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
+        let bound = path.clone();
         thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
+            std::fs::remove_file(bound).unwrap();
             let mut writer = stream.try_clone().unwrap();
             writeln!(writer, "{}", schema()).unwrap();
             for line in BufReader::new(stream).lines() {
@@ -169,44 +126,39 @@ check {
         path.display().to_string()
     }
 
-    fn simulated(line: &str) -> (weft_parse::Adapter, Outcome) {
+    fn simulated(line: &str) -> (Config, Outcome) {
         let config = weft_parse::config(&format!(
             "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\n{line}"
         ))
         .unwrap();
         let d = weft_parse::parse(PAGE, &config).unwrap();
-        let mut runner = Adapter::start(&config.adapter, &d, Path::new("page.weft.kdl")).unwrap();
-        let mut engine = weft_simulator::engine(&config.engine);
-        let o =
-            weft_simulator::simulate(&d, &mut runner, engine.as_mut(), config.cases, config.steps)
-                .unwrap();
-        (config.adapter.clone(), o)
+        let mut runner = start(&config, &d, Path::new("page.weft.kdl")).unwrap();
+        let o = weft_simulator::simulate(&d, runner.as_mut(), config.cases).unwrap();
+        (config, o)
     }
 
     #[test]
     fn the_setup_runs_each_step_and_holds_without_an_adapter_line() {
-        let (adapter, o) = simulated("");
+        let (config, o) = simulated("");
         assert_eq!(
-            (adapter, o.cases, o.runs),
-            (weft_parse::Adapter::Default, 100, 100)
+            (config.adapter, config.transport, o.cases, o.runs),
+            (Adapter::Default, None, 100, 100)
         );
         assert!(o.found.is_none());
         assert!(o.tally.iter().all(|t| t.steps > 0 && t.checks == t.steps));
     }
 
     #[test]
-    fn the_setup_holds_under_the_random_engine() {
-        let (_, o) = simulated("engine random seed=3");
-        assert_eq!((o.cases, o.runs), (100, 100));
-        assert!(o.found.is_none());
-    }
-
-    #[test]
     fn a_runner_on_a_unix_socket_gets_the_messages_of_the_bun_harness() {
         let mut count = 0;
         let path = served(move |message| answer(&mut count, message));
-        let (adapter, o) = simulated(&format!("adapter unix path=\"{path}\" cases=30"));
-        assert_eq!(adapter, weft_parse::Adapter::Unix(path));
+        let (config, o) = simulated(&format!(
+            "adapter bun cases=30\ntransport unix path=\"{path}\""
+        ));
+        assert_eq!(
+            (config.adapter, config.transport),
+            (Adapter::Bun, Some(weft_parse::Transport::Unix(path)))
+        );
         assert_eq!((o.cases, o.runs), (30, 30));
         assert!(o.found.is_none());
     }
@@ -237,7 +189,7 @@ check {
                 (false, _, _, false) => answer(&mut count, message),
             }
         });
-        let (_, o) = simulated(&format!("adapter unix path=\"{path}\" cases=100"));
+        let (_, o) = simulated(&format!("transport unix path=\"{path}\""));
         let trace = o.found.unwrap();
         let rows: Vec<(&str, &str, &str)> = trace
             .iter()
@@ -278,7 +230,8 @@ check {
                 None => json!({ "error": "weft stops the step" }),
             }
         });
-        let mut wire = wire::Wire::unix(&path).unwrap();
+        let mut wire =
+            Wire::new(transport::connect(&weft_parse::Transport::Unix(path)).unwrap()).unwrap();
         let cut = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             wire.apply("page", "send", &json!({}), &Cut)
         }));
@@ -319,8 +272,13 @@ check {
                 .unwrap();
             }
         });
-        let (adapter, o) = simulated(&format!("adapter http url=\"{url}\" cases=30"));
-        assert_eq!(adapter, weft_parse::Adapter::Http(url));
+        let (config, o) = simulated(&format!(
+            "adapter default cases=30\ntransport http url=\"{url}\""
+        ));
+        assert_eq!(
+            (config.adapter, config.transport),
+            (Adapter::Default, Some(weft_parse::Transport::Http(url)))
+        );
         assert_eq!((o.cases, o.runs), (30, 30));
         assert!(o.found.is_none());
     }

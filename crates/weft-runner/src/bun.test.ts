@@ -8,7 +8,6 @@ type Schema<T = unknown> = {
 };
 type Source = {
   draw: <T>(schema: Schema<T>) => Promise<T>;
-  pick: <T>(options: readonly T[], weights?: readonly number[]) => Promise<T>;
 };
 type Action = {
   input: Schema;
@@ -79,19 +78,6 @@ test("weft", async () => {
   };
   const source: Source = {
     draw: async (schema) => schema.parse(await drawn(z.toJSONSchema(schema))),
-    pick: async (options, weights) => {
-      if (options.length === 0) throw new Error("pick takes at least one option");
-      const index = await drawn({
-        type: "integer",
-        index: true,
-        minimum: 0,
-        maximum: options.length - 1,
-        ...(weights && { weights }),
-      });
-      if (typeof index !== "number" || !(index in options))
-        throw new Error(`weft draws ${index} of ${options.length} options`);
-      return options[index] as (typeof options)[number];
-    },
   };
   send({
     state: z.toJSONSchema(driver.state),

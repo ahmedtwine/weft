@@ -96,9 +96,12 @@ impl Table {
 
 fn headline(config: &Config, o: &Outcome) -> String {
     format!(
-        "adapter {} · engine {} · {} cases · {} runs · {}",
+        "adapter {}{} · {} cases · {} runs · {}",
         config.adapter,
-        config.engine,
+        config
+            .transport
+            .as_ref()
+            .map_or(String::new(), |t| format!(" · transport {t}")),
         o.cases,
         o.runs,
         o.found
@@ -185,14 +188,8 @@ fn section(path: &str, src: &str, d: &Diagram, theme: Theme) -> Result<String, S
 }
 
 fn run(d: &Diagram, file: &Path, config: &Config) -> Result<Outcome, String> {
-    let mut runner = weft_runner::Adapter::start(&config.adapter, d, file)?;
-    simulate(
-        d,
-        &mut runner,
-        weft_simulator::engine(&config.engine).as_mut(),
-        config.cases,
-        config.steps,
-    )
+    let mut runner = weft_runner::start(config, d, file)?;
+    simulate(d, runner.as_mut(), config.cases)
 }
 
 fn diagram(file: &PathBuf, config: &Config) -> Result<(String, Diagram), String> {

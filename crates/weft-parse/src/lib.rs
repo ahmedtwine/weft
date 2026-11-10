@@ -1413,32 +1413,28 @@ fn document(src: &str) -> Result<KdlDocument, Error> {
 pub enum Adapter {
     Default,
     Bun,
-    Unix(String),
-    Http(String),
 }
 
 impl fmt::Display for Adapter {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Adapter::Default => f.write_str("default"),
-            Adapter::Bun => f.write_str("bun"),
-            Adapter::Unix(path) => write!(f, "unix {path}"),
-            Adapter::Http(url) => write!(f, "http {url}"),
-        }
+        f.write_str(match self {
+            Adapter::Default => "default",
+            Adapter::Bun => "bun",
+        })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Engine {
-    Hegel,
-    Random(u64),
+pub enum Transport {
+    Unix(String),
+    Http(String),
 }
 
-impl fmt::Display for Engine {
+impl fmt::Display for Transport {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Engine::Hegel => f.write_str("hegel"),
-            Engine::Random(seed) => write!(f, "random seed={seed}"),
+            Transport::Unix(path) => write!(f, "unix {path}"),
+            Transport::Http(url) => write!(f, "http {url}"),
         }
     }
 }
@@ -1448,9 +1444,8 @@ pub struct Config {
     pub theme: String,
     pub styles: Vec<(Kind, String)>,
     pub adapter: Adapter,
+    pub transport: Option<Transport>,
     pub cases: u64,
-    pub steps: u32,
-    pub engine: Engine,
 }
 
 pub fn config(src: &str) -> Result<Config, Error> {
@@ -1460,12 +1455,10 @@ pub fn config(src: &str) -> Result<Config, Error> {
         theme: String::new(),
         styles: Vec::new(),
         adapter: Adapter::Default,
+        transport: None,
         cases: 100,
-        steps: 20,
-        engine: Engine::Hegel,
     };
     let mut set = false;
-    let mut chosen = false;
     for n in doc.nodes() {
         match name(n) {
             "include" => c.include.extend(shape(n, 1, &[], false).map_err(Error)?),
@@ -1478,84 +1471,49 @@ pub fn config(src: &str) -> Result<Config, Error> {
                 }
                 c.styles.push((kind, need(n, "icon").map_err(Error)?));
             }
-            "engine" if chosen => {
-                return Err(Error("`engine` is set twice".into()));
+            "transport" if c.transport.is_some() => {
+                return Err(Error("`transport` is set twice".into()));
             }
-            "engine" => {
-                c.engine = match args(n).first().map(String::as_str) {
-                    Some("hegel") => {
-                        shape(n, 1, &[], false).map_err(Error)?;
-                        Engine::Hegel
-                    }
-                    Some("random") => {
-                        shape(n, 1, &["seed"], false).map_err(Error)?;
-                        match n.get("seed") {
-                            Some(KdlValue::Integer(k)) => {
-                                u64::try_from(*k).ok().map(Engine::Random)
-                            }
-                            _ => None,
+            "transport" => {
+                let (key, transport): (&str, fn(String) -> Transport) =
+                    match args(n).first().map(String::as_str) {
+                        Some("unix") => ("path", Transport::Unix),
+                        Some("http") => ("url", Transport::Http),
+                        _ => {
+                            return Err(Error(
+                                "`transport` is `unix path=<socket>` or `http url=<url>`".into(),
+                            ));
                         }
-                        .ok_or_else(|| {
-                            Error(
-                                "`engine random` takes `seed=<number>`, a number of 0 or above"
-                                    .into(),
-                            )
-                        })?
-                    }
-                    _ => {
-                        return Err(Error(
-                            "`engine` is `hegel` or `random seed=<number>`".into(),
-                        ));
-                    }
-                };
-                chosen = true;
+                    };
+                shape(n, 1, &[key], false).map_err(Error)?;
+                c.transport = Some(transport(need(n, key).map_err(Error)?));
             }
             "adapter" if set => {
                 return Err(Error("`adapter` is set twice".into()));
             }
             "adapter" => {
-                let (adapter, keys): (Adapter, &[&str]) = match args(n).first().map(String::as_str)
-                {
-                    Some("default") => (Adapter::Default, &["cases", "steps"]),
-                    Some("bun") => (Adapter::Bun, &["cases", "steps"]),
-                    Some("unix") => (
-                        Adapter::Unix(need(n, "path").map_err(Error)?),
-                        &["cases", "steps", "path"],
-                    ),
-                    Some("http") => (
-                        Adapter::Http(need(n, "url").map_err(Error)?),
-                        &["cases", "steps", "url"],
-                    ),
-                    _ => {
-                        return Err(Error(
-                                "`adapter` is `default`, `bun`, `unix path=<socket>` or `http url=<url>`"
-                                    .into(),
-                            ));
-                    }
+                let adapter = match args(n).first().map(String::as_str) {
+                    Some("default") => Adapter::Default,
+                    Some("bun") => Adapter::Bun,
+                    _ => return Err(Error("`adapter` is `default` or `bun`".into())),
                 };
-                let name = shape(n, 1, keys, false).map_err(Error)?.remove(0);
-                let count = |key: &str, unset: Option<u64>| {
-                    match n.get(key) {
-                        Some(KdlValue::Integer(k)) => u64::try_from(*k).ok().filter(|k| *k > 0),
-                        None => unset,
-                        _ => None,
-                    }
-                    .ok_or_else(|| {
-                        Error(format!(
-                            "`adapter {name}` takes `{key}=<count>`, a count above 0"
-                        ))
-                    })
-                };
-                c.cases = count("cases", None)?;
-                c.steps = u32::try_from(count("steps", Some(20))?).map_err(|_| {
-                    Error(format!("`adapter {name}` takes `steps=<count>` below 2^32"))
+                let name = shape(n, 1, &["cases"], false).map_err(Error)?.remove(0);
+                let cases = match n.get("cases") {
+                    Some(KdlValue::Integer(k)) => u64::try_from(*k).ok().filter(|k| *k > 0),
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    Error(format!(
+                        "`adapter {name}` takes `cases=<count>`, a count above 0"
+                    ))
                 })?;
                 c.adapter = adapter;
+                c.cases = cases;
                 set = true;
             }
             other => {
                 return Err(Error(format!(
-                    "`{other}` is not include, theme, style, adapter or engine"
+                    "`{other}` is not include, theme, style, adapter or transport"
                 )));
             }
         }
