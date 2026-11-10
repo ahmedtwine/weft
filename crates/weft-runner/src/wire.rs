@@ -1,4 +1,5 @@
 use serde_json::{Value as Json, json};
+use weft_parse::{Ran, Span};
 use weft_simulator::{Fault, Runner, Source, choice};
 
 use crate::transport::Transport;
@@ -7,6 +8,33 @@ pub struct Wire {
     transport: Box<dyn Transport>,
     schema: Json,
     cut: bool,
+}
+
+fn spans(node: &Json) -> Option<Vec<Span>> {
+    let line = |s: &Json, k: &str| usize::try_from(s.get(k)?.as_u64()?).ok();
+    node.as_array()?
+        .iter()
+        .map(|s| {
+            Some(Span {
+                file: s.get("file")?.as_str()?.to_string(),
+                from: line(s, "from")?,
+                to: line(s, "to")?,
+            })
+        })
+        .collect()
+}
+
+fn code(answer: &Json) -> Option<Ran> {
+    let ran = answer.get("ran")?;
+    Some(Ran {
+        reset: spans(ran.get("reset")?)?,
+        actions: ran
+            .get("actions")?
+            .as_object()?
+            .iter()
+            .map(|(verb, all)| Some((verb.clone(), spans(all)?)))
+            .collect::<Option<_>>()?,
+    })
 }
 
 impl Wire {
@@ -78,6 +106,12 @@ impl Runner for Wire {
             json!({ "apply": verb, "object": object, "input": input }),
             source,
         )
+    }
+
+    fn ran(&mut self) -> Result<Ran, String> {
+        self.uncut()?;
+        let answer = self.transport.ask(&json!({ "ran": true }))?;
+        code(&answer).ok_or_else(|| format!("the runner answers `{answer}` to `ran`"))
     }
 }
 

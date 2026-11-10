@@ -4,7 +4,7 @@ mod memo;
 use std::cell::RefCell;
 
 use serde_json::{Map, Value as Json};
-use weft_parse::{Check, Diagram, State, Value, shown};
+use weft_parse::{Check, Diagram, Ran, Span, State, Value, shown};
 
 use memo::Memo;
 
@@ -88,13 +88,25 @@ pub trait Runner {
     ) -> Result<Option<Vec<String>>, Fault> {
         Ok(check.judge(cur, nxt, verb))
     }
+    fn ran(&mut self) -> Result<Ran, String>;
 }
 
+#[derive(Clone)]
 pub struct Line {
-    pub step: String,
+    pub action: Option<(String, String)>,
     pub input: String,
-    pub state: String,
+    pub state: State,
     pub evidence: Vec<String>,
+}
+
+impl Line {
+    pub fn step(&self) -> String {
+        self.action
+            .as_ref()
+            .map_or("start".into(), |(verb, object)| {
+                format!("{verb} to={object}")
+            })
+    }
 }
 
 pub struct Tally {
@@ -107,8 +119,10 @@ pub struct Outcome {
     pub cases: u64,
     pub runs: u64,
     pub tally: Vec<Tally>,
-    pub found: Option<Vec<Line>>,
+    pub trace: Vec<Line>,
+    pub failed: bool,
     pub caveat: Option<String>,
+    pub ran: Ran,
 }
 
 struct Read {
@@ -328,7 +342,7 @@ fn moves(d: &Diagram) -> Vec<String> {
     out
 }
 
-fn view(s: &State) -> String {
+pub fn view(s: &State) -> String {
     s.iter()
         .map(|(o, p)| format!("{o}: {}", shown(p)))
         .collect::<Vec<_>>()
@@ -405,6 +419,7 @@ struct Run<'a> {
     model: State,
     real: State,
     trace: Vec<Line>,
+    longest: Vec<Line>,
 }
 
 impl Run<'_> {
@@ -412,6 +427,12 @@ impl Run<'_> {
         self.runner.keep();
         self.found = Some(trace);
         Stop::Fail
+    }
+
+    fn passed(&mut self) {
+        if self.trace.len() > self.longest.len() {
+            self.longest = self.trace.clone();
+        }
     }
 
     fn wire(&mut self, e: String) -> Stop {
@@ -460,18 +481,20 @@ impl Case for Run<'_> {
             Err(Fault::Thrown(e)) => return Err(self.wire(format!("reset: {e}"))),
             Err(fault) => return Err(self.halt(fault)),
         };
-        if let Some(evidence) = self.judge(&start, &start, "")? {
-            let line = Line {
-                step: "start".into(),
-                input: String::new(),
-                state: view(&start),
-                evidence,
-            };
+        let judged = self.judge(&start, &start, "")?;
+        let line = Line {
+            action: None,
+            input: String::new(),
+            state: start.clone(),
+            evidence: judged.clone().unwrap_or_default(),
+        };
+        if judged.is_some() {
             return Err(self.fail(vec![line]));
         }
         self.model = self.d.init.clone();
         self.real = start;
-        self.trace = Vec::new();
+        self.trace = vec![line];
+        self.passed();
         Ok(())
     }
 
@@ -489,9 +512,9 @@ impl Case for Run<'_> {
         };
         let applied = self.runner.apply(&o.name, verb, &input, &seen);
         let mut line = Line {
-            step: format!("{verb} to={}", o.name),
+            action: Some((verb.to_string(), o.name.clone())),
             input: seen.written(&input),
-            state: String::new(),
+            state: State::new(),
             evidence: Vec::new(),
         };
         let next = match applied {
@@ -504,10 +527,10 @@ impl Case for Run<'_> {
             }
             Err(fault) => return Err(self.halt(fault)),
         };
-        line.state = view(&next);
+        line.state = next.clone();
         self.model.insert(o.name.clone(), to);
         let applies = self.c.applies(&self.real, &next, verb);
-        if let Some(t) = self.tally.iter_mut().find(|t| t.step == line.step) {
+        if let Some(t) = self.tally.iter_mut().find(|t| t.step == line.step()) {
             t.steps += 1;
             t.checks += u64::from(applies);
         }
@@ -520,8 +543,53 @@ impl Case for Run<'_> {
             return Err(self.fail(trace));
         }
         self.real = next;
+        self.passed();
         Ok(())
     }
+}
+
+fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
+    let verb = |t: &Tally| t.step.split(' ').next().unwrap_or_default().to_string();
+    let spans = ran
+        .actions
+        .iter()
+        .flat_map(|(_, spans)| spans)
+        .chain(&ran.reset);
+    if let Some(s) = spans.clone().find(|s| s.from == 0 || s.to < s.from) {
+        return Err(format!(
+            "`ran` has the lines {}-{} of `{}`, and lines go up from 1",
+            s.from, s.to, s.file
+        ));
+    }
+    if ran.reset.is_empty() {
+        return Err("the runner sends no `ran` for `reset`".into());
+    }
+    if let Some((v, _)) = ran
+        .actions
+        .iter()
+        .find(|(v, _)| !tally.iter().any(|t| verb(t) == *v))
+    {
+        return Err(format!("`ran` names `{v}`, the verb of no `on` line"));
+    }
+    if let Some(v) = tally.iter().filter(|t| t.steps > 0).map(verb).find(|v| {
+        !ran.actions
+            .iter()
+            .any(|(a, spans)| a == v && !spans.is_empty())
+    }) {
+        return Err(format!("the runner sends no `ran` for the action `{v}`"));
+    }
+    let mut actions: Vec<(String, Vec<Span>)> = Vec::new();
+    for v in tally.iter().map(verb) {
+        if let Some(found) = ran.actions.iter().find(|(a, _)| *a == v)
+            && !actions.contains(found)
+        {
+            actions.push(found.clone());
+        }
+    }
+    Ok(Ran {
+        reset: ran.reset,
+        actions,
+    })
 }
 
 pub fn simulate(
@@ -549,19 +617,23 @@ pub fn simulate(
         model: State::new(),
         real: State::new(),
         trace: Vec::new(),
+        longest: Vec::new(),
     };
-    let ran = engine::run(cases, key, &mut run);
+    let ended = engine::run(cases, key, &mut run);
     let caveat = run.caveat();
     if let Some(e) = run.fatal {
         return Err(e);
     }
-    ran?;
+    ended?;
+    let ran = listed(run.runner.ran()?, &run.tally)?;
     Ok(Outcome {
         cases,
         runs: run.runs,
         tally: run.tally,
-        found: run.found,
+        failed: run.found.is_some(),
+        trace: run.found.unwrap_or(run.longest),
         caveat,
+        ran,
     })
 }
 
@@ -618,6 +690,26 @@ check {
         losses: u64,
         thrown: bool,
         schema: Json,
+        ran: Ran,
+    }
+
+    fn span(from: usize, to: usize) -> Span {
+        Span {
+            file: "page.rs".into(),
+            from,
+            to,
+        }
+    }
+
+    fn code(verbs: &[&str]) -> Ran {
+        Ran {
+            reset: vec![span(1, 2)],
+            actions: verbs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (v.to_string(), vec![span(i + 3, i + 3)]))
+                .collect(),
+        }
     }
 
     impl Page {
@@ -628,6 +720,7 @@ check {
                 losses,
                 thrown,
                 schema,
+                ran: code(&["send", "reload"]),
             }
         }
 
@@ -668,6 +761,10 @@ check {
             }
             self.state()
         }
+
+        fn ran(&mut self) -> Result<Ran, String> {
+            Ok(self.ran.clone())
+        }
     }
 
     fn schema(count: &str, actions: &[&str]) -> Json {
@@ -706,8 +803,45 @@ check {
             schema("page.count", &["send", "reload"]),
         ))
         .unwrap();
-        assert!(o.found.is_none());
+        assert!(!o.failed);
         assert_eq!((o.cases, o.runs), (100, 100));
+    }
+
+    #[test]
+    fn the_outcome_has_the_code_of_reset_and_of_each_action_that_ran() {
+        let page = || Page::new(0, false, schema("page.count", &["send", "reload"]));
+        assert_eq!(
+            simulated(&mut page()).unwrap().ran,
+            code(&["send", "reload"])
+        );
+        let cases = [
+            (
+                Ran {
+                    reset: Vec::new(),
+                    ..code(&["send", "reload"])
+                },
+                "the runner sends no `ran` for `reset`",
+            ),
+            (
+                code(&["send"]),
+                "the runner sends no `ran` for the action `reload`",
+            ),
+            (
+                code(&["send", "reload", "open"]),
+                "`ran` names `open`, the verb of no `on` line",
+            ),
+            (
+                Ran {
+                    reset: vec![span(2, 1)],
+                    ..code(&["send", "reload"])
+                },
+                "`ran` has the lines 2-1 of `page.rs`, and lines go up from 1",
+            ),
+        ];
+        for (ran, error) in cases {
+            let mut runner = Page { ran, ..page() };
+            assert_eq!(simulated(&mut runner).err().as_deref(), Some(error));
+        }
     }
 
     #[test]
@@ -719,20 +853,22 @@ check {
         ))
         .unwrap();
         assert!(o.caveat.is_none());
-        let trace = o.found.unwrap();
-        let rows: Vec<(&str, &str, &str)> = trace
+        assert!(o.failed);
+        let rows: Vec<(String, &str, String)> = o
+            .trace
             .iter()
-            .map(|l| (l.step.as_str(), l.input.as_str(), l.state.as_str()))
+            .map(|l| (l.step(), l.input.as_str(), view(&l.state)))
             .collect();
         assert_eq!(
             rows,
             [
-                ("send to=page", "", "page: count = 1"),
-                ("reload to=page", "times=4", "page: count = 0"),
+                ("start".into(), "", "page: count = 0".into()),
+                ("send to=page".into(), "", "page: count = 1".into()),
+                ("reload to=page".into(), "times=4", "page: count = 0".into()),
             ]
         );
         assert_eq!(
-            trace[1].evidence.last().map(String::as_str),
+            o.trace[2].evidence.last().map(String::as_str),
             Some("eq(next(browser.count), browser.count) = eq(0, 1) = false")
         );
         assert!(o.runs > o.cases);
@@ -746,7 +882,7 @@ check {
             schema("page.count", &["send", "reload"]),
         ))
         .unwrap();
-        assert!(o.found.is_some());
+        assert!(o.failed);
         assert_eq!(o.caveat.as_deref(), Some("fails in 0 of 10 replays"));
     }
 
@@ -758,9 +894,11 @@ check {
             schema("page.count", &["send", "reload"]),
         ))
         .unwrap();
-        let trace = o.found.unwrap();
+        assert!(o.failed);
         assert_eq!(
-            trace.last().map(|l| (l.input.as_str(), l.evidence.clone())),
+            o.trace
+                .last()
+                .map(|l| (l.input.as_str(), l.evidence.clone())),
             Some(("times=7", vec!["throws reload 7".to_string()]))
         );
     }
@@ -798,6 +936,10 @@ check {
             }
             Ok(json!({ "page": { "count": self.count } }))
         }
+
+        fn ran(&mut self) -> Result<Ran, String> {
+            Ok(code(&["send", "reload"]))
+        }
     }
 
     fn shrunk(drawn: Json, fails: fn(&Json) -> bool) -> Json {
@@ -808,8 +950,8 @@ check {
             count: 0,
         };
         let o = simulated(&mut picks).unwrap();
-        let trace = o.found.unwrap();
-        let input = &trace[0].input;
+        assert!(o.failed);
+        let input = &o.trace[1].input;
         serde_json::from_str(input.strip_prefix("drawn=").unwrap()).unwrap()
     }
 

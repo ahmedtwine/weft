@@ -3,7 +3,7 @@
 use std::ffi::c_char;
 use std::ptr;
 
-use weft_draw::Theme;
+use weft_draw::{Code, Theme};
 use weft_parse::{Diagram, Verdict};
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -131,8 +131,12 @@ pub unsafe extern "C" fn weft_render(
         Err(rc) => return rc,
     };
     let drawn = match format {
-        f if f == weft_format_t::WEFT_FORMAT_SVG_LIGHT as u32 => weft_draw::svg(&d, Theme::Light),
-        f if f == weft_format_t::WEFT_FORMAT_SVG_DARK as u32 => weft_draw::svg(&d, Theme::Dark),
+        f if f == weft_format_t::WEFT_FORMAT_SVG_LIGHT as u32 => {
+            weft_draw::svg(&d, Theme::Light, &Code::default())
+        }
+        f if f == weft_format_t::WEFT_FORMAT_SVG_DARK as u32 => {
+            weft_draw::svg(&d, Theme::Dark, &Code::default())
+        }
         f if f == weft_format_t::WEFT_FORMAT_ASCII as u32 => weft_draw::ascii(&d),
         _ => {
             set_error(ctx, "weft_render: format is not a weft_format_t");

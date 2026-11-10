@@ -72,11 +72,11 @@ export const reload = {
 
 ```
 $ weft
-✓ page.weft.kdl · Always, for each browser in page, if step is reload, then browser.count is unchanged
+✓ page.weft.kdl · Always, for each browser in page, if step is reload, then browser.count stays unchanged
   adapter bun · 100 cases · 100 runs · holds
 ```
 
-`weft --ui` opens the diagrams.
+`weft --ui` serves the diagrams at http://127.0.0.1:7357.
 
 ## Architecture
 

@@ -19,7 +19,7 @@ pub fn start<'a>(
 ) -> Result<Box<dyn Runner + 'a>, String> {
     Ok(match (&config.transport, &config.adapter) {
         (Some(transport), _) => Box::new(Wire::new(transport::connect(transport)?)?),
-        (None, Adapter::Default) => Box::new(Setup::new(d)),
+        (None, Adapter::Default) => Box::new(Setup::new(d, file)),
         (None, Adapter::Bun) => Box::new(Wire::new(Box::new(Bun::start(
             &file.with_extension("ts"),
         )?))?),
@@ -34,6 +34,7 @@ mod tests {
     use std::net::TcpListener;
     use std::os::unix::net::UnixListener;
     use std::thread;
+    use weft_parse::{Ran, Span};
     use weft_simulator::{Outcome, Source};
 
     const PAGE: &str = r#"
@@ -98,6 +99,15 @@ check {
             (_, Some("send")) => *count += 1,
             _ => {}
         }
+        if message.get("ran").is_some() {
+            return json!({ "ran": {
+                "reset": [{ "file": "page.ts", "from": 3, "to": 5 }],
+                "actions": {
+                    "send": [{ "file": "page.ts", "from": 7, "to": 9 }],
+                    "reload": [{ "file": "page.ts", "from": 11, "to": 11 }]
+                }
+            } });
+        }
         json!({ "state": { "page": { "count": *count } }, "score": *count })
     }
 
@@ -144,8 +154,70 @@ check {
             (config.adapter, config.transport, o.cases, o.runs),
             (Adapter::Default, None, 100, 100)
         );
-        assert!(o.found.is_none());
+        assert!(!o.failed);
         assert!(o.tally.iter().all(|t| t.steps > 0 && t.checks == t.steps));
+        assert_eq!(
+            o.ran,
+            Ran {
+                reset: vec![span("page.weft.kdl", 4, 4)],
+                actions: vec![
+                    ("send".into(), vec![span("page.weft.kdl", 6, 6)]),
+                    ("reload".into(), vec![span("page.weft.kdl", 9, 9)]),
+                ],
+            }
+        );
+    }
+
+    fn span(file: &str, from: usize, to: usize) -> Span {
+        Span {
+            file: file.into(),
+            from,
+            to,
+        }
+    }
+
+    #[test]
+    fn a_runner_sends_the_code_of_reset_and_of_each_action_one_time_for_a_run() {
+        let mut count = 0;
+        let (sent, seen) = std::sync::mpsc::channel();
+        let path = served(move |message| {
+            sent.send(message.get("ran").is_some()).unwrap();
+            answer(&mut count, message)
+        });
+        let (_, o) = simulated(&format!("transport unix path=\"{path}\""));
+        assert_eq!(
+            o.ran,
+            Ran {
+                reset: vec![span("page.ts", 3, 5)],
+                actions: vec![
+                    ("send".into(), vec![span("page.ts", 7, 9)]),
+                    ("reload".into(), vec![span("page.ts", 11, 11)]),
+                ],
+            }
+        );
+        assert_eq!(seen.try_iter().filter(|ran| *ran).count(), 1);
+    }
+
+    #[test]
+    fn a_runner_that_sends_no_code_stops_the_run() {
+        let mut count = 0;
+        let path = served(move |message| match message.get("ran") {
+            Some(_) => json!({ "state": { "page": { "count": count } } }),
+            None => answer(&mut count, message),
+        });
+        let config = weft_parse::config(&format!(
+            "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\ntransport unix path=\"{path}\""
+        ))
+        .unwrap();
+        let d = weft_parse::parse(PAGE, &config).unwrap();
+        let mut runner = start(&config, &d, Path::new("page.weft.kdl")).unwrap();
+        let error = weft_simulator::simulate(&d, runner.as_mut(), config.cases, None)
+            .err()
+            .unwrap();
+        assert!(
+            error.starts_with("the runner answers `") && error.ends_with("` to `ran`"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -160,7 +232,7 @@ check {
             (Adapter::Bun, Some(weft_parse::Transport::Unix(path)))
         );
         assert_eq!((o.cases, o.runs), (30, 30));
-        assert!(o.found.is_none());
+        assert!(!o.failed);
     }
 
     #[test]
@@ -190,12 +262,17 @@ check {
             }
         });
         let (_, o) = simulated(&format!("transport unix path=\"{path}\""));
-        let trace = o.found.unwrap();
-        let rows: Vec<(&str, &str, &str)> = trace
+        assert!(o.failed);
+        let rows: Vec<(String, &str, String)> = o
+            .trace
             .iter()
-            .map(|l| (l.step.as_str(), l.input.as_str(), l.state.as_str()))
+            .skip(1)
+            .map(|l| (l.step(), l.input.as_str(), weft_simulator::view(&l.state)))
             .collect();
-        assert_eq!(rows, [("send to=page", "drawn=4", "page: count = 2")]);
+        assert_eq!(
+            rows,
+            [("send to=page".into(), "drawn=4", "page: count = 2".into())]
+        );
     }
 
     struct Cut;
@@ -280,6 +357,6 @@ check {
             (Adapter::Default, Some(weft_parse::Transport::Http(url)))
         );
         assert_eq!((o.cases, o.runs), (30, 30));
-        assert!(o.found.is_none());
+        assert!(!o.failed);
     }
 }

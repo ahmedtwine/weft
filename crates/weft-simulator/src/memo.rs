@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 
 use serde_json::Value as Json;
-use weft_parse::{Check, State};
+use weft_parse::{Check, Ran, State};
 
 use crate::{Choice, Fault, Runner, Source, Tags};
 
@@ -179,6 +179,10 @@ impl<'a> Memo<'a> {
         verb: &str,
     ) -> Result<Option<Vec<String>>, Fault> {
         self.runner.check(check, cur, nxt, verb)
+    }
+
+    pub fn ran(&mut self) -> Result<Ran, String> {
+        self.runner.ran()
     }
 
     pub fn reset(&mut self, source: &dyn Source) -> Result<State, Fault> {

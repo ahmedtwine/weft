@@ -47,6 +47,20 @@ pub struct Move {
     pub verb: String,
     pub from: Pairs,
     pub to: Pairs,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Span {
+    pub file: String,
+    pub from: usize,
+    pub to: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ran {
+    pub reset: Vec<Span>,
+    pub actions: Vec<(String, Vec<Span>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -103,6 +117,7 @@ pub struct Object {
     pub name: String,
     pub kind: Kind,
     pub icon: String,
+    pub line: usize,
     pub initial: Pairs,
     pub states: Vec<Pairs>,
     pub moves: Vec<Move>,
@@ -466,7 +481,7 @@ impl Expr {
             },
             Expr::App(Op::Eq, all) => match all.as_slice() {
                 [Expr::Field(k, true), Expr::Field(j, false)] if k == j => {
-                    format!("{o}.{k} is unchanged")
+                    format!("{o}.{k} stays unchanged")
                 }
                 [Expr::Field(k, true), b] => format!("{o}.{k} becomes {}", b.english(o)),
                 _ => each(all, " equals "),
@@ -966,7 +981,11 @@ fn lines(n: &KdlNode) -> &[KdlNode] {
     n.children().map_or(&[], KdlDocument::nodes)
 }
 
-fn state(n: &KdlNode, o: &mut Object) -> Result<(), String> {
+fn line(src: &str, n: &KdlNode) -> usize {
+    src[..n.span().offset()].matches('\n').count() + 1
+}
+
+fn state(n: &KdlNode, o: &mut Object, src: &str) -> Result<(), String> {
     shape(n, 0, &keys(n), true)?;
     let full = pairs(n)?;
     if let Some(k) = o.initial.keys().find(|k| !full.contains_key(*k)) {
@@ -976,7 +995,7 @@ fn state(n: &KdlNode, o: &mut Object) -> Result<(), String> {
     for c in n.iter_children() {
         match name(c) {
             "on" => {
-                let m = on(c, o, &full)?;
+                let m = on(c, o, &full, src)?;
                 o.moves.push(m);
             }
             other => {
@@ -991,7 +1010,7 @@ fn state(n: &KdlNode, o: &mut Object) -> Result<(), String> {
     Ok(())
 }
 
-fn on(n: &KdlNode, o: &Object, from: &Pairs) -> Result<Move, String> {
+fn on(n: &KdlNode, o: &Object, from: &Pairs, src: &str) -> Result<Move, String> {
     let verb = shape(n, 1, &keys(n), false)?.remove(0);
     let given = pairs(n)?;
     if given.is_empty() {
@@ -1001,10 +1020,11 @@ fn on(n: &KdlNode, o: &Object, from: &Pairs) -> Result<Move, String> {
         to: o.overlay(from, &given)?,
         verb,
         from: from.clone(),
+        line: line(src, n),
     })
 }
 
-fn object(n: &KdlNode, config: &Config) -> Result<Object, String> {
+fn object(n: &KdlNode, config: &Config, src: &str) -> Result<Object, String> {
     let kind = Kind::parse(name(n))?;
     let icon = config
         .styles
@@ -1020,6 +1040,7 @@ fn object(n: &KdlNode, config: &Config) -> Result<Object, String> {
         name: named.clone(),
         kind,
         icon,
+        line: line(src, n),
         initial: pairs(n).map_err(at)?,
         states: Vec::new(),
         moves: Vec::new(),
@@ -1044,7 +1065,7 @@ fn object(n: &KdlNode, config: &Config) -> Result<Object, String> {
     }
     for c in n.iter_children() {
         match name(c) {
-            "state" => state(c, &mut o),
+            "state" => state(c, &mut o, src),
             other => Err(format!("holds `state`, not `{other}`")),
         }
         .map_err(at)?;
@@ -1229,7 +1250,7 @@ fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
     Ok(())
 }
 
-fn build(doc: &KdlDocument, config: &Config) -> Result<Diagram, String> {
+fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, String> {
     let mut d = Diagram::default();
     let mut seen = HashSet::new();
     for n in doc.nodes() {
@@ -1246,7 +1267,7 @@ fn build(doc: &KdlDocument, config: &Config) -> Result<Diagram, String> {
         }
         for c in n.iter_children() {
             match (parent, name(c)) {
-                ("setup", _) => d.objects.push(object(c, config)?),
+                ("setup", _) => d.objects.push(object(c, config, src)?),
                 ("action", _) => d.steps.push(step(c)?),
                 ("check", "invariant") if d.check.is_none() => d.check = Some(invariant(c)?),
                 ("check", "invariant") => return Err("`check` holds one `invariant`".into()),
@@ -1526,7 +1547,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
 }
 
 pub fn parse(src: &str, config: &Config) -> Result<Diagram, Error> {
-    build(&document(src)?, config).map_err(Error)
+    build(&document(src)?, src, config).map_err(Error)
 }
 
 #[cfg(test)]
@@ -1649,7 +1670,7 @@ check {
         );
         assert_eq!(
             c.english(),
-            "Always, for each browser in page, if step is send, then browser.count becomes browser.count + 1, and if step is reload, then browser.count is unchanged"
+            "Always, for each browser in page, if step is send, then browser.count becomes browser.count + 1, and if step is reload, then browser.count stays unchanged"
         );
         assert_eq!(
             d.verdict(),
@@ -1943,7 +1964,7 @@ check {
             (
                 "implies { not { in step send open; }; eq (next)browser.count browser.count; }",
                 r#"implies(not(in(step, Set("send", "open"))), eq(next(browser.count), browser.count))"#,
-                "if step is not send or open, then browser.count is unchanged",
+                "if step is not send or open, then browser.count stays unchanged",
             ),
             (
                 "not { ilt browser.count 1; }",
@@ -1979,6 +2000,30 @@ check {
                 "browser = page".into(),
                 "ilte(next(browser.count), isub(browser.count, 1)) = ilte(5, 2) = false".into()
             ])
+        );
+    }
+
+    #[test]
+    fn each_object_and_each_on_line_keeps_its_line_in_the_file() {
+        let d = parse(BASE, &config(CONFIG).unwrap()).unwrap();
+        let lines: Vec<String> = d
+            .objects
+            .iter()
+            .flat_map(|o| {
+                std::iter::once(format!("{} {}", o.name, o.line))
+                    .chain(o.moves.iter().map(|m| format!("on {} {}", m.verb, m.line)))
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "user 3",
+                "history 4",
+                "on leave 6",
+                "on back 9",
+                "origin 12",
+                "on type 14"
+            ]
         );
     }
 

@@ -11,6 +11,10 @@ use weft_parse::{Diagram, Verdict};
 const WRAP: usize = 24;
 const PAD: f64 = 10.0;
 const RESERVE: usize = 2;
+const CHAR: f64 = 6.7;
+const ROW: f64 = 16.0;
+const NOTE_LINE: f64 = 19.0;
+const NOTE_MARGIN: f64 = 20.0;
 const FONT: &str = "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif";
 const DIRECTIVE: &str =
     "%%{init: {\"sequence\": {\"mirrorActors\": false, \"actorMargin\": 16, \"width\": 96}}}%%\n";
@@ -59,15 +63,27 @@ enum Kind {
     Broken,
 }
 
-struct Note {
-    text: String,
-    kind: Kind,
+pub struct Card {
+    pub rows: usize,
+    pub cols: usize,
+    pub html: String,
 }
 
-struct Plan {
+#[derive(Default)]
+pub struct Code {
+    pub reset: Option<Card>,
+    pub actions: Vec<(String, Card)>,
+}
+
+enum Note<'a> {
+    Text(String, Kind),
+    Card(&'a Card),
+}
+
+struct Plan<'a> {
     source: String,
     heads: Vec<Vec<String>>,
-    notes: Vec<Note>,
+    notes: Vec<Note<'a>>,
     initial: Vec<(usize, String)>,
     rects: usize,
     failed: Option<usize>,
@@ -160,10 +176,18 @@ fn note(p: &mut Plan, over: String, text: String, kind: Kind) {
         false => text.lines().map(String::from).collect(),
     };
     let _ = writeln!(p.source, "  Note over {over}: {}", mermaid_text(&shown));
-    p.notes.push(Note { text, kind });
+    p.notes.push(Note::Text(text, kind));
 }
 
-fn plan(d: &Diagram, svg: bool) -> Plan {
+fn card<'a>(p: &mut Plan<'a>, over: String, card: &'a Card) {
+    let lines = ((card.rows as f64 * ROW - NOTE_MARGIN) / NOTE_LINE).ceil() as usize;
+    let reserved = vec!["x".repeat(card.cols); lines];
+    let _ = writeln!(p.source, "  Note over {over}: {}", mermaid_text(&reserved));
+    p.notes.push(Note::Card(card));
+}
+
+fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
+    let svg = code.is_some();
     let mut p = Plan {
         source: String::new(),
         heads: Vec::new(),
@@ -206,6 +230,14 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
             .max_by_key(|s| count(s));
         note(&mut p, over, widest.unwrap_or_default(), Kind::Initial);
     }
+    if let (Some(reset), Some(first), Some(last)) = (
+        code.and_then(|c| c.reset.as_ref()),
+        order.first(),
+        order.last(),
+    ) {
+        card(&mut p, format!("o{first},o{last}"), reset);
+    }
+    let mut placed: Vec<&str> = Vec::new();
     let failed = match d.verdict() {
         Some(Verdict::Fails { step, .. }) => Some(step),
         _ => None,
@@ -226,6 +258,18 @@ fn plan(d: &Diagram, svg: bool) -> Plan {
             col(d, &s.to),
             mermaid_text(&[format!("«{}»", s.verb)])
         );
+        if let Some((_, found)) = code
+            .into_iter()
+            .flat_map(|c| &c.actions)
+            .find(|(verb, _)| *verb == s.verb && !placed.contains(&verb.as_str()))
+        {
+            placed.push(&s.verb);
+            card(
+                &mut p,
+                format!("o{},o{}", col(d, &s.from), col(d, &s.to)),
+                found,
+            );
+        }
         for (object, value) in s
             .set
             .iter()
@@ -285,7 +329,7 @@ fn escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn icon(name: &str) -> Option<&'static str> {
+pub fn icon(name: &str) -> Option<&'static str> {
     ICONS
         .binary_search_by_key(&name, |(n, _)| n)
         .ok()
@@ -382,7 +426,7 @@ fn points(e: &Value) -> Vec<(f64, f64)> {
         .unwrap_or_default()
 }
 
-pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
+pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
     let p = theme.palette();
     let icons = d
         .objects
@@ -392,7 +436,7 @@ pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
                 .ok_or_else(|| format!("`style {}`: `{}` is not a Lucide icon", o.kind, o.icon))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let plan = plan(d, true);
+    let plan = plan(d, Some(code));
     let l = layout(&plan.source, "SequenceDiagram")?;
     let nodes = l["nodes"].as_array().cloned().unwrap_or_default();
     let edges = l["edges"].as_array().cloned().unwrap_or_default();
@@ -497,30 +541,38 @@ pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
     }
     for (n, note) in sorted(&nodes, "note-").into_iter().zip(&plan.notes) {
         let (x, y) = (num(n, "x"), num(n, "y"));
-        match note.kind {
-            Kind::Initial => {
+        match note {
+            Note::Card(card) => {
+                let (w, h) = (card.cols as f64 * CHAR, card.rows as f64 * ROW);
+                let _ = write!(
+                    out,
+                    r#"<foreignObject x="{:.1}" y="{:.1}" width="{w:.1}" height="{h:.1}"><div xmlns="http://www.w3.org/1999/xhtml">{}</div></foreignObject>"#,
+                    x - w / 2.0,
+                    y - h / 2.0,
+                    card.html
+                );
+            }
+            Note::Text(_, Kind::Initial) => {
                 for (i, state) in &plan.initial {
                     node(
                         &mut out,
                         (column[*i], y),
-                        note.kind,
+                        Kind::Initial,
                         state,
                         (p.muted, p.fg),
                         p,
                     );
                 }
             }
-            Kind::State | Kind::Check => {
-                node(&mut out, (x, y), note.kind, &note.text, (p.border, p.fg), p)
-            }
-            Kind::Broken => node(
+            Note::Text(text, Kind::Broken) => node(
                 &mut out,
                 (x, y),
-                note.kind,
-                &note.text,
+                Kind::Broken,
+                text,
                 (p.critical, p.critical),
                 p,
             ),
+            Note::Text(text, kind) => node(&mut out, (x, y), *kind, text, (p.border, p.fg), p),
         }
     }
     for n in &nodes {
@@ -574,7 +626,7 @@ pub fn svg(d: &Diagram, theme: Theme) -> Result<String, String> {
 }
 
 pub fn ascii(d: &Diagram) -> Result<String, String> {
-    let source = plan(d, false).source;
+    let source = plan(d, None).source;
     let request = AsciiRequest {
         options: AsciiRenderOptions::unicode(),
         ..Default::default()
@@ -686,7 +738,7 @@ style element icon=square-dashed-mouse-pointer"#;
     }
 
     fn drawn() -> String {
-        svg(&diagram(), Theme::Light).unwrap()
+        svg(&diagram(), Theme::Light, &Code::default()).unwrap()
     }
 
     #[test]
@@ -731,7 +783,8 @@ style element icon=square-dashed-mouse-pointer"#;
     #[test]
     fn each_text_is_inside_the_diagram() {
         let d = diagram();
-        let out = svg(&d, Theme::Light).unwrap();
+        let code = Code::default();
+        let out = svg(&d, Theme::Light, &code).unwrap();
         let head = &out[..out.find('>').unwrap()];
         assert!(head.contains(r#"style="max-width:100%;height:auto""#));
         let view: Vec<f64> = attr(head, "viewBox")
@@ -739,7 +792,7 @@ style element icon=square-dashed-mouse-pointer"#;
             .split(' ')
             .map(|v| v.parse().unwrap())
             .collect();
-        let plan = plan(&d, true);
+        let plan = plan(&d, Some(&code));
         assert!(plan.heads.iter().all(|h| h.len() <= 2));
         for chunk in out.split("<text").skip(1) {
             let (tag, rest) = chunk.split_once('>').unwrap();

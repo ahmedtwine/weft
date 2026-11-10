@@ -5,5 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-kdl = { version = "6.7.1", default-features = false }
+kdl = { version = "6.7.1", default-features = false, features = ["span"] }
 miette = { version = "7.6", default-features = false }

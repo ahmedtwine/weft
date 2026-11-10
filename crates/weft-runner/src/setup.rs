@@ -1,10 +1,13 @@
+use std::path::Path;
+
 use serde_json::{Map, Value as Json, json};
-use weft_parse::{Diagram, State, Value};
+use weft_parse::{Diagram, Ran, Span, State, Value};
 
 use weft_simulator::{Fault, Runner, Source};
 
 pub struct Setup<'a> {
     d: &'a Diagram,
+    file: String,
     now: State,
     schema: Json,
 }
@@ -17,7 +20,7 @@ fn kind(v: &Value) -> &'static str {
 }
 
 impl<'a> Setup<'a> {
-    pub fn new(d: &'a Diagram) -> Setup<'a> {
+    pub fn new(d: &'a Diagram, file: &Path) -> Setup<'a> {
         let state: Map<String, Json> = d
             .objects
             .iter()
@@ -52,6 +55,7 @@ impl<'a> Setup<'a> {
             .collect();
         Setup {
             d,
+            file: file.strip_prefix(".").unwrap_or(file).display().to_string(),
             now: d.init.clone(),
             schema: json!({
                 "state": { "type": "object", "properties": state },
@@ -105,5 +109,30 @@ impl Runner for Setup<'_> {
             })?;
         self.now.insert(object.to_string(), to);
         self.read()
+    }
+
+    fn ran(&mut self) -> Result<Ran, String> {
+        let span = |line: usize| Span {
+            file: self.file.clone(),
+            from: line,
+            to: line,
+        };
+        let mut actions: Vec<(String, Vec<Span>)> = Vec::new();
+        for m in self.d.objects.iter().flat_map(|o| &o.moves) {
+            match actions.iter_mut().find(|(verb, _)| *verb == m.verb) {
+                Some((_, spans)) => spans.push(span(m.line)),
+                None => actions.push((m.verb.clone(), vec![span(m.line)])),
+            }
+        }
+        Ok(Ran {
+            reset: self
+                .d
+                .objects
+                .iter()
+                .filter(|o| !o.initial.is_empty())
+                .map(|o| span(o.line))
+                .collect(),
+            actions,
+        })
     }
 }
