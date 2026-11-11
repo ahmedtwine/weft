@@ -140,13 +140,14 @@ const taken = async (known: Code) => {
 };
 
 const sampled = new Map<Code, number>();
-const measured = async <T>(known: Code, run: () => T | Promise<T>) => {
+const measured = async (known: Code, run: () => Promise<Report>) => {
   const samples = sampled.get(known) ?? 0;
   if (samples >= SAMPLES) return run();
-  sampled.set(known, samples + 1);
   await post("Profiler.takePreciseCoverage");
   try {
-    return await run();
+    const report = await run();
+    if (!("refused" in report)) sampled.set(known, samples + 1);
+    return report;
   } finally {
     await taken(known);
   }
