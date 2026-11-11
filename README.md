@@ -17,6 +17,8 @@ A runner joins a diagram, takes a turn (`reset`, `run`, `read`), and gives the s
 
 ## Start
 
+Add `weft` from GitHub as a dependency, and build it with `cargo build --release --locked --manifest-path node_modules/weft/Cargo.toml -p weft-cli -p weft-c`. The `weft` command runs that build.
+
 `weft.kdl`
 
 ```kdl
