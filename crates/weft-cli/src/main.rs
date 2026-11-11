@@ -25,6 +25,7 @@ const USAGE: &str = "usage: weft [--ui]";
 const CONFIG: &str = "weft.kdl";
 const SUFFIX: &str = ".weft.kdl";
 const ADDRESS: &str = "127.0.0.1:7357";
+const INPUT: usize = 80;
 static PAGE: Mutex<Option<(Option<SystemTime>, String)>> = Mutex::new(None);
 
 struct Report {
@@ -141,7 +142,10 @@ fn tables(o: &Outcome) -> Vec<Table> {
                 vec![
                     k.to_string(),
                     l.step(),
-                    l.input.clone(),
+                    match l.input.chars().count() > INPUT {
+                        true => l.input.chars().take(INPUT).chain(['…']).collect(),
+                        false => l.input.clone(),
+                    },
                     view(&l.state),
                     l.evidence.join(" · "),
                 ]

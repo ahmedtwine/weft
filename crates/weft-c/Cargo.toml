@@ -14,8 +14,5 @@ weft-draw = { path = "../weft-draw" }
 weft-wire = { path = "../weft-wire" }
 ureq = { version = "3.5.1", default-features = false }
 
-[build-dependencies]
-weft-wire = { path = "../weft-wire" }
-
 [dev-dependencies]
 cbindgen = "0.29.2"

@@ -71,7 +71,7 @@ pub struct Card {
 
 #[derive(Default)]
 pub struct Code {
-    pub reset: Option<Card>,
+    pub start: Option<Card>,
     pub actions: Vec<(String, Card)>,
 }
 
@@ -230,12 +230,12 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
             .max_by_key(|s| count(s));
         note(&mut p, over, widest.unwrap_or_default(), Kind::Initial);
     }
-    if let (Some(reset), Some(first), Some(last)) = (
-        code.and_then(|c| c.reset.as_ref()),
+    if let (Some(start), Some(first), Some(last)) = (
+        code.and_then(|c| c.start.as_ref()),
         order.first(),
         order.last(),
     ) {
-        card(&mut p, format!("o{first},o{last}"), reset);
+        card(&mut p, format!("o{first},o{last}"), start);
     }
     let mut placed: Vec<&str> = Vec::new();
     let failed = match d.verdict() {

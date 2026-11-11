@@ -56,7 +56,9 @@ weft_result_t weft_check(weft_context_t *ctx,
 
 weft_result_t weft_owned_string_free(weft_context_t *ctx, weft_owned_string_t *result);
 
-weft_result_t weft_diagram_join(weft_context_t *ctx, weft_string_t name, weft_string_t hello);
+weft_result_t weft_diagram_join(weft_context_t *ctx,
+                                weft_string_t name,
+                                weft_owned_string_t *out_code);
 
 weft_result_t weft_diagram_turn(weft_context_t *ctx,
                                 weft_string_t report,

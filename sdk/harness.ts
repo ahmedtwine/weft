@@ -1,31 +1,33 @@
 import { plugin } from "bun";
-import { spyOn, test } from "bun:test";
+import { test } from "bun:test";
 import inspector from "node:inspector";
-import { dirname, relative } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as hegel from "@hegeldev/hegel";
-import * as gs from "@hegeldev/hegel/generators";
-import { done, join, type Report, type State, type Turn, turn } from "./weft";
-import { accepted, generators, type Schema } from "./zod";
+import { done, join, type Name, type Report, type State, type Turn, turn, type Use } from "./weft";
 
-type Tagged = Schema & {
-  _zod: { def: { shape?: Record<string, Tagged>; options?: Tagged[] } };
+type Schema = {
+  _zod: { def: { shape?: Record<string, Schema>; options?: Schema[] } };
+  parse: (value: unknown) => unknown;
+  safeParse: (value: unknown) => { success: boolean; data?: unknown };
 };
-type Drawable = Schema | gs.Generator<unknown>;
-type Action = { input: Tagged; run: (input: unknown, tc: hegel.TestCase) => unknown };
-type Mock = { output: Drawable; of: Record<string, unknown>; name: string };
-type Given = { schema: Schema; generator: gs.PrintableGenerator<unknown> };
-type Driver = Record<string, unknown> & {
-  state: Tagged;
-  read: (error?: unknown) => unknown;
-  reset: (tc: hegel.TestCase) => unknown;
+type Read = [string[], string];
+type Used = {
+  role: Use["role"];
+  run: (input?: unknown) => unknown;
+  input?: Schema;
+  error?: Schema;
+  reads: Read[];
+  inputs: { tag?: string; schema: Schema }[];
 };
-type Served = { file: string; counts: Int32Array; marks: [number, number][] };
+type Failed = [] | [Schema, string];
+type Served = { file: string; counts: Int32Array; marks: [number, number][]; starts: number[] };
 type Range = { startOffset: number; endOffset: number; count: number };
 type Taken = { result: { url: string; functions: { ranges: Range[] }[] }[] };
 type Code = Map<string, Set<number>>;
 
+const ADAPTER = "bun";
 const SAMPLES = 8;
+const FAULTS = [TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError];
 const SOURCE = new RegExp(
   `^${process.cwd().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?!.*node_modules/).*\\.[cm]?[jt]sx?$`
 );
@@ -90,6 +92,7 @@ plugin({
         file,
         counts: new Int32Array(contents.length),
         marks: marks((await map.json()).mappings, starts),
+        starts,
       });
       return { contents, loader: "js" };
     });
@@ -163,163 +166,187 @@ const spans = (known: Code) => {
   return out;
 };
 
-const path = at("WEFT_DRIVER");
-const { z } = await import(Bun.resolveSync("zod", dirname(path)));
-const registered = new Map<string, Set<string>>();
-const add = z.globalRegistry.add.bind(z.globalRegistry);
-z.globalRegistry.add = (schema: unknown, ...meta: [{ weft?: unknown } | undefined]) => {
-  const prepare = Error.prepareStackTrace;
-  Error.prepareStackTrace = (_error, sites) => sites.map((site) => site.getFileName());
-  const files = new Error().stack as unknown as (string | null)[];
-  Error.prepareStackTrace = prepare;
-  const file = files.find((each) => each && SOURCE.test(each));
-  const tag = meta[0]?.weft;
-  if (file && typeof tag === "string") {
-    const from = registered.get(tag) ?? new Set<string>();
-    registered.set(tag, from);
-    from.add(relative(process.cwd(), file));
-  }
-  return add(schema, ...meta);
-};
+const code = join(at("WEFT_DIAGRAM"));
 
-const driver: Driver = await import(path);
-await post("Profiler.takePreciseCoverage");
-const exported = new Map<unknown, string[]>();
-for (const [file, each] of served)
-  for (const value of Object.values(await import(file)))
-    if (typeof value === "function")
-      exported.set(value, [...(exported.get(value) ?? []), each.file]);
+const placed = (place: string) => (place.startsWith(".") ? resolve(place) : place);
 
-const tag = (schema: unknown): string | undefined => z.globalRegistry.get(schema)?.weft;
-const from = (name: string) => [...(registered.get(name) ?? [])];
-const values = Object.values(driver).filter(
-  (value): value is Record<string, unknown> => typeof value === "object" && value !== null
-);
-const given = new Map(
-  values
-    .filter((value): value is Given => "schema" in value && "generator" in value)
-    .map(({ schema, generator }) => [schema, generator])
-);
-const of = generators((schema) => given.get(schema));
-const drawn = (tc: hegel.TestCase, drawable: Drawable) => {
-  if (drawable instanceof gs.Generator) return tc.drawSilent(drawable);
-  const parsed = accepted(drawable, tc.drawSilent(of(drawable)));
-  tc.assume(parsed.length > 0);
-  return parsed[0];
-};
-
-const paths = (schema: Tagged, at: string[]): [string[], string][] => [
-  ...[tag(schema)].flatMap((name) => (name ? [[at, name] as [string[], string]] : [])),
-  ...Object.entries(schema._zod.def.shape ?? {}).flatMap(([key, each]) => paths(each, [...at, key])),
-];
-const reads = paths(driver.state, []);
-const state = (raw: unknown): State => {
-  const out: State = {};
-  for (const [at, name] of reads) {
-    const [object, key] = name.split(".");
-    const value = at.reduce<unknown>((node, part) => (node as Record<string, unknown>)[part], raw);
-    out[object] = { ...out[object], [key]: value as string | number };
-  }
-  return out;
-};
-const read = async (...error: unknown[]) => state(driver.state.parse(await driver.read(...error)));
-
-const actions = new Map(
-  values
-    .filter((value): value is Action => "input" in value && "run" in value)
-    .flatMap((action) =>
-      (action.input._zod.def.options ?? [action.input]).flatMap((input) => {
-        const verb = tag(input);
-        return verb ? [[verb, { ...action, input }] as const] : [];
-      })
-    )
-);
-const mocks = values
-  .filter((value): value is Mock => "output" in value && "of" in value && "name" in value)
-  .map((mock) => ({ ...mock, replaced: mock.of[mock.name], spy: spyOn(mock.of, mock.name) }));
-const asynchronous = (value: unknown) =>
-  Object.prototype.toString.call(value) === "[object AsyncFunction]";
-const written = (input: unknown) =>
-  Object.entries((input ?? {}) as object)
-    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-    .join(" ");
-
-join(at("WEFT_DIAGRAM"), {
-  reads: reads.map(([, name]) => ({ tag: name, from: from(name) })),
-  actions: [...actions].map(([verb, { run }]) => ({
-    tag: verb,
-    from: from(verb),
-    run: exported.get(run) ?? [],
-  })),
-  mocks: mocks.map(({ name, replaced }) => ({ tag: name, run: exported.get(replaced) ?? [] })),
-});
-
-const code = { reset: new Map() as Code, actions: new Map<string, Code>() };
-const play = {
-  reset: (tc: hegel.TestCase) =>
-    measured(code.reset, async (): Promise<Report> => {
-      for (const { output, replaced, spy } of mocks) {
-        const value = drawn(tc, output);
-        spy.mockImplementation(asynchronous(replaced) ? async () => value : () => value);
-      }
-      await driver.reset(tc);
-      return { state: await read() };
-    }),
-  run: async (tc: hegel.TestCase, { run: verb = "" }: Turn): Promise<Report> => {
-    const action = actions.get(verb) as Action;
-    const raw = tc.drawSilent(of(action.input));
-    const input = accepted(action.input, raw);
-    if (input.length === 0) return { refused: true };
-    const known = code.actions.get(verb) ?? new Map();
-    code.actions.set(verb, known);
-    return measured(known, async () => {
-      const error = await Promise.resolve()
-        .then(() => action.run(input[0], tc))
-        .then(
-          () => [],
-          (thrown: unknown) => [thrown]
-        );
-      return error.length > 0 && driver.read.length === 0
-        ? { input: written(raw), thrown: error[0] instanceof Error ? error[0].message : String(error[0]) }
-        : { input: written(raw), state: await read(...error) };
+const loaded = async () => {
+  const [first] = code.flatMap(({ adapter, modules }) =>
+    adapter === ADAPTER ? Object.values(modules) : []
+  );
+  if (!first) throw new Error(`the diagram has no \`impl ${ADAPTER}\` with a \`module\``);
+  const { z } = await import(Bun.resolveSync("zod", dirname(Bun.resolveSync(placed(first), process.cwd()))));
+  const tag = (schema: Schema): string | undefined => z.globalRegistry.get(schema)?.weft;
+  const reads = (schema: Schema, at: string[]): Read[] => [
+    ...[tag(schema)].flatMap((name) => (name ? [[at, name] as Read] : [])),
+    ...Object.entries(schema._zod.def.shape ?? {}).flatMap(([key, each]) =>
+      reads(each, [...at, key])
+    ),
+  ];
+  const tagged = (schema: Schema) =>
+    (schema._zod.def.options ?? [schema]).flatMap((option) => {
+      const verb = tag(option);
+      return verb ? [{ tag: verb, schema: option }] : [];
     });
-  },
-  read: async (): Promise<Report> => ({ state: await read() }),
-};
-
-let failed = false;
-const simulate = () =>
-  new hegel.Hegel(async (tc) => {
-    failed = false;
-    let now = turn({});
-    while (!now.done) {
-      if (now.failed) {
-        failed = true;
-        throw new Error(now.failed.join(" · "));
-      }
-      const kind = (["reset", "run", "read"] as const).find((each) => each in now);
-      if (!kind) throw new Error(`weft gives the turn ${JSON.stringify(now)}`);
-      now = turn(await play[kind](tc, now));
+  const uses: (Used | null)[] = [];
+  for (const { adapter, modules: places, uses: lines } of code) {
+    if (adapter !== ADAPTER) {
+      uses.push(...lines.map(() => null));
+      continue;
     }
-  })
-    .settings({ verbosity: hegel.Verbosity.Quiet, printBlob: false })
-    .run()
-    .catch((error: unknown) => {
-      if (!failed) throw error;
+    const modules: Record<string, Record<string, unknown>> = Object.fromEntries(
+      await Promise.all(
+        Object.entries(places).map(async ([module, place]) => [
+          module,
+          await import(placed(place)),
+        ])
+      )
+    );
+    const exported = ([module, name]: Name) => {
+      if (!(name in modules[module])) throw new Error(`\`${module}\` exports no \`${name}\``);
+      return modules[module][name];
+    };
+    const schema = (name: Name) => {
+      const found = exported(name) as Schema;
+      if (!found?._zod) throw new Error(`\`${name.join(".")}\` is no Zod schema`);
+      return found;
+    };
+    for (const line of lines) {
+      const run = exported(line.function);
+      if (typeof run !== "function") throw new Error(`\`${line.function.join(".")}\` is no function`);
+      const whole = line.schema ? schema(line.schema) : undefined;
+      const branches = whole && line.tag ? tagged(whole).filter(({ tag }) => tag === line.tag) : [];
+      if (line.tag && branches.length !== 1)
+        throw new Error(
+          `\`${line.schema?.join(".")}\` has ${branches.length} branches with the tag \`${line.tag}\``
+        );
+      const input = line.tag ? branches[0].schema : whole;
+      const error = line.error ? schema(line.error) : undefined;
+      const read = line.role === "read" ? input : error;
+      uses.push({
+        role: line.role,
+        run: run as Used["run"],
+        input,
+        error,
+        reads: read ? reads(read, []) : [],
+        inputs: input && line.role !== "read" ? (line.role === "run" ? tagged(input) : [{ schema: input }]) : [],
+      });
+    }
+  }
+  const hello = {
+    uses: uses.map(
+      (use) =>
+        use && {
+          reads: use.reads.map(([, name]) => name),
+          inputs: use.inputs.map(({ tag, schema }) => ({
+            tag,
+            schema: z.toJSONSchema(schema, { io: "input", unrepresentable: () => ({ not: {} }) }),
+          })),
+        }
+    ),
+  };
+  return { uses: uses.flatMap((use) => (use ? [use] : [])), hello };
+};
+
+const accepted = (schema: Schema, value: unknown): [unknown] | [] => {
+  try {
+    const result = schema.safeParse(value);
+    return result.success ? [result.data] : [];
+  } catch {
+    return [];
+  }
+};
+
+const thrower = (error: Error) => {
+  for (const frame of error.stack?.split("\n") ?? []) {
+    const [, path, row, column] = frame.match(/\(?([^()\s]+):(\d+):(\d+)\)?$/) ?? [];
+    const each = served.get(path);
+    if (!each) continue;
+    const offset = each.starts[Number(row) - 1] + Number(column) - 1;
+    const [, line] = each.marks.findLast(([mark]) => mark <= offset) ?? [];
+    if (line) return ` at ${each.file}:${line}`;
+  }
+  return "";
+};
+
+const ran = { start: new Map() as Code, actions: new Map<string, Code>() };
+
+const played = async () => {
+  const { uses, hello } = await loaded();
+  const state = async (failed?: Schema, message = ""): Promise<State> => {
+    const out: State = {};
+    for (const { role, run, input, error, reads } of uses) {
+      const value =
+        role === "read" ? input?.parse(await run()) : error?.parse(error === failed ? message : "");
+      for (const [at, name] of reads) {
+        const [object, key] = name.split(".");
+        const found = at.reduce<unknown>((node, part) => (node as State)[part], value);
+        out[object] = { ...out[object], [key]: found as string | number };
+      }
+    }
+    return out;
+  };
+  const called = async (use: Used, input: unknown): Promise<Report | Failed> => {
+    const thrown = await Promise.resolve()
+      .then(() => use.run(input))
+      .then(
+        () => [],
+        (error: unknown) => [error]
+      );
+    if (thrown.length === 0) return [];
+    const [error] = thrown;
+    if (!(error instanceof Error)) return { thrown: String(error) };
+    return FAULTS.some((fault) => error instanceof fault) || !use.error
+      ? { thrown: `${error.name}: ${error.message}${thrower(error)}` }
+      : [use.error, error.message];
+  };
+  const stepped = async (known: Code, calls: [Used, unknown][]): Promise<Report> => {
+    const inputs = calls.map(([use, raw]) => (use.input ? accepted(use.input, raw) : [undefined]));
+    if (inputs.some((input) => input.length === 0)) return { refused: true };
+    return measured(known, async () => {
+      let failed: Failed = [];
+      for (const [at, [use]] of calls.entries()) {
+        const result = await called(use, inputs[at][0]);
+        if (!Array.isArray(result)) return result;
+        if (result.length > 0) failed = result;
+      }
+      return { state: await state(...failed) };
     });
+  };
+  const starts = uses.filter(({ role }) => role === "start");
+  const actions = new Map(
+    uses.flatMap((use) =>
+      use.inputs.flatMap(({ tag, schema }) => (tag ? [[tag, { ...use, input: schema } as Used] as const] : []))
+    )
+  );
+  const play = async ({ start: first, run: verb = "", input }: Turn): Promise<Report> => {
+    if (first !== undefined)
+      return stepped(
+        ran.start,
+        starts.map((use, at) => [use, first[at]])
+      );
+    const action = actions.get(verb);
+    if (!action) return { state: await state() };
+    const known = ran.actions.get(verb) ?? new Map();
+    ran.actions.set(verb, known);
+    return stepped(known, [[action, input]]);
+  };
+  let now = turn(hello);
+  while (!now.done) now = turn(await play(now));
+};
 
 test("weft", async () => {
-  const said = await simulate().then(
-    () => ({
-      ran: {
-        reset: spans(code.reset),
-        actions: Object.fromEntries([...code.actions].map(([verb, known]) => [verb, spans(known)])),
-      },
-    }),
-    (error: unknown) => ({
-      error: error instanceof Error ? (error.stack ?? error.message) : String(error),
-    })
+  done(
+    await played().then(
+      () => ({
+        ran: {
+          start: spans(ran.start),
+          actions: Object.fromEntries([...ran.actions].map(([verb, known]) => [verb, spans(known)])),
+        },
+      }),
+      (error: unknown) => ({
+        error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+      })
+    )
   );
-  for (const { spy } of mocks) spy.mockRestore();
-  done(said);
 });

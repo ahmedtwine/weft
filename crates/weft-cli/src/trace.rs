@@ -6,7 +6,7 @@ use weft_simulator::Outcome;
 
 use crate::escape;
 
-const RESET: &str = "reset";
+const START: &str = "start";
 const PASS: &str = "circle-check";
 const FAIL: &str = "circle-x";
 const GUTTER: usize = 8;
@@ -15,7 +15,7 @@ const WIDEST: usize = 52;
 const LINES: usize = 6;
 
 pub fn kinds(ran: &Ran) -> Vec<(&str, &[Span])> {
-    iter::once((RESET, ran.reset.as_slice()))
+    iter::once((START, ran.start.as_slice()))
         .chain(ran.actions.iter().map(|(v, s)| (v.as_str(), s.as_slice())))
         .collect()
 }
@@ -157,7 +157,7 @@ fn card(spans: &[Span], ran: &Ran, path: &str) -> Result<Option<Card>, String> {
 
 pub fn code(ran: &Ran, path: &str) -> Result<Code, String> {
     Ok(Code {
-        reset: card(&ran.reset, ran, path)?,
+        start: card(&ran.start, ran, path)?,
         actions: ran
             .actions
             .iter()

@@ -9,6 +9,3 @@ hegeltest-c = "=0.51.1"
 serde_json = "1"
 weft-parse = { path = "../weft-parse" }
 weft-wire = { path = "../weft-wire" }
-
-[build-dependencies]
-weft-wire = { path = "../weft-wire" }

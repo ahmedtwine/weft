@@ -1,6 +1,6 @@
 use std::env;
 use std::fs::{self, File};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,8 +8,7 @@ use std::thread::{self, JoinHandle};
 
 use weft_simulator::Session;
 
-const HARNESS: &str = r#"import { dirname } from "node:path";
-await import(Bun.resolveSync("weft/harness", dirname(Bun.env.WEFT_DRIVER ?? "")));
+const HARNESS: &str = r#"await import(Bun.resolveSync("weft/harness", process.cwd()));
 "#;
 static RUNS: AtomicU64 = AtomicU64::new(0);
 
@@ -24,16 +23,7 @@ fn library() -> Result<PathBuf, String> {
         .ok_or_else(|| format!("`{name}` is not beside `{}`", exe.display()))
 }
 
-pub fn start(
-    diagram: &Path,
-    name: &str,
-    at: &str,
-    session: Arc<Session>,
-) -> Result<JoinHandle<String>, String> {
-    let driver = diagram.with_extension("ts");
-    let driver = driver
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", driver.display()))?;
+pub fn start(name: &str, at: &str, session: Arc<Session>) -> Result<JoinHandle<String>, String> {
     let dir = env::temp_dir().join(format!(
         "weft-{}-{}",
         std::process::id(),
@@ -48,7 +38,6 @@ pub fn start(
         .arg("--timeout")
         .arg("86400000")
         .arg(&harness)
-        .env("WEFT_DRIVER", &driver)
         .env("WEFT_DIAGRAM", name)
         .env("WEFT_TRANSPORT", at)
         .env("WEFT_LIB", library()?)

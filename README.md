@@ -4,16 +4,14 @@ A distributed runner for property tests, built on [Hegel](https://hegel.dev) and
 
 ```mermaid
 flowchart TB
-  weft["weft<br>*.weft.kdl, the Hegel engine<br>each case, shrink, check, report"]
+  weft["weft<br>*.weft.kdl, the Hegel engine<br>each object, each case, shrink, check, report"]
   weft <-->|"unix socket or http"| lib
-  lib["libweft<br>hegel_* calls of libhegel<br>weft_diagram_join, turn, done"]
-  lib --> sdk["weft SDK<br>each Hegel generator and combinator<br>Zod schema to generator, mocks"]
-  sdk --> runner["runner<br>bun test<br>the driver and the code"]
+  lib["libweft<br>weft_diagram_join, turn, done"]
+  lib --> sdk["weft SDK<br>the JSON Schema of each named schema"]
+  sdk --> runner["runner<br>bun test<br>the functions of the code"]
 ```
 
-weft owns each case. libweft exports the same `hegel_*` calls as libhegel, and the Hegel library of a language loads libweft in place of libhegel. Each draw goes to the engine in weft, so each runner of one diagram draws from the same case, and Hegel shrinks a failing case across all of them.
-
-A runner joins a diagram, takes a turn (`reset`, `run`, `read`), and gives the state. A call with no output goes with the next call that has one.
+weft owns each case and draws each object. A runner sends the JSON Schema of each schema that the `impl` block names. weft draws each input from that schema with the Hegel engine and sends it with the turn. The runner calls the named function with the input and gives the state. A runner has no generator and makes no object.
 
 ## Start
 
@@ -39,6 +37,7 @@ let count = 0;
 export const pageSchema = z.strictObject({
   count: z.number().int().meta({ weft: "page.count" }),
 });
+export const clearSchema = z.strictObject({});
 export const sendSchema = z
   .strictObject({ text: z.string() })
   .meta({ weft: "send" });
@@ -81,90 +80,85 @@ check {
     }
   }
 }
-```
-
-`invariants/page.weft.ts`
-
-```ts
-import { z } from "zod";
-import {
-  clear,
-  page,
-  pageSchema,
-  reload,
-  reloadSchema,
-  send,
-  sendSchema,
-} from "../src/page";
-
-export const state = z.strictObject({ page: pageSchema });
-export const read = () => ({ page: page() });
-export const reset = clear;
-export const sent = { input: sendSchema, run: send };
-export const reloaded = { input: reloadSchema, run: reload };
+impl bun {
+  module page "../src/page.ts"
+  start page.clear input=page.clearSchema
+  read page.page output=page.pageSchema
+  run page.send input=page.sendSchema
+  run page.reload input=page.reloadSchema
+}
 ```
 
 ```
 $ weft
 ✓ invariants/page.weft.kdl · Always, for each browser in page, if step is reload, then browser.count stays unchanged
-  adapter bun · 100 cases · 100 runs · 1785 steps · 1686 checks [1.22s]
+  adapter bun · 100 cases · 100 runs · 1191 steps · 1091 checks [0.94s]
   step · action · input · state · check
   0 · start · - · page: count = 0 · -
-  1 · send to=page · text="\u00056-\u0004" · page: count = 1 · -
+  1 · send to=page · text="¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯" · page: count = 1 · -
   2 · reload to=page · - · page: count = 1 · -
   …
   action · steps · checks
-  send to=page · 99 · 0
-  reload to=page · 1686 · 1686
+  send to=page · 100 · 0
+  reload to=page · 1091 · 1091
   code · files · lines
-  reset · 2 · 4
-  send · 2 · 4
-  reload · 2 · 3
+  start · 1 · 3
+  send · 1 · 3
+  reload · 1 · 2
 
  1 pass
  0 fail
- 1686 checks
-Ran 1 file in 1.23s
+ 1091 checks
+Ran 1 file in 0.98s
 ```
 
 `weft --ui` serves the diagrams at http://127.0.0.1:7357.
 
-## Driver
+## Impl
 
-The driver joins the diagram to the code. It has no schema and no function of its own.
+`impl <adapter>` joins the diagram to the code of one runner. It is the only source of objects.
 
-| Export | Use |
+| Line | Use |
 | --- | --- |
-| `state` | The schema of the state. Each field that the check reads has the tag `<object>.<key>`. |
-| `read` | Gives the state after `reset` and after each step. |
-| `reset` | Starts each case. |
-| `{ input, run }` | One action. The tag of `input` is the verb. A union gives one action for each branch that has a tag. |
-| `{ output, of, name }` | One mock. Hegel draws `output` at each `reset`, and `of[name]` gives that value. |
-| `{ schema, generator }` | The generator of one schema, from `weft`. |
+| `module <name> "<place>"` | Code of the app that the runner loads. A place that starts with `../` is a file from the directory of the diagram. weft refuses a file in the directory of the diagram. |
+| `start <module>.<function> input=<module>.<schema>` | Starts each case. weft draws one input for each `start` line, and the runner calls the functions in the order of the lines. A `start` line with no `input` calls a function that takes none. `tag=<tag>` selects one branch of a union. |
+| `read <module>.<function> output=<module>.<schema>` | Gives the state after the `start` lines and after each step. Each field that the check reads has the tag `<object>.<key>`. |
+| `run <module>.<function> input=<module>.<schema>` | One action. The tag of the schema is the verb. A union gives one action for each branch that has a tag. |
+| `error=<module>.<schema>` | On a `start` or `run` line. The message of an `Error` that the function throws is state, with the tags of that schema. Without it, a throw fails the step. A `TypeError` or another fault of the code always fails the step, and the report shows its file and line. |
 
-weft refuses a tag that a file in the directory of the diagram makes, and a `run` that such a file exports.
+A tag is the `weft` key of the metadata of a schema: `.meta({ weft: "send" })`.
 
-Hegel draws each input from the Zod schema of `input`. `{ schema, generator }` gives a Hegel generator for a schema, and `weft` exports each generator and combinator of `@hegeldev/hegel`.
+An input that the schema does not parse is no step. weft fails the run when each input of one line fails its schema.
 
-An input that `input` does not parse is no step.
+A part of a schema with no JSON Schema form has no value, and weft draws no branch that needs it.
 
-A throw of `run` fails the step. When `read` takes a parameter, it gets the error, and the driver gives it as state:
+## Draw
 
-```ts
-export const read = (error?: Error) => ({
-  page: { ...page(), error: error?.message ?? "" },
-});
+A `draw <key>.<key>… <value>…` line in an object of `setup` gives the values of one field in each input that has the field. A value applies only to a field of its type. weft fails the run when a `draw` line applies to no field.
+
+```kdl
+setup {
+  browser page count=0 {
+    draw text hello "good day"
+    state count=0 { on send count=1 }
+    …
+  }
+}
 ```
+
+## Action
+
+weft runs the path of the `action` block in a part of the cases, with a drawn input for each step. The other cases run the verbs in a drawn order. A failing case shrinks in the two forms.
 
 ## Config
 
 | Line | Use |
 | --- | --- |
-| `adapter bun cases=<count>` | weft starts `bun test` on the driver of each diagram. |
+| `adapter bun cases=<count>` | weft starts `bun test` on the `impl bun` block of each diagram. |
 | `adapter default cases=<count>` | weft runs the setup without the code, or waits for runners when the config has a `transport`. |
 | `transport unix path=<socket>` | Runners join on a unix socket. |
 | `transport http url=<url>` | Runners join over http. |
 
-A runner on another machine runs `bun test` on `weft/harness` with `WEFT_LIB` set to libweft, `WEFT_TRANSPORT` to `unix:<socket>` or to the url, `WEFT_DIAGRAM` to the path of the diagram, and `WEFT_DRIVER` to its driver.
+A runner on another machine runs `bun test` on `weft/harness` with `WEFT_LIB` set to libweft, `WEFT_TRANSPORT` to `unix:<socket>` or to the url and `WEFT_DIAGRAM` to the path of the diagram.
 
 MIT. merman is MIT OR Apache-2.0. Icons are Lucide, ISC, in `crates/weft-draw/src/vendor`.

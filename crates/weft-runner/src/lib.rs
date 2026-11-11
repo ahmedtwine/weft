@@ -2,10 +2,11 @@ mod bun;
 mod setup;
 mod transport;
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use weft_parse::{Adapter, Config, Diagram};
+use serde_json::{Value as Json, json};
+use weft_parse::{Adapter, Config, Diagram, Name, Role};
 use weft_simulator::{Member, Outcome, simulate};
 
 use setup::Setup;
@@ -25,6 +26,48 @@ fn verbs(d: &Diagram) -> Vec<String> {
     all
 }
 
+fn clean(path: &Path) -> String {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::ParentDir if out.file_name().is_some() => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            part => out.push(part),
+        }
+    }
+    out.display().to_string()
+}
+
+fn code(d: &Diagram, file: &Path) -> String {
+    let dir = file.parent().unwrap_or(Path::new(""));
+    let role = |role: Role| match role {
+        Role::Start => "start",
+        Role::Read => "read",
+        Role::Run => "run",
+    };
+    let place = |place: &str| match place.starts_with('.') {
+        true => format!("./{}", clean(&dir.join(place))),
+        false => place.to_string(),
+    };
+    let name = |n: &Name| json!([n.module, n.export]);
+    Json::from_iter(d.impls.iter().map(|i| {
+        json!({
+            "adapter": i.adapter,
+            "modules": Json::from_iter(i.modules.iter().map(|(module, at)| (module.clone(), place(at)))),
+            "uses": Json::from_iter(i.uses.iter().map(|u| json!({
+                "role": role(u.role),
+                "function": name(&u.function),
+                "schema": u.schema.as_ref().map(name),
+                "tag": u.tag,
+                "error": u.error.as_ref().map(name),
+            }))),
+        })
+    }))
+    .to_string()
+}
+
 pub fn run(
     config: &Config,
     d: &Diagram,
@@ -35,11 +78,16 @@ pub fn run(
     if (&config.transport, &config.adapter) == (&None, &Adapter::Default) {
         return simulate(d, &mut [Box::new(Setup::new(d, file))], config.cases, key);
     }
+    if d.impls.is_empty() {
+        return Err("a runner needs `impl <adapter> { … }` in the diagram".into());
+    }
     let name = file.display().to_string();
     let at = listen(config.transport.as_ref())?;
-    let session = HUB.open(&name, file.parent().unwrap_or(Path::new("")));
+    let uses = d.impls.iter().flat_map(|i| i.uses.clone()).collect();
+    let draws = d.objects.iter().flat_map(|o| o.draws.clone()).collect();
+    let session = HUB.open(&name, code(d, file), uses, draws);
     let bun = match config.adapter {
-        Adapter::Bun => Some(bun::start(file, &name, &at, session.clone())?),
+        Adapter::Bun => Some(bun::start(&name, &at, session.clone())?),
         Adapter::Default => None,
     };
     let outcome = session.members(&verbs(d), WAIT).and_then(|remotes| {
@@ -61,19 +109,20 @@ pub fn run(
 mod tests {
     use super::*;
     use std::env;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpStream;
     use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Instant;
 
-    use weft_simulator::{CALLS, PRINT};
     use weft_wire::{DONE, JOIN, Reader, TURN, Writer, receive, send};
 
     const FILE: &str = "invariants/page.weft.kdl";
+    const CONFIG: &str = "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\n";
     const PAGE: &str = r#"
 setup {
   person user
-  browser page count=0 {
+  browser page count=0 {DRAW
     state count=0 {
       on send count=1
     }
@@ -96,85 +145,29 @@ check {
     }
   }
 }
+impl bun {
+  module page "../src/page.ts"
+  start page.clear input=page.clearSchema
+  read page.page output=page.pageSchema
+  run page.send input=page.sendSchema
+  run page.reload input=page.reloadSchema
+}
 "#;
-    const VALID: u32 = 0;
-    const OVERRUN: u32 = 2;
-    const INTERESTING: u32 = 3;
-    const STOP: &str = "-1:";
-    const MOST: i64 = 1000;
+    const NONE: &str = r#"{"type":"object","properties":{},"additionalProperties":false}"#;
+    const NUMBER: &str = r#"{"type":"object","properties":{"n":{"type":"integer","minimum":0,"maximum":1000}},"required":["n"],"additionalProperties":false}"#;
 
     type App = Arc<Mutex<i64>>;
+    type Play = fn(&App, &Json) -> Json;
 
     enum Link {
         Unix(UnixStream),
         Http(String),
     }
 
-    struct Runner {
-        link: Link,
-        pending: Vec<Writer>,
-    }
-
-    fn index(name: &str) -> u16 {
-        CALLS
-            .iter()
-            .position(|c| *c == name)
-            .map_or(u16::MAX, |i| i as u16)
-    }
-
-    fn call(index: u16) -> Writer {
-        let mut w = Writer::default();
-        w.put(index);
-        w
-    }
-
-    impl Runner {
-        fn ask(&mut self, last: Writer) -> Result<Vec<u8>, String> {
-            let mut message = Writer::default();
-            message.put(PRINT);
-            message.put(self.pending.len() as u32 + 1);
-            for w in self.pending.drain(..).chain([last]) {
-                message.0.extend(w.0);
-            }
-            let reply = match &mut self.link {
-                Link::Unix(stream) => send(stream, &message.0)
-                    .and_then(|()| receive(stream))
-                    .map_err(|e| e.to_string())?,
-                Link::Http(url) => ureq_post(url, &message.0)?,
-            };
-            let mut r = Reader(&reply);
-            match r.get::<i32>().map_err(|_| "short")? {
-                0 => Ok(r.0.to_vec()),
-                code => Err(format!(
-                    "{code}: {}",
-                    String::from_utf8_lossy(r.bytes().map_err(|_| "short")?)
-                )),
-            }
-        }
-
-        fn hegel(&mut self, name: &str, args: impl FnOnce(&mut Writer)) -> Result<Vec<u8>, String> {
-            let mut w = call(index(name));
-            args(&mut w);
-            self.ask(w)
-        }
-
-        fn said(&mut self, call: u16, parts: &[&str]) -> Result<Vec<u8>, String> {
-            let mut w = self::call(call);
-            parts.iter().for_each(|part| w.bytes(part.as_bytes()));
-            self.ask(w)
-        }
-
-        fn turn(&mut self, report: &str) -> Result<String, String> {
-            let reply = self.said(TURN, &[report])?;
-            Ok(String::from_utf8_lossy(Reader(&reply).bytes().map_err(|_| "short")?).into_owned())
-        }
-    }
-
-    fn ureq_post(url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+    fn post(url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
         let host = url.trim_start_matches("http://");
         let (address, path) = host.split_once('/').unwrap_or((host, ""));
-        let mut stream = std::net::TcpStream::connect(address).map_err(|e| e.to_string())?;
-        use std::io::{Read, Write};
+        let mut stream = TcpStream::connect(address).map_err(|e| e.to_string())?;
         write!(
             stream,
             "POST /{path} HTTP/1.1\r\nhost: {address}\r\ncontent-length: {}\r\n\r\n",
@@ -182,11 +175,11 @@ check {
         )
         .and_then(|()| stream.write_all(body))
         .map_err(|e| e.to_string())?;
-        let mut reader = std::io::BufReader::new(stream);
+        let mut reader = BufReader::new(stream);
         let mut size = 0;
         loop {
             let mut line = String::new();
-            std::io::BufRead::read_line(&mut reader, &mut line).map_err(|e| e.to_string())?;
+            reader.read_line(&mut line).map_err(|e| e.to_string())?;
             match line.trim().split_once(':') {
                 Some((name, value)) if name.eq_ignore_ascii_case("content-length") => {
                     size = value.trim().parse().map_err(|_| "size")?;
@@ -201,142 +194,117 @@ check {
         Ok(body)
     }
 
-    fn state(app: &App) -> String {
-        format!(r#"{{"page":{{"count":{}}}}}"#, app.lock().map_or(0, |n| *n))
+    impl Link {
+        fn said(&mut self, call: u8, part: &str) -> Result<String, String> {
+            let message = Writer::call(call, part.as_bytes()).0;
+            let reply = match self {
+                Link::Unix(stream) => send(stream, &message)
+                    .and_then(|()| receive(stream))
+                    .map_err(|e| e.to_string())?,
+                Link::Http(url) => post(url, &message)?,
+            };
+            let mut r = Reader(&reply);
+            let code = r.code().map_err(|_| "short")?;
+            let text = String::from_utf8_lossy(r.bytes().map_err(|_| "short")?).into_owned();
+            match code {
+                0 => Ok(text),
+                _ => Err(text),
+            }
+        }
     }
 
-    fn runner(
-        at: &str,
-        hello: &str,
-        app: App,
-        play: fn(&mut Runner, u64, &App, &str) -> Result<String, String>,
-    ) -> Result<(), String> {
-        let link = match at.strip_prefix("unix:") {
+    fn state(app: &App) -> Json {
+        json!({ "state": { "page": { "count": app.lock().map_or(0, |n| *n) } } })
+    }
+
+    fn runner(at: &str, hello: Json, app: App, play: Play) -> Result<(), String> {
+        let mut link = match at.strip_prefix("unix:") {
             Some(path) => Link::Unix(UnixStream::connect(path).map_err(|e| e.to_string())?),
-            None => Link::Http(format!("{at}/{}", hello.len())),
+            None => Link::Http(format!("{at}/{}", hello.to_string().len())),
         };
-        let mut r = Runner {
-            link,
-            pending: Vec::new(),
-        };
-        r.said(JOIN, &[FILE, hello])?;
-        let run = Reader(&r.hegel("hegel_run_start", |w| {
-            w.put(0u64);
-            w.put(false);
-        })?)
-        .get::<u64>()
-        .map_err(|_| "short")?;
+        let joined = (0..500)
+            .find_map(|_| {
+                link.said(JOIN, FILE)
+                    .inspect_err(|_| thread::sleep(Duration::from_millis(10)))
+                    .ok()
+            })
+            .ok_or("weft opens no diagram")?;
+        let code: Json = serde_json::from_str(&joined).map_err(|e| e.to_string())?;
+        assert_eq!(code[0]["adapter"], "bun");
+        assert_eq!(code[0]["modules"]["page"], "./src/page.ts");
+        assert_eq!(code[0]["uses"][0]["function"], json!(["page", "clear"]));
+        let mut report = hello;
         loop {
-            let tc = Reader(&r.hegel("hegel_next_test_case", |w| w.put(run))?)
-                .get::<u64>()
-                .map_err(|_| "short")?;
-            if tc == 0 {
+            let turn: Json = serde_json::from_str(&link.said(TURN, &report.to_string())?)
+                .map_err(|e| e.to_string())?;
+            if turn.get("done").is_some() {
                 break;
             }
-            let mut now = r.turn("{}")?;
-            let status = loop {
-                match (now.contains("\"done\""), now.contains("\"failed\"")) {
-                    (true, _) => break VALID,
-                    (_, true) => break INTERESTING,
-                    _ => match play(&mut r, tc, &app, &now) {
-                        Ok(next) => now = next,
-                        Err(e) if e.starts_with(STOP) => break OVERRUN,
-                        Err(e) => return Err(e),
-                    },
-                }
-            };
-            let mut w = call(index("hegel_mark_complete"));
-            w.put(tc);
-            w.put(status);
-            w.opt((status == INTERESTING).then_some(&b"runner"[..]));
-            r.pending.push(w);
+            report = play(&app, &turn);
         }
-        r.hegel("hegel_run_result", |w| w.put(run))?;
-        let verb = if hello.contains("\"send\"") {
-            "send"
-        } else {
-            "reload"
-        };
-        r.said(
+        let span = json!([{ "file": "src/page.ts", "from": 1, "to": 2 }]);
+        link.said(
             DONE,
-            &[&format!(
-                r#"{{"ran":{{"reset":[{{"file":"src/page.ts","from":1,"to":2}}],"actions":{{"{verb}":[{{"file":"src/page.ts","from":3,"to":4}}]}}}}}}"#
-            )],
+            &json!({ "ran": { "start": span, "actions": { "send": span, "reload": span } } })
+                .to_string(),
         )?;
         Ok(())
     }
 
-    fn sender(r: &mut Runner, tc: u64, app: &App, now: &str) -> Result<String, String> {
-        let report = match now {
-            n if n.contains("\"reset\"") => {
-                *app.lock().map_err(|e| e.to_string())? = 0;
-                format!(r#"{{"state":{}}}"#, state(app))
-            }
-            n if n.contains("\"run\"") => {
-                let drawn = r.hegel("hegel_generate_integer", |w| {
-                    w.put(tc);
-                    w.put(0i64);
-                    w.put(MOST);
-                })?;
-                let n = Reader(&drawn).get::<i64>().map_err(|_| "short")?;
-                *app.lock().map_err(|e| e.to_string())? = n;
-                format!(r#"{{"state":{},"input":"n={n}"}}"#, state(app))
-            }
-            _ => format!(r#"{{"state":{}}}"#, state(app)),
-        };
-        r.turn(&report)
+    fn set(app: &App, to: impl FnOnce(i64) -> i64) {
+        if let Ok(mut n) = app.lock() {
+            *n = to(*n);
+        }
     }
 
-    fn reloader(r: &mut Runner, _: u64, app: &App, now: &str) -> Result<String, String> {
-        let report = match now.contains("\"run\"") {
-            true => {
-                let mut n = app.lock().map_err(|e| e.to_string())?;
-                if *n > 5 {
-                    *n = 0;
-                }
-                drop(n);
-                r#"{"state":{},"input":""}"#.to_string()
-            }
-            false => r#"{"state":{}}"#.to_string(),
-        };
-        r.turn(&report)
+    fn sender(app: &App, turn: &Json) -> Json {
+        match (turn.get("start"), turn["input"]["n"].as_i64()) {
+            (Some(_), _) => set(app, |_| 0),
+            (_, Some(n)) => set(app, |_| n),
+            _ => {}
+        }
+        state(app)
     }
 
-    fn reloader_that_keeps(r: &mut Runner, _: u64, _: &App, now: &str) -> Result<String, String> {
-        r.turn(match now.contains("\"run\"") {
-            true => r#"{"state":{},"input":""}"#,
-            false => r#"{"state":{}}"#,
-        })
+    fn reloader(app: &App, turn: &Json) -> Json {
+        if turn.get("run").is_some() {
+            set(app, |n| if n > 5 { 0 } else { n });
+        }
+        json!({ "state": {} })
     }
 
-    const SENDS: &str = r#"{"reads":[{"tag":"page.count","from":["src/page.ts"]}],"actions":[{"tag":"send","from":["src/page.ts"],"run":["src/page.ts"]}],"mocks":[]}"#;
-    const RELOADS: &str = r#"{"reads":[],"actions":[{"tag":"reload","from":["src/page.ts"],"run":["src/page.ts"]}],"mocks":[]}"#;
+    fn reloader_that_keeps(_: &App, _: &Json) -> Json {
+        json!({ "state": {} })
+    }
 
-    fn two(
-        transport: &str,
-        reload: fn(&mut Runner, u64, &App, &str) -> Result<String, String>,
-    ) -> Result<Outcome, String> {
-        let config = weft_parse::config(&format!(
-            "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\n{transport}\nadapter default cases=100\n"
-        ))
-        .map_err(|e| e.to_string())?;
-        let d = weft_parse::parse(PAGE, &config).map_err(|e| e.to_string())?;
+    fn input(tag: &str, schema: &str) -> Json {
+        let schema: Json = serde_json::from_str(schema).unwrap_or_default();
+        json!({ "inputs": [{ "tag": tag, "schema": schema }] })
+    }
+
+    fn sends() -> Json {
+        json!({ "uses": [input("", NONE), { "reads": ["page.count"] }, input("send", NUMBER), null] })
+    }
+
+    fn reloads() -> Json {
+        json!({ "uses": [null, null, null, input("reload", NONE)] })
+    }
+
+    fn two(transport: &str, draw: &str, sends: Json, reload: Play) -> Result<Outcome, String> {
+        let config =
+            weft_parse::config(&format!("{CONFIG}{transport}\nadapter default cases=100\n"))
+                .map_err(|e| e.to_string())?;
+        let d =
+            weft_parse::parse(&PAGE.replace("DRAW", draw), &config).map_err(|e| e.to_string())?;
         let at = listen(config.transport.as_ref())?;
         let app = App::default();
-        let runners = [
-            (
-                SENDS,
-                sender as fn(&mut Runner, u64, &App, &str) -> Result<String, String>,
-            ),
-            (RELOADS, reload),
-        ]
-        .map(|(hello, play)| {
+        let runners = [(sends, sender as Play), (reloads(), reload)].map(|(hello, play)| {
             let (at, app) = (at.clone(), app.clone());
             thread::spawn(move || runner(&at, hello, app, play))
         });
         let outcome = run(&config, &d, Path::new(FILE), None);
         for r in runners {
-            r.join().map_err(|_| "a runner panics")??;
+            let _ = r.join().map_err(|_| "a runner panics")?;
         }
         outcome
     }
@@ -350,9 +318,16 @@ check {
         )
     }
 
+    fn steps(o: &Outcome) -> Vec<(String, String)> {
+        o.trace
+            .iter()
+            .map(|l| (l.step(), l.input.clone()))
+            .collect()
+    }
+
     #[test]
-    fn two_runners_on_a_unix_socket_share_each_case_and_hold() -> Result<(), String> {
-        let o = two(&socket("hold"), reloader_that_keeps)?;
+    fn two_runners_on_a_unix_socket_get_each_input_from_weft() -> Result<(), String> {
+        let o = two(&socket("pass"), "", sends(), reloader_that_keeps)?;
         assert!(!o.failed);
         assert!(o.tally.iter().all(|t| t.steps > 0), "each verb runs");
         Ok(())
@@ -360,31 +335,34 @@ check {
 
     #[test]
     fn a_failing_case_of_two_runners_shrinks_to_the_least_value_and_steps() -> Result<(), String> {
-        let started = Instant::now();
-        let o = two(&socket("shrink"), reloader)?;
+        let o = two(&socket("shrink"), "", sends(), reloader)?;
         assert!(o.failed);
-        let steps: Vec<(String, String)> = o
-            .trace
-            .iter()
-            .map(|l| (l.step(), l.input.clone()))
-            .collect();
         assert_eq!(
-            steps,
+            steps(&o),
             [
                 ("start".to_string(), String::new()),
                 ("send to=page".to_string(), "n=6".to_string()),
                 ("reload to=page".to_string(), String::new()),
-            ],
-            "after {:?}",
-            started.elapsed()
+            ]
         );
         Ok(())
     }
 
     #[test]
-    fn two_runners_over_http_share_each_case_and_hold() -> Result<(), String> {
+    fn a_draw_line_gives_the_values_of_a_field() -> Result<(), String> {
+        let o = two(&socket("low"), "\n    draw n 1 2", sends(), reloader)?;
+        assert!(!o.failed);
+        let o = two(&socket("high"), "\n    draw n 7 9", sends(), reloader)?;
+        assert_eq!(steps(&o)[1].1, "n=7");
+        Ok(())
+    }
+
+    #[test]
+    fn two_runners_over_http_get_each_input_from_weft() -> Result<(), String> {
         let o = two(
             "transport http url=\"http://127.0.0.1:7413\"",
+            "",
+            sends(),
             reloader_that_keeps,
         )?;
         assert!(!o.failed);
@@ -393,9 +371,9 @@ check {
 
     #[test]
     fn the_setup_adapter_runs_the_diagram_without_the_code() -> Result<(), String> {
-        let config = weft_parse::config("include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\nadapter default cases=50\n")
+        let config = weft_parse::config(&format!("{CONFIG}adapter default cases=50\n"))
             .map_err(|e| e.to_string())?;
-        let d = weft_parse::parse(PAGE, &config).map_err(|e| e.to_string())?;
+        let d = weft_parse::parse(&PAGE.replace("DRAW", ""), &config).map_err(|e| e.to_string())?;
         let o = run(&config, &d, Path::new(FILE), None)?;
         assert!(!o.failed);
         assert_eq!(o.cases, 50);
@@ -403,31 +381,44 @@ check {
     }
 
     #[test]
-    fn weft_refuses_a_tag_that_a_file_of_the_driver_registers() {
-        let hello = SENDS.replace("[\"src/page.ts\"]", "[\"invariants/page.weft.ts\"]");
-        let config = weft_parse::config(&format!(
-            "include \"**/*.weft.kdl\"\ntheme light\nstyle person icon=user\nstyle browser icon=app-window\n{}\nadapter default cases=10\n",
-            socket("refuse")
-        ))
-        .unwrap_or_else(|e| panic!("{e}"));
-        let d = weft_parse::parse(PAGE, &config).unwrap_or_else(|e| panic!("{e}"));
-        let at = listen(config.transport.as_ref()).unwrap_or_else(|e| panic!("{e}"));
-        let joined = thread::spawn(move || {
-            runner(
-                &at,
-                Box::leak(hello.into_boxed_str()),
-                App::default(),
-                sender,
-            )
-        });
-        let error = run(&config, &d, Path::new(FILE), None)
+    fn weft_refuses_a_module_in_the_directory_of_the_diagram() -> Result<(), String> {
+        let config = weft_parse::config(&format!("{CONFIG}adapter default cases=50\n"))
+            .map_err(|e| e.to_string())?;
+        let page = PAGE
+            .replace("DRAW", "")
+            .replace("../src/page.ts", "./page.ts");
+        let error = weft_parse::parse(&page, &config)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            error.contains("`module page` is a file in the directory of the diagram"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn weft_refuses_a_run_schema_with_no_tag() {
+        let hello = json!({ "uses": [input("", NONE), { "reads": ["page.count"] }, { "inputs": [] }, null] });
+        let error = two(&socket("refuse"), "", hello, reloader)
             .err()
             .unwrap_or_default();
-        let _ = joined.join();
         assert!(
             error.contains(
-                "the tag `page.count` is from `invariants/page.weft.ts`, a file of the driver"
+                "`run page.send input=page.sendSchema` is a `run`, and its schema has no tag of a verb"
             ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn weft_refuses_a_draw_line_that_names_no_field() {
+        let error = two(&socket("field"), "\n    draw m 1", sends(), reloader)
+            .err()
+            .unwrap_or_default();
+        assert!(
+            error.contains("the line `draw m` names a field of no input"),
             "{error}"
         );
     }

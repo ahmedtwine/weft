@@ -7,7 +7,7 @@ use std::ptr;
 
 use weft_draw::{Code, Theme};
 use weft_parse::{Diagram, Verdict};
-use weft_wire::{DONE, JOIN, Reader, TURN};
+use weft_wire::{DONE, JOIN, TURN};
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct weft_string_t {
@@ -233,15 +233,12 @@ pub unsafe extern "C" fn weft_owned_string_free(
 unsafe fn sent(
     ctx: *mut WeftContext,
     call: &str,
-    index: u16,
-    parts: &[(&str, weft_string_t)],
-) -> Result<Vec<u8>, weft_result_t> {
+    index: u8,
+    part: weft_string_t,
+) -> Result<String, weft_result_t> {
     set_error(ctx, "");
-    let parts = parts
-        .iter()
-        .map(|(what, part)| unsafe { text(ctx, call, what, *part) }.map(str::as_bytes))
-        .collect::<Result<Vec<_>, _>>()?;
-    client::said(index, &parts).map_err(|e| {
+    let part = unsafe { text(ctx, call, "the message", part) }?;
+    client::said(index, part.as_bytes()).map_err(|e| {
         set_error(ctx, &e);
         WEFT_E_REFUSED
     })
@@ -250,11 +247,11 @@ unsafe fn sent(
 pub unsafe extern "C" fn weft_diagram_join(
     ctx: *mut WeftContext,
     name: weft_string_t,
-    hello: weft_string_t,
+    out_code: *mut weft_owned_string_t,
 ) -> weft_result_t {
-    let parts = [("name", name), ("hello", hello)];
-    match unsafe { sent(ctx, "weft_diagram_join", JOIN, &parts) } {
-        Ok(_) => WEFT_OK,
+    let call = "weft_diagram_join";
+    match unsafe { sent(ctx, call, JOIN, name) } {
+        Ok(code) => unsafe { give(ctx, call, out_code, code) },
         Err(rc) => rc,
     }
 }
@@ -265,16 +262,7 @@ pub unsafe extern "C" fn weft_diagram_turn(
     out_turn: *mut weft_owned_string_t,
 ) -> weft_result_t {
     let call = "weft_diagram_turn";
-    let turn = unsafe { sent(ctx, call, TURN, &[("report", report)]) }.and_then(|reply| {
-        Reader(&reply)
-            .bytes()
-            .map(|turn| String::from_utf8_lossy(turn).into_owned())
-            .map_err(|_| {
-                set_error(ctx, "weft_diagram_turn: the reply of weft has no turn");
-                WEFT_E_REFUSED
-            })
-    });
-    match turn {
+    match unsafe { sent(ctx, call, TURN, report) } {
         Ok(turn) => unsafe { give(ctx, call, out_turn, turn) },
         Err(rc) => rc,
     }
@@ -284,7 +272,7 @@ pub unsafe extern "C" fn weft_diagram_done(
     ctx: *mut WeftContext,
     said: weft_string_t,
 ) -> weft_result_t {
-    match unsafe { sent(ctx, "weft_diagram_done", DONE, &[("said", said)]) } {
+    match unsafe { sent(ctx, "weft_diagram_done", DONE, said) } {
         Ok(_) => WEFT_OK,
         Err(rc) => rc,
     }

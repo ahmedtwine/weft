@@ -40,6 +40,65 @@ pub struct Diagram {
     pub init: State,
     pub steps: Vec<Step>,
     pub check: Option<Check>,
+    pub impls: Vec<Impl>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Start,
+    Read,
+    Run,
+}
+
+#[derive(Debug, Clone)]
+pub struct Draw {
+    pub path: Vec<String>,
+    pub values: Vec<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Name {
+    pub module: String,
+    pub export: String,
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}.{}", self.module, self.export)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Use {
+    pub role: Role,
+    pub function: Name,
+    pub schema: Option<Name>,
+    pub tag: Option<String>,
+    pub error: Option<Name>,
+}
+
+impl Use {
+    pub fn line(&self) -> String {
+        let (role, key) = match self.role {
+            Role::Start => ("start", "input"),
+            Role::Read => ("read", "output"),
+            Role::Run => ("run", "input"),
+        };
+        match (&self.schema, &self.tag) {
+            (Some(schema), Some(tag)) => {
+                format!("`{role} {} {key}={schema} tag={tag}`", self.function)
+            }
+            (Some(schema), None) => format!("`{role} {} {key}={schema}`", self.function),
+            (None, _) => format!("`{role} {}`", self.function),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Impl {
+    pub adapter: String,
+    pub modules: Vec<(String, String)>,
+    pub uses: Vec<Use>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +118,7 @@ pub struct Span {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ran {
-    pub reset: Vec<Span>,
+    pub start: Vec<Span>,
     pub actions: Vec<(String, Vec<Span>)>,
 }
 
@@ -121,6 +180,7 @@ pub struct Object {
     pub initial: Pairs,
     pub states: Vec<Pairs>,
     pub moves: Vec<Move>,
+    pub draws: Vec<Draw>,
 }
 
 #[derive(Debug, Clone)]
@@ -1044,8 +1104,10 @@ fn object(n: &KdlNode, config: &Config, src: &str) -> Result<Object, String> {
         initial: pairs(n).map_err(at)?,
         states: Vec::new(),
         moves: Vec::new(),
+        draws: Vec::new(),
     };
-    match (kind, o.initial.is_empty(), n.children().is_none()) {
+    let stateless = !n.iter_children().any(|c| name(c) == "state");
+    match (kind, o.initial.is_empty(), stateless) {
         (_, true, true) => {}
         (Kind::Person, _, _) => {
             return Err(format!("`{named}` is a person, and a person has no states"));
@@ -1066,7 +1128,8 @@ fn object(n: &KdlNode, config: &Config, src: &str) -> Result<Object, String> {
     for c in n.iter_children() {
         match name(c) {
             "state" => state(c, &mut o, src),
-            other => Err(format!("holds `state`, not `{other}`")),
+            "draw" => draw(c).map(|d| o.draws.push(d)),
+            other => Err(format!("holds `state` and `draw`, not `{other}`")),
         }
         .map_err(at)?;
     }
@@ -1092,6 +1155,118 @@ fn step(n: &KdlNode) -> Result<Step, String> {
         shows,
         set: Vec::new(),
     })
+}
+
+fn draw(n: &KdlNode) -> Result<Draw, String> {
+    let wrong = "`draw` takes `<key>.<key>… <value>…`, and a value is a string or an integer";
+    let plain = |e: &KdlEntry| {
+        e.name().is_none() && matches!(e.value(), KdlValue::String(_) | KdlValue::Integer(_))
+    };
+    if !n.entries().iter().all(plain) || n.children().is_some() {
+        return Err(wrong.into());
+    }
+    match n.entries() {
+        [path, values @ ..] if !values.is_empty() => Ok(Draw {
+            path: path
+                .value()
+                .as_string()
+                .ok_or(wrong)?
+                .split('.')
+                .map(String::from)
+                .collect(),
+            values: values.iter().map(|e| value(e.value())).collect(),
+        }),
+        _ => Err(wrong.into()),
+    }
+}
+
+fn named(n: &KdlNode, text: &str) -> Result<Name, String> {
+    match text.split_once('.') {
+        Some((module, export)) if !module.is_empty() && !export.is_empty() => Ok(Name {
+            module: module.to_string(),
+            export: export.to_string(),
+        }),
+        _ => Err(format!(
+            "`{}` takes `<module>.<export>`, not `{text}`",
+            name(n)
+        )),
+    }
+}
+
+fn used(n: &KdlNode) -> Result<Use, String> {
+    let (role, schema, allowed): (Role, &str, &[&str]) = match name(n) {
+        "start" => (Role::Start, "input", &["input", "tag", "error"]),
+        "read" => (Role::Read, "output", &["output"]),
+        "run" => (Role::Run, "input", &["input", "error"]),
+        other => {
+            return Err(format!(
+                "`impl` holds `module`, `start`, `read` and `run`, not `{other}`"
+            ));
+        }
+    };
+    let function = shape(n, 1, allowed, false)?.remove(0);
+    let tag = n.get("tag").map(text);
+    if tag.is_some() && n.get(schema).is_none() {
+        return Err(format!("`{}` has a `tag` and no `input`", name(n)));
+    }
+    let given = match role {
+        Role::Start => n.get(schema).map(text),
+        Role::Read | Role::Run => Some(need(n, schema)?),
+    };
+    Ok(Use {
+        role,
+        function: named(n, &function)?,
+        schema: given.map(|s| named(n, &s)).transpose()?,
+        tag,
+        error: n.get("error").map(|e| named(n, &text(e))).transpose()?,
+    })
+}
+
+fn implemented(n: &KdlNode) -> Result<Impl, String> {
+    let mut found = Impl {
+        adapter: shape(n, 1, &[], true)?.remove(0),
+        modules: Vec::new(),
+        uses: Vec::new(),
+    };
+    for c in lines(n) {
+        match name(c) {
+            "module" => {
+                let mut given = shape(c, 2, &[], false)?;
+                let (place, module) = (given.remove(1), given.remove(0));
+                if found.modules.iter().any(|(known, _)| *known == module) {
+                    return Err(format!("`module {module}` is set twice"));
+                }
+                if place.starts_with('.') && !place.starts_with("../") {
+                    return Err(format!(
+                        "`module {module}` is a file in the directory of the diagram, and a module is code of the app"
+                    ));
+                }
+                found.modules.push((module, place));
+            }
+            _ => found.uses.push(used(c)?),
+        }
+    }
+    let names = found
+        .uses
+        .iter()
+        .flat_map(|u| [Some(&u.function), u.schema.as_ref(), u.error.as_ref()])
+        .flatten();
+    if let Some(unknown) = names
+        .into_iter()
+        .find(|n| !found.modules.iter().any(|(module, _)| *module == n.module))
+    {
+        return Err(format!(
+            "`{unknown}` names `{}`, and `impl {}` holds no `module {}`",
+            unknown.module, found.adapter, unknown.module
+        ));
+    }
+    match found.uses.iter().any(|u| u.role != Role::Start) {
+        true => Ok(found),
+        false => Err(format!(
+            "`impl {}` holds no `read` line and no `run` line",
+            found.adapter
+        )),
+    }
 }
 
 const CHECK: &str = "`invariant` holds `forall <kind> <object>… { <condition> }`; a condition is a Quint builtin `<op> <term>… { <op line>… }`: `and`, `or`, `not`, `implies`, `iff`, `eq`, `neq`, `in`, `ilt`, `ilte`, `igt`, `igte`, `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` or `iuminus`; a term is `<kind>.<key>`, `(next)<kind>.<key>`, `step`, or a value, and each comparison names at least one `<kind>.<key>` or `step`";
@@ -1255,11 +1430,19 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
     let mut seen = HashSet::new();
     for n in doc.nodes() {
         let parent = name(n);
+        if parent == "impl" {
+            let found = implemented(n)?;
+            if d.impls.iter().any(|i| i.adapter == found.adapter) {
+                return Err(format!("`impl {}` is set twice", found.adapter));
+            }
+            d.impls.push(found);
+            continue;
+        }
         let holds = match parent {
             "setup" => "objects",
             "action" => "`<verb> from=<object> to=<object>` lines",
             "check" => "one `invariant`",
-            other => return Err(format!("`{other}` is not setup, action or check")),
+            other => return Err(format!("`{other}` is not setup, action, check or impl")),
         };
         shape(n, 0, &[], true)?;
         if !seen.insert(parent) {

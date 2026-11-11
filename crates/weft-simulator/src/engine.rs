@@ -5,8 +5,7 @@ use std::ptr;
 
 use hegel_c::hegel_result_t::{HEGEL_E_ASSUME, HEGEL_E_STOP_TEST, HEGEL_OK};
 use hegel_c::{
-    HegelContext, HegelRun, HegelRunResult, HegelStateMachine, HegelTestCase, hegel_result_t,
-    hegel_string_t,
+    HegelContext, HegelRun, HegelStateMachine, HegelTestCase, hegel_result_t, hegel_string_t,
 };
 
 const STORE: &str = "weft";
@@ -40,22 +39,18 @@ pub fn text(bytes: &[u8]) -> hegel_string_t {
     }
 }
 
-pub unsafe fn raw<'a>(data: *const u8, len: usize) -> &'a [u8] {
-    match data.is_null() {
+pub unsafe fn bytes<'a>(s: hegel_string_t) -> &'a [u8] {
+    match s.data.is_null() {
         true => &[],
-        false => unsafe { std::slice::from_raw_parts(data, len) },
+        false => unsafe { std::slice::from_raw_parts(s.data.cast::<u8>(), s.len) },
     }
 }
 
-pub unsafe fn bytes<'a>(s: hegel_string_t) -> &'a [u8] {
-    unsafe { raw(s.data.cast::<u8>(), s.len) }
-}
-
-pub fn said(ctx: *mut HegelContext) -> String {
+fn said(ctx: *mut HegelContext) -> String {
     String::from_utf8_lossy(unsafe { bytes(hegel_c::hegel_context_last_error(ctx)) }).into_owned()
 }
 
-fn checked(ctx: *mut HegelContext, code: hegel_result_t) -> Result<(), Halt> {
+pub fn checked(ctx: *mut HegelContext, code: hegel_result_t) -> Result<(), Halt> {
     match code {
         HEGEL_OK => Ok(()),
         HEGEL_E_STOP_TEST => Err(Halt::Overrun),
@@ -91,14 +86,13 @@ pub struct Engine {
 }
 
 pub struct Case {
-    ctx: *mut HegelContext,
-    tc: *mut HegelTestCase,
+    pub ctx: *mut HegelContext,
+    pub tc: *mut HegelTestCase,
     machine: *mut HegelStateMachine,
     step: u64,
 }
 
 pub struct Ended {
-    pub result: *mut HegelRunResult,
     pub failed: bool,
     pub caveat: Option<String>,
 }
@@ -183,8 +177,8 @@ impl Engine {
                     .map(|t| String::from_utf8_lossy(unsafe { bytes(*t) }).into_owned());
                 hegel!(ctx, hegel_failure_free(failure))?;
             }
+            hegel!(ctx, hegel_run_result_free(result))?;
             Ok(Ended {
-                result,
                 failed: status as u32 == FAILED,
                 caveat,
             })
@@ -193,12 +187,6 @@ impl Engine {
             Halt::Fatal(e) => e,
             Halt::Overrun | Halt::Invalid => "Hegel stops after the run".into(),
         })
-    }
-
-    pub fn free(&mut self, ended: Ended) {
-        unsafe {
-            let _ = hegel_c::hegel_run_result_free(self.ctx, ended.result);
-        }
     }
 }
 
@@ -212,10 +200,6 @@ impl Drop for Engine {
 }
 
 impl Case {
-    pub fn raw(&self) -> *mut HegelTestCase {
-        self.tc
-    }
-
     pub fn machine(&mut self, rules: &[String], steps: i64) -> Result<(), Halt> {
         let (ctx, tc) = (self.ctx, self.tc);
         hegel!(

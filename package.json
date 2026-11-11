@@ -7,11 +7,9 @@
     "weft": "./sdk/bin.ts"
   },
   "exports": {
-    ".": "./sdk/index.ts",
     "./harness": "./sdk/harness.ts"
   },
   "dependencies": {
-    "@hegeldev/hegel": "0.5.3",
     "koffi": "^3.0.2"
   },
   "peerDependencies": {

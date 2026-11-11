@@ -1,104 +1,57 @@
-pub mod generate;
-
 use std::io::{self, Read, Write};
 
-pub const JOIN: u16 = u16::MAX;
-pub const TURN: u16 = u16::MAX - 1;
-pub const DONE: u16 = u16::MAX - 2;
-pub const REFUSED: i32 = i32::MIN;
+pub const JOIN: u8 = 0;
+pub const TURN: u8 = 1;
+pub const DONE: u8 = 2;
 const MOST: usize = 1 << 28;
 
 #[derive(Debug)]
 pub struct Short;
 
-pub trait Wire: Sized {
-    fn put(self, to: &mut Vec<u8>);
-    fn get(from: &mut Reader) -> Result<Self, Short>;
-}
-
-macro_rules! wire {
-    ($($t:ty)*) => {$(
-        impl Wire for $t {
-            fn put(self, to: &mut Vec<u8>) {
-                to.extend_from_slice(&self.to_le_bytes());
-            }
-
-            fn get(from: &mut Reader) -> Result<Self, Short> {
-                from.take(size_of::<$t>())?
-                    .try_into()
-                    .map(<$t>::from_le_bytes)
-                    .map_err(|_| Short)
-            }
-        }
-    )*};
-}
-
-wire!(u8 u16 u32 i32 u64 i64 f64);
-
-impl Wire for bool {
-    fn put(self, to: &mut Vec<u8>) {
-        to.push(u8::from(self));
-    }
-
-    fn get(from: &mut Reader) -> Result<Self, Short> {
-        u8::get(from).map(|b| b != 0)
-    }
-}
-
-impl Wire for usize {
-    fn put(self, to: &mut Vec<u8>) {
-        (self as u64).put(to);
-    }
-
-    fn get(from: &mut Reader) -> Result<Self, Short> {
-        u64::get(from).and_then(|n| usize::try_from(n).map_err(|_| Short))
-    }
-}
-
-#[derive(Default)]
 pub struct Writer(pub Vec<u8>);
 
 impl Writer {
-    pub fn put<T: Wire>(&mut self, value: T) {
-        value.put(&mut self.0);
+    pub fn call(call: u8, part: &[u8]) -> Writer {
+        let mut w = Writer(vec![call]);
+        w.bytes(part);
+        w
     }
 
-    pub fn bytes(&mut self, value: &[u8]) {
-        self.put(value.len());
+    pub fn reply(code: i32, part: &[u8]) -> Writer {
+        let mut w = Writer(code.to_le_bytes().to_vec());
+        w.bytes(part);
+        w
+    }
+
+    fn bytes(&mut self, value: &[u8]) {
+        self.0
+            .extend_from_slice(&(value.len() as u64).to_le_bytes());
         self.0.extend_from_slice(value);
-    }
-
-    pub fn opt(&mut self, value: Option<&[u8]>) {
-        self.put(value.is_some());
-        if let Some(value) = value {
-            self.bytes(value);
-        }
     }
 }
 
 pub struct Reader<'a>(pub &'a [u8]);
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, count: usize) -> Result<&'a [u8], Short> {
-        let (taken, rest) = self.0.split_at_checked(count).ok_or(Short)?;
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], Short> {
+        let (taken, rest) = self.0.split_first_chunk::<N>().ok_or(Short)?;
         self.0 = rest;
-        Ok(taken)
+        Ok(*taken)
     }
 
-    pub fn get<T: Wire>(&mut self) -> Result<T, Short> {
-        T::get(self)
+    pub fn call(&mut self) -> Result<u8, Short> {
+        self.take::<1>().map(|[call]| call)
+    }
+
+    pub fn code(&mut self) -> Result<i32, Short> {
+        self.take().map(i32::from_le_bytes)
     }
 
     pub fn bytes(&mut self) -> Result<&'a [u8], Short> {
-        let count = self.get::<usize>()?;
-        self.take(count)
-    }
-
-    pub fn opt(&mut self) -> Result<Option<&'a [u8]>, Short> {
-        match self.get::<bool>()? {
-            true => self.bytes().map(Some),
-            false => Ok(None),
-        }
+        let count = usize::try_from(u64::from_le_bytes(self.take()?)).map_err(|_| Short)?;
+        let (taken, rest) = self.0.split_at_checked(count).ok_or(Short)?;
+        self.0 = rest;
+        Ok(taken)
     }
 }
 

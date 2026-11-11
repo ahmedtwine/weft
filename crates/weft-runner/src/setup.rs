@@ -1,8 +1,7 @@
-use std::ffi::c_void;
 use std::path::Path;
 
 use weft_parse::{Diagram, Ran, Span, State};
-use weft_simulator::{Hello, Mark, Member, Report, Tagged, Turn};
+use weft_simulator::{Choice, Hello, Member, Report, Turn};
 
 pub struct Setup<'a> {
     d: &'a Diagram,
@@ -13,28 +12,24 @@ pub struct Setup<'a> {
 
 impl<'a> Setup<'a> {
     pub fn new(d: &'a Diagram, file: &Path) -> Setup<'a> {
-        let tagged = |tag: String| Tagged {
-            tag,
-            ..Tagged::default()
-        };
+        let none = || Choice::Object(Vec::new());
         Setup {
             d,
-            file: file.strip_prefix(".").unwrap_or(file).display().to_string(),
+            file: file.display().to_string(),
             now: d.init.clone(),
             hello: Hello {
                 reads: d
                     .init
                     .iter()
                     .flat_map(|(o, pairs)| pairs.keys().map(move |k| format!("{o}.{k}")))
-                    .map(tagged)
                     .collect(),
+                start: vec![none()],
                 actions: d
                     .objects
                     .iter()
                     .flat_map(|o| &o.moves)
-                    .map(|m| tagged(m.verb.clone()))
+                    .map(|m| (m.verb.clone(), none()))
                     .collect(),
-                mocks: Vec::new(),
             },
         }
     }
@@ -45,35 +40,25 @@ impl Member for Setup<'_> {
         &self.hello
     }
 
-    fn begin(&mut self, _: *mut c_void) {
-        self.now = self.d.init.clone();
-    }
-
     fn turn(&mut self, turn: &Turn) -> Result<Report, String> {
-        let Turn::Run(verb, object) = turn else {
-            return Ok(Report::State(self.now.clone()));
-        };
-        let to = self
-            .d
-            .enabled(&self.now)
-            .into_iter()
-            .find(|(o, v, _)| o.name == *object && v == verb)
-            .map(|(_, _, to)| to)
-            .ok_or_else(|| format!("`{object}` has no `on {verb}` line from its state"))?;
-        self.now.insert(object.to_string(), to);
-        Ok(Report::Ran(self.now.clone(), String::new()))
+        match turn {
+            Turn::Start(_) => self.now = self.d.init.clone(),
+            Turn::Run(verb, object, _) => {
+                let to = self
+                    .d
+                    .enabled(&self.now)
+                    .into_iter()
+                    .find(|(o, v, _)| o.name == *object && v == verb)
+                    .map(|(_, _, to)| to)
+                    .ok_or_else(|| format!("`{object}` has no `on {verb}` line from its state"))?;
+                self.now.insert(object.to_string(), to);
+            }
+            Turn::Read | Turn::Done => {}
+        }
+        Ok(Report::State(self.now.clone()))
     }
 
-    fn end(&mut self, _: &Turn) -> Result<Mark, String> {
-        Ok(Mark {
-            status: 0,
-            origin: None,
-        })
-    }
-
-    fn told(&mut self, _: &str) {}
-
-    fn finish(&mut self, _: *mut c_void) -> Result<Ran, String> {
+    fn finish(&mut self) -> Result<Ran, String> {
         let span = |line: usize| Span {
             file: self.file.clone(),
             from: line,
@@ -87,7 +72,7 @@ impl Member for Setup<'_> {
             }
         }
         Ok(Ran {
-            reset: self
+            start: self
                 .d
                 .objects
                 .iter()

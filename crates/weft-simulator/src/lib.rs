@@ -1,64 +1,46 @@
+mod draw;
 mod engine;
-mod host;
 mod hub;
+mod schema;
 
 use std::collections::BTreeSet;
-use std::ffi::c_void;
 
-use serde_json::json;
+use serde_json::{Value as Json, json};
 use weft_parse::{Check, Diagram, Ran, Span, State, shown};
 
 use engine::{Case, Engine, Halt, INTERESTING, INVALID, OVERRUN, VALID};
 
-pub use host::{CALLS, PRINT};
 pub use hub::{Hub, Peer, Remote, Session};
+pub use schema::Choice;
 
 const STEPS: i64 = 20;
 const ORIGIN: &str = "weft";
-
-#[derive(Default, Clone)]
-pub struct Tagged {
-    pub tag: String,
-    pub from: Vec<String>,
-    pub run: Vec<String>,
-}
+const START: &str = "start";
 
 #[derive(Default, Clone)]
 pub struct Hello {
-    pub reads: Vec<Tagged>,
-    pub actions: Vec<Tagged>,
-    pub mocks: Vec<Tagged>,
-}
-
-#[derive(Clone)]
-pub struct Mark {
-    pub status: u32,
-    pub origin: Option<String>,
+    pub reads: Vec<String>,
+    pub start: Vec<Choice>,
+    pub actions: Vec<(String, Choice)>,
 }
 
 pub enum Turn<'a> {
-    Reset,
-    Run(&'a str, &'a str),
+    Start(&'a [Json]),
+    Run(&'a str, &'a str, &'a Json),
     Read,
     Done,
-    Failed(&'a [String]),
 }
 
 pub enum Report {
     State(State),
-    Ran(State, String),
-    Thrown(String, String),
+    Thrown(String),
     Refused,
-    Left(Mark),
 }
 
 pub trait Member {
     fn hello(&self) -> &Hello;
-    fn begin(&mut self, tc: *mut c_void);
     fn turn(&mut self, turn: &Turn) -> Result<Report, String>;
-    fn end(&mut self, turn: &Turn) -> Result<Mark, String>;
-    fn told(&mut self, origin: &str);
-    fn finish(&mut self, result: *mut c_void) -> Result<Ran, String>;
+    fn finish(&mut self) -> Result<Ran, String>;
 }
 
 #[derive(Clone)]
@@ -73,9 +55,7 @@ impl Line {
     pub fn step(&self) -> String {
         self.action
             .as_ref()
-            .map_or("start".into(), |(verb, object)| {
-                format!("{verb} to={object}")
-            })
+            .map_or(START.into(), |(verb, object)| format!("{verb} to={object}"))
     }
 }
 
@@ -95,16 +75,17 @@ pub struct Outcome {
     pub ran: Ran,
 }
 
-enum End {
-    Done,
-    Failed(Vec<String>),
-    Left(usize),
+struct Step {
+    verb: String,
+    object: String,
+    owner: usize,
+    input: Choice,
 }
 
 struct Run<'a> {
     d: &'a Diagram,
     c: &'a Check,
-    steps: Vec<(String, String, usize)>,
+    steps: Vec<Step>,
     runs: u64,
     tally: Vec<Tally>,
     found: Option<Vec<Line>>,
@@ -113,16 +94,21 @@ struct Run<'a> {
     refused: BTreeSet<String>,
 }
 
+enum Stepped {
+    Next,
+    Refused,
+    Failed(Vec<String>),
+}
+
 type Members<'m> = [Box<dyn Member + 'm>];
 
 impl Turn<'_> {
     pub fn json(&self) -> String {
         match self {
-            Turn::Reset => json!({ "reset": true }),
-            Turn::Run(verb, object) => json!({ "run": verb, "object": object }),
+            Turn::Start(inputs) => json!({ "start": inputs }),
+            Turn::Run(verb, _, input) => json!({ "run": verb, "input": input }),
             Turn::Read => json!({ "read": true }),
             Turn::Done => json!({ "done": true }),
-            Turn::Failed(evidence) => json!({ "failed": evidence }),
         }
         .to_string()
     }
@@ -135,6 +121,17 @@ pub fn view(s: &State) -> String {
         .join("; ")
 }
 
+fn written(input: &Json) -> String {
+    match input {
+        Json::Object(fields) => fields
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        other => other.to_string(),
+    }
+}
+
 fn merged(mut state: State, part: State) -> State {
     for (object, pairs) in part {
         state.entry(object).or_default().extend(pairs);
@@ -142,176 +139,191 @@ fn merged(mut state: State, part: State) -> State {
     state
 }
 
-fn moves(d: &Diagram) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    for o in &d.objects {
-        for m in &o.moves {
-            let step = (m.verb.clone(), o.name.clone());
-            if !out.contains(&step) {
-                out.push(step);
+impl Run<'_> {
+    fn thrown(&mut self, mut line: Line, error: &str) -> Vec<String> {
+        line.evidence = vec![format!("throws {error}")];
+        self.trace.push(line.clone());
+        line.evidence
+    }
+
+    fn started(
+        &mut self,
+        case: &Case,
+        members: &mut Members,
+    ) -> Result<Result<State, Vec<String>>, Halt> {
+        let mut real = State::new();
+        let mut line = Line {
+            action: None,
+            input: String::new(),
+            state: State::new(),
+            evidence: Vec::new(),
+        };
+        self.trace.clear();
+        for m in members.iter_mut() {
+            let inputs = m
+                .hello()
+                .start
+                .iter()
+                .map(|c| case.draw(c))
+                .collect::<Result<Vec<Json>, Halt>>()?;
+            let report = match inputs.is_empty() {
+                true => m.turn(&Turn::Read)?,
+                false => {
+                    line.input = inputs.iter().map(written).collect::<Vec<_>>().join(" ");
+                    m.turn(&Turn::Start(&inputs))?
+                }
+            };
+            match report {
+                Report::State(part) => real = merged(real, part),
+                Report::Thrown(error) => return Ok(Err(self.thrown(line, &error))),
+                Report::Refused => {
+                    self.refused.insert(START.into());
+                    return Err(Halt::Invalid);
+                }
             }
         }
+        let judged = self.c.judge(&real, &real, "");
+        line.state = real.clone();
+        line.evidence = judged.clone().unwrap_or_default();
+        self.trace.push(line);
+        Ok(judged.map_or(Ok(real), Err))
     }
-    out
-}
 
-impl Run<'_> {
+    fn step(
+        &mut self,
+        case: &Case,
+        members: &mut Members,
+        rule: usize,
+        real: &mut State,
+        model: &mut State,
+    ) -> Result<Stepped, Halt> {
+        let Step {
+            verb,
+            object,
+            owner,
+            ..
+        } = &self.steps[rule];
+        let (verb, object, owner) = (verb.clone(), object.clone(), *owner);
+        let to = self
+            .d
+            .enabled(model)
+            .into_iter()
+            .find(|(o, v, _)| o.name == object && *v == verb)
+            .map(|(_, _, to)| to);
+        let mut line = Line {
+            action: Some((verb.clone(), object.clone())),
+            input: String::new(),
+            state: State::new(),
+            evidence: Vec::new(),
+        };
+        let report = match &to {
+            Some(_) => {
+                let input = case.draw(&self.steps[rule].input)?;
+                line.input = written(&input);
+                members[owner].turn(&Turn::Run(&verb, &object, &input))?
+            }
+            None => Report::Refused,
+        };
+        let mut next = match report {
+            Report::State(part) => merged(real.clone(), part),
+            Report::Refused => {
+                if to.is_some() {
+                    self.refused.insert(verb);
+                }
+                return Ok(Stepped::Refused);
+            }
+            Report::Thrown(error) => return Ok(Stepped::Failed(self.thrown(line, &error))),
+        };
+        for (_, m) in members.iter_mut().enumerate().filter(|(i, _)| *i != owner) {
+            match m.turn(&Turn::Read)? {
+                Report::State(part) => next = merged(next, part),
+                _ => {
+                    return Err(Halt::Fatal(
+                        "the runner answers `read` with no state".into(),
+                    ));
+                }
+            }
+        }
+        model.insert(object, to.unwrap_or_default());
+        let applies = self.c.applies(real, &next, &verb);
+        self.tally[rule].steps += 1;
+        self.tally[rule].checks += u64::from(applies);
+        let judged = self.c.judge(real, &next, &verb);
+        line.state = next.clone();
+        line.evidence = judged.clone().unwrap_or_default();
+        self.trace.push(line);
+        *real = next;
+        Ok(judged.map_or(Stepped::Next, Stepped::Failed))
+    }
+
     fn stepped(
         &mut self,
         case: &mut Case,
         members: &mut Members,
-        marks: &mut [Option<Mark>],
-    ) -> Result<End, Halt> {
-        let wrong = |turn: &str| Halt::Fatal(format!("the runner answers `{turn}` with no state"));
-        let mut real = State::new();
-        for (i, m) in members.iter_mut().enumerate() {
-            match m.turn(&Turn::Reset)? {
-                Report::State(part) => real = merged(real, part),
-                Report::Left(mark) => {
-                    marks[i] = Some(mark);
-                    return Ok(End::Left(i));
-                }
-                _ => return Err(wrong("reset")),
-            }
-        }
-        let judged = self.c.judge(&real, &real, "");
-        self.trace = vec![Line {
-            action: None,
-            input: String::new(),
-            state: real.clone(),
-            evidence: judged.clone().unwrap_or_default(),
-        }];
-        if let Some(evidence) = judged {
-            return Ok(End::Failed(evidence));
-        }
+    ) -> Result<Option<Vec<String>>, Halt> {
+        let mut real = match self.started(case, members)? {
+            Ok(real) => real,
+            Err(evidence) => return Ok(Some(evidence)),
+        };
         let mut model = self.d.init.clone();
+        if case.draw(&Choice::Bool)? == Json::Bool(true) {
+            let path: Vec<usize> = self
+                .d
+                .steps
+                .iter()
+                .filter_map(|s| {
+                    self.steps
+                        .iter()
+                        .position(|step| step.verb == s.verb && step.object == s.to)
+                })
+                .collect();
+            for rule in path {
+                match self.step(case, members, rule, &mut real, &mut model)? {
+                    Stepped::Next => {}
+                    Stepped::Refused => return Err(Halt::Invalid),
+                    Stepped::Failed(evidence) => return Ok(Some(evidence)),
+                }
+            }
+            return Ok(None);
+        }
         let rules: Vec<String> = self.tally.iter().map(|t| t.step.clone()).collect();
         case.machine(&rules, STEPS)?;
         while case.round()? {
             let mut rejected = false;
             while let Some(rule) = case.rule()? {
-                let (verb, object, owner) = self.steps[rule].clone();
-                let to = self
-                    .d
-                    .enabled(&model)
-                    .into_iter()
-                    .find(|(o, v, _)| o.name == object && *v == verb)
-                    .map(|(_, _, to)| to);
-                let report = match &to {
-                    Some(_) => members[owner].turn(&Turn::Run(&verb, &object))?,
-                    None => Report::Refused,
-                };
-                let mut line = Line {
-                    action: Some((verb.clone(), object.clone())),
-                    input: String::new(),
-                    state: State::new(),
-                    evidence: Vec::new(),
-                };
-                let mut next = match report {
-                    Report::Ran(part, input) => {
-                        line.input = input;
-                        merged(real.clone(), part)
-                    }
-                    Report::Refused => {
-                        if to.is_some() {
-                            self.refused.insert(verb);
-                        }
+                match self.step(case, members, rule, &mut real, &mut model)? {
+                    Stepped::Next => {}
+                    Stepped::Refused => {
                         case.rejected()?;
                         rejected = true;
-                        continue;
                     }
-                    Report::Thrown(input, error) => {
-                        line.input = input;
-                        line.evidence = vec![format!("throws {error}")];
-                        self.trace.push(line.clone());
+                    Stepped::Failed(evidence) => {
                         case.close(false)?;
-                        return Ok(End::Failed(line.evidence));
-                    }
-                    Report::Left(mark) => {
-                        marks[owner] = Some(mark);
-                        case.close(false)?;
-                        return Ok(End::Left(owner));
-                    }
-                    Report::State(_) => return Err(wrong("run")),
-                };
-                for (i, m) in members.iter_mut().enumerate().filter(|(i, _)| *i != owner) {
-                    match m.turn(&Turn::Read)? {
-                        Report::State(part) => next = merged(next, part),
-                        Report::Left(mark) => {
-                            marks[i] = Some(mark);
-                            case.close(false)?;
-                            return Ok(End::Left(i));
-                        }
-                        _ => return Err(wrong("read")),
+                        return Ok(Some(evidence));
                     }
                 }
-                model.insert(object, to.unwrap_or_default());
-                let applies = self.c.applies(&real, &next, &verb);
-                self.tally[rule].steps += 1;
-                self.tally[rule].checks += u64::from(applies);
-                let judged = self.c.judge(&real, &next, &verb);
-                line.state = next.clone();
-                line.evidence = judged.clone().unwrap_or_default();
-                self.trace.push(line);
-                if let Some(evidence) = judged {
-                    case.close(false)?;
-                    return Ok(End::Failed(evidence));
-                }
-                real = next;
             }
             case.close(rejected)?;
         }
         case.close(false)?;
-        Ok(End::Done)
+        Ok(None)
     }
 
     fn case(&mut self, mut case: Case, members: &mut Members) -> Result<(), String> {
         self.runs += 1;
-        members.iter_mut().for_each(|m| m.begin(case.raw().cast()));
-        let mut marks: Vec<Option<Mark>> = vec![None; members.len()];
-        let left = |marks: &[Option<Mark>], i: usize| {
-            marks[i]
-                .as_ref()
-                .filter(|m| m.status == INTERESTING)
-                .map(|m| {
-                    vec![format!(
-                        "the runner fails at {}",
-                        m.origin.as_deref().unwrap_or(ORIGIN)
-                    )]
-                })
-        };
-        let (evidence, own) = match self.stepped(&mut case, members, &mut marks) {
-            Ok(End::Done) => (None, VALID),
-            Ok(End::Failed(evidence)) => (Some(evidence), INTERESTING),
-            Ok(End::Left(i)) => (left(&marks, i), VALID),
-            Err(Halt::Overrun) => (None, OVERRUN),
-            Err(Halt::Invalid) => (None, INVALID),
+        let status = match self.stepped(&mut case, members) {
+            Ok(None) => VALID,
+            Ok(Some(_)) => INTERESTING,
+            Err(Halt::Overrun) => OVERRUN,
+            Err(Halt::Invalid) => INVALID,
             Err(Halt::Fatal(e)) => return Err(e),
         };
-        let turn = evidence.as_deref().map_or(Turn::Done, Turn::Failed);
-        for (m, mark) in members.iter_mut().zip(&mut marks) {
-            if mark.is_none() {
-                *mark = Some(m.end(&turn)?);
-            }
+        match status == INTERESTING {
+            true => self.found = Some(self.trace.clone()),
+            false if self.trace.len() > self.longest.len() => self.longest = self.trace.clone(),
+            false => {}
         }
-        let status = marks.iter().flatten().map(|m| m.status).fold(own, u32::max);
-        let origin = marks
-            .iter()
-            .flatten()
-            .filter(|m| m.status == INTERESTING)
-            .find_map(|m| m.origin.clone())
-            .unwrap_or_else(|| ORIGIN.to_string());
-        match (status == INTERESTING, own == INTERESTING) {
-            (true, true) => self.found = Some(self.trace.clone()),
-            (false, _) if self.trace.len() > self.longest.len() => {
-                self.longest = self.trace.clone()
-            }
-            _ => {}
-        }
-        if status == INTERESTING {
-            members.iter_mut().for_each(|m| m.told(&origin));
-        }
-        case.complete(status, (status == INTERESTING).then_some(origin.as_str()))
+        case.complete(status, (status == INTERESTING).then_some(ORIGIN))
     }
 }
 
@@ -321,15 +333,15 @@ pub fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
         .actions
         .iter()
         .flat_map(|(_, spans)| spans)
-        .chain(&ran.reset);
+        .chain(&ran.start);
     if let Some(s) = spans.clone().find(|s| s.from == 0 || s.to < s.from) {
         return Err(format!(
             "`ran` has the lines {}-{} of `{}`, and lines go up from 1",
             s.from, s.to, s.file
         ));
     }
-    if ran.reset.is_empty() {
-        return Err("the runner sends no `ran` for `reset`".into());
+    if ran.start.is_empty() {
+        return Err("the runner sends no `ran` for `start`".into());
     }
     if let Some((v, _)) = ran
         .actions
@@ -354,47 +366,65 @@ pub fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
         }
     }
     Ok(Ran {
-        reset: ran.reset,
+        start: ran.start,
         actions,
     })
 }
 
-fn owners(
-    d: &Diagram,
-    c: &Check,
-    members: &Members,
-) -> Result<Vec<(String, String, usize)>, String> {
+fn owners(d: &Diagram, c: &Check, members: &Members) -> Result<Vec<Step>, String> {
     if let Some((o, k)) = c.reads().into_iter().find(|(o, k)| {
         let tag = format!("{o}.{k}");
-        !members
-            .iter()
-            .any(|m| m.hello().reads.iter().any(|r| r.tag == tag))
+        !members.iter().any(|m| m.hello().reads.contains(&tag))
     }) {
         return Err(format!(
-            "the check reads `{o}.{k}`, and no field of the state has the tag `{o}.{k}`"
+            "the check reads `{o}.{k}`, and no field of a `read` schema has the tag `{o}.{k}`"
         ));
     }
-    moves(d)
-        .into_iter()
-        .map(|(verb, object)| {
-            let found: Vec<usize> = members
+    if members.iter().all(|m| m.hello().start.is_empty()) {
+        return Err("no runner has a `start`".into());
+    }
+    let mut steps: Vec<Step> = Vec::new();
+    for o in &d.objects {
+        for m in &o.moves {
+            if steps.iter().any(|s| s.verb == m.verb && s.object == o.name) {
+                continue;
+            }
+            let found: Vec<(usize, &Choice)> = members
                 .iter()
                 .enumerate()
-                .filter(|(_, m)| m.hello().actions.iter().any(|a| a.tag == verb))
-                .map(|(i, _)| i)
+                .flat_map(|(i, member)| {
+                    member
+                        .hello()
+                        .actions
+                        .iter()
+                        .filter(|(tag, _)| *tag == m.verb)
+                        .map(move |(_, input)| (i, input))
+                })
                 .collect();
             match found.as_slice() {
-                [owner] => Ok((verb, object, *owner)),
-                [] => Err(format!(
-                    "the verb `{verb}` has no action with the tag `{verb}`"
-                )),
-                _ => Err(format!(
-                    "the verb `{verb}` has an action in {} runners",
-                    found.len()
-                )),
+                [(owner, input)] => steps.push(Step {
+                    verb: m.verb.clone(),
+                    object: o.name.clone(),
+                    owner: *owner,
+                    input: (*input).clone(),
+                }),
+                [] => {
+                    return Err(format!(
+                        "the verb `{0}` has no `run` input with the tag `{0}`",
+                        m.verb
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "the verb `{}` has {} `run` inputs",
+                        m.verb,
+                        found.len()
+                    ));
+                }
             }
-        })
-        .collect()
+        }
+    }
+    Ok(steps)
 }
 
 pub fn simulate(
@@ -410,8 +440,8 @@ pub fn simulate(
         c,
         tally: steps
             .iter()
-            .map(|(verb, object, _)| Tally {
-                step: format!("{verb} to={object}"),
+            .map(|s| Tally {
+                step: format!("{} to={}", s.verb, s.object),
                 steps: 0,
                 checks: 0,
             })
@@ -428,41 +458,39 @@ pub fn simulate(
         run.case(case, members)?;
     }
     let ended = engine.end()?;
-    let rans: Result<Vec<Ran>, String> = members
+    let rans = members
         .iter_mut()
-        .map(|m| m.finish(ended.result.cast()))
-        .collect();
-    let (failed, caveat) = (ended.failed, ended.caveat.clone());
-    engine.free(ended);
-    let rans = rans?;
-    if let Some(t) = run.tally.iter().find(|t| {
-        t.steps == 0
-            && run
-                .refused
-                .contains(t.step.split(' ').next().unwrap_or_default())
-    }) {
+        .map(|m| m.finish())
+        .collect::<Result<Vec<Ran>, String>>()?;
+    let verb = |t: &Tally| t.step.split(' ').next().unwrap_or_default().to_string();
+    if let Some(refused) = [START.to_string()]
+        .into_iter()
+        .filter(|_| run.longest.is_empty())
+        .chain(run.tally.iter().filter(|t| t.steps == 0).map(verb))
+        .filter(|_| !ended.failed)
+        .find(|v| run.refused.contains(v))
+    {
         return Err(format!(
-            "each input of `{}` fails the schema of its action",
-            t.step.split(' ').next().unwrap_or_default()
+            "each input of `{refused}` fails the schema of its function"
         ));
     }
     let ran = Ran {
-        reset: rans.iter().flat_map(|r| r.reset.clone()).collect(),
+        start: rans.iter().flat_map(|r| r.start.clone()).collect(),
         actions: rans.into_iter().flat_map(|r| r.actions).collect(),
     };
     let ran = listed(ran, &run.tally)?;
-    let trace = match (failed, run.found) {
+    let trace = match (ended.failed, run.found) {
         (true, Some(found)) => found,
-        (true, None) => return Err("a runner fails outside a step".into()),
+        (true, None) => return Err("Hegel fails the run with no failing case".into()),
         (false, _) => run.longest,
     };
     Ok(Outcome {
         cases,
         runs: run.runs,
-        failed,
+        failed: ended.failed,
         trace,
         tally: run.tally,
-        caveat,
+        caveat: ended.caveat,
         ran,
     })
 }
