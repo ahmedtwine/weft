@@ -18,7 +18,7 @@ use std::{
 use globset::{Glob, GlobSetBuilder};
 use ignore::WalkBuilder;
 use weft_draw::Theme;
-use weft_parse::{Config, Diagram, Verdict};
+use weft_parse::{Config, Diagram};
 use weft_simulator::{Outcome, view};
 
 const USAGE: &str = "usage: weft [--ui | <file>…]";
@@ -146,9 +146,9 @@ fn tables(o: &Outcome) -> Vec<Table> {
                 vec![
                     k.to_string(),
                     l.step(),
-                    match l.input.chars().count() > INPUT {
-                        true => l.input.chars().take(INPUT).chain(['…']).collect(),
-                        false => l.input.clone(),
+                    match l.input().chars().count() > INPUT {
+                        true => l.input().chars().take(INPUT).chain(['…']).collect(),
+                        false => l.input(),
                     },
                     view(&l.state),
                     l.evidence.join(" · "),
@@ -197,22 +197,37 @@ fn tables(o: &Outcome) -> Vec<Table> {
         .collect()
 }
 
+fn rules(d: &Diagram) -> Vec<String> {
+    d.objects
+        .iter()
+        .flat_map(|o| {
+            o.rules
+                .iter()
+                .map(|rule| format!("{} · {}", o.name, rule.source()))
+                .chain(
+                    o.invariants
+                        .iter()
+                        .map(|invariant| format!("{} · {}", o.name, invariant.source())),
+                )
+        })
+        .collect()
+}
+
 fn summary(path: &str, d: &Diagram, config: &Config, o: &Outcome, took: Duration) -> String {
-    let evidence = match d.verdict() {
-        Some(Verdict::Fails { evidence, .. }) => evidence,
-        _ => Vec::new(),
-    };
     let head = format!(
-        "{} {path} · {} · {}",
+        "{} {path}{}",
         match o.failed {
             true => '✕',
             false => '✓',
         },
-        d.check.as_ref().map_or(String::new(), |c| c.english()),
-        evidence.join(" · ")
+        match (o.failed, o.trace.last()) {
+            (true, Some(last)) => format!(" · {}", last.evidence.join(" · ")),
+            _ => String::new(),
+        }
     );
     [head, format!("  {}", headline(config, o, took))]
         .into_iter()
+        .chain(rules(d).into_iter().map(|rule| format!("  {rule}")))
         .chain(tables(o).iter().flat_map(Table::text))
         .collect::<Vec<_>>()
         .join("\n")
@@ -225,18 +240,15 @@ fn section(
     o: &Outcome,
     theme: Theme,
 ) -> Result<String, String> {
-    let (words, formula) = d
-        .check
-        .as_ref()
-        .map_or((String::new(), String::new()), |c| {
-            (c.english(), c.source())
-        });
+    let rules: String = rules(d)
+        .iter()
+        .map(|rule| format!("<li><code>{}</code></li>", escape(rule)))
+        .collect();
     Ok(format!(
-        r#"<section><h2>{}</h2><small class="text-light">{}</small><div class="s"><div class="d">{}</div>{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
-        escape(&words),
-        escape(&formula),
-        weft_draw::svg(d, theme, &trace::code(&o.ran, path)?)?,
+        r#"<section><h2>{}</h2><ul class="unstyled">{rules}</ul>{}<div class="d">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
+        escape(path),
         trace::panel(o)?,
+        weft_draw::svg(d, theme, &trace::code(&o.ran, path)?)?,
         escape(path),
         escape(src)
     ))
@@ -331,28 +343,29 @@ fn page(r: &Report) -> String {
         Theme::Dark => ("dark", "github-dark"),
     };
     format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Weft Report</title><link rel="stylesheet" href="https://unpkg.com/@knadh/oat@1.1.0/oat.min.css"><script src="https://unpkg.com/@knadh/oat@1.1.0/oat.min.js" defer></script><style>
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Weft Report</title><link rel="stylesheet" href="https://unpkg.com/@knadh/oat@1.1.0/oat.min.css"><script src="https://unpkg.com/@knadh/oat@1.1.0/oat.min.js" defer></script><script src="https://unpkg.com/pretty-json-custom-element@1.1.19/index.js" defer></script><style>
 :root{{color-scheme:{scheme};--background:{bg}}}
 body{{padding:var(--space-6)}}
 h1{{font-size:var(--text-3);margin:0}}
 h2{{font-size:var(--text-5);margin:0 0 var(--space-2)}}
 section{{border-top:1px solid var(--border);padding:var(--space-5) 0}}
-.s{{display:flex;gap:var(--space-6);align-items:flex-start;margin:var(--space-4) 0}}
-.d{{flex:1 1 0;min-width:0}}
-.d svg{{display:block;margin:0 auto}}
-aside{{flex:0 0 min(30%,400px);min-width:0;position:sticky;top:var(--space-4);--row:2.25rem;max-height:calc(10*(var(--row) + 1px) + 1px);overflow:auto;scrollbar-width:none}}
-aside:has([open]){{max-height:calc(100vh - var(--space-8))}}
-aside summary{{box-sizing:border-box;height:var(--row);padding-block:0;font-size:var(--text-7)}}
-aside details>:not(summary){{margin:var(--space-2)}}
-aside summary svg{{color:var(--success)}}
-aside .e summary svg{{color:var(--danger)}}
+.d svg{{display:block;margin:var(--space-4) auto}}
+ul.unstyled{{margin:0}}
+.t{{max-height:26rem;overflow:auto;margin:var(--space-4) 0}}
+.t table{{font-size:var(--text-7)}}
+.t th{{position:sticky;top:0;background:var(--background);white-space:nowrap}}
+.t td{{vertical-align:top;max-width:32ch;overflow-wrap:anywhere}}
+.t td:first-child{{white-space:nowrap}}
+.t td svg{{color:var(--success);vertical-align:-2px}}
+.t tr.e td{{color:var(--danger)}}
+.t tr.e td svg{{color:var(--danger)}}
+pretty-json{{display:block;--font-family:var(--font-mono);--font-size:12px;--indent:1rem;--key-color:var(--foreground);--string-color:var(--success);--number-color:var(--primary);--boolean-color:var(--primary);--null-color:var(--muted-foreground);--brace-color:var(--muted-foreground);--bracket-color:var(--muted-foreground);--comma-color:var(--muted-foreground);--arrow-color:var(--muted-foreground);--ellipsis-color:var(--muted-foreground)}}
 foreignObject>div{{height:100%}}
 figure{{display:flex;flex-direction:column;box-sizing:border-box;height:100%;margin:0;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--background)}}
 figcaption{{padding:4px 8px;border-bottom:1px solid var(--border);background:var(--faint);color:var(--muted-foreground);font:10px/14px var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 figure pre{{flex:1;margin:0;padding:5px 0;border:0;border-radius:0;background-color:var(--background)!important;font:11px/15px var(--font-mono);overflow:hidden}}
 pre code{{counter-reset:n calc(var(--from) - 1)}}
 pre .line::before{{counter-increment:n;content:counter(n);display:inline-block;min-width:4ch;margin-right:2ch;text-align:right;color:var(--faint-foreground)}}
-@media(max-width:900px){{.s{{flex-direction:column}}aside{{flex:none;width:100%;position:static;max-height:none}}}}
 </style></head><body><h1>Weft Report</h1><p class="text-light">{} · {wrong} wrong</p>{errors}{}<script type="module">
 import {{ codeToHtml, bundledLanguages }} from "https://esm.sh/shiki@4.6.0";
 for (const pre of document.querySelectorAll("pre[data-lang]")) {{

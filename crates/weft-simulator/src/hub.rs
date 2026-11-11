@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value as Json;
 use weft_hegel::Generator;
-use weft_parse::{Draw, Ran, Role, Span, State, Use, Value};
+use weft_parse::{Draw, Ran, Role, Span, State, Use};
 use weft_wire::{DONE, JOIN, Reader, Short, TURN, Writer};
 
 use crate::schema::{Branch, Tag, branches, live, narrowed, tags, whole};
@@ -208,6 +208,11 @@ fn hello(session: &Session, said: &Json) -> Result<Seat, String> {
         .iter()
         .map(|r| format!("{}.{}", r.tag.object, r.tag.key))
         .collect();
+    hello.errors = reads
+        .iter()
+        .filter(|r| r.source == SOURCES[1])
+        .map(|r| (r.tag.object.clone(), r.tag.key.clone()))
+        .collect();
     Ok(Seat {
         hello,
         reads,
@@ -229,19 +234,10 @@ fn state(reads: &[Read], said: &Json) -> Result<State, String> {
             .iter()
             .try_fold(whole, |node, part| node.get(part))
             .ok_or_else(|| format!("the value `{whole}` has no `{object}.{key}`"))?;
-        let value = match (value.as_str(), value.as_i64()) {
-            (Some(s), _) => Value::Text(s.to_string()),
-            (_, Some(n)) => Value::Int(n.into()),
-            _ => {
-                return Err(format!(
-                    "`{object}.{key}` is `{value}`, and a state is a text or a whole number"
-                ));
-            }
-        };
         state
             .entry(object.clone())
             .or_default()
-            .insert(key.clone(), value);
+            .insert(key.clone(), value.clone());
     }
     Ok(state)
 }

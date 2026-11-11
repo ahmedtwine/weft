@@ -372,7 +372,12 @@ impl Case {
             .map_or(0, |pool| pool.values.len())
     }
 
-    pub fn machine(&mut self, rules: &[String], steps: i64) -> Result<(), Halt> {
+    pub fn machine(
+        &mut self,
+        rules: &[String],
+        invariants: &[String],
+        steps: i64,
+    ) -> Result<(), Halt> {
         let (ctx, tc) = (self.ctx, self.tc);
         hegel!(
             ctx,
@@ -391,11 +396,36 @@ impl Case {
                 )
             )?;
         }
+        for invariant in invariants {
+            hegel!(
+                ctx,
+                hegel_state_machine_add_invariant(
+                    tc,
+                    self.machine,
+                    text(invariant.as_bytes()),
+                    true
+                )
+            )?;
+        }
         let mut concurrency = 0;
         hegel!(
             ctx,
             hegel_state_machine_start(tc, self.machine, &mut concurrency)
         )
+    }
+
+    pub fn invariant(&self, index: usize) -> Result<bool, Halt> {
+        let mut check = false;
+        hegel!(
+            self.ctx,
+            hegel_state_machine_should_check_invariant(
+                self.tc,
+                self.machine,
+                index as i64,
+                &mut check
+            )
+        )?;
+        Ok(check)
     }
 
     pub fn round(&mut self) -> Result<bool, Halt> {

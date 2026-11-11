@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Value as Json, json};
 use weft_hegel::{Case, Engine, Halt, INTERESTING, INVALID, OVERRUN, VALID};
-use weft_parse::{Check, Diagram, Ran, Span, State, Value, shown};
+use weft_parse::{Diagram, Ran, Seen, Span, State, shown};
 
 pub use hub::{Hub, Peer, Remote, Session};
 pub use weft_hegel::Generator;
@@ -32,6 +32,7 @@ pub struct Action {
 #[derive(Default)]
 pub struct Hello {
     pub reads: Vec<String>,
+    pub errors: Vec<(String, String)>,
     pub start: Vec<Start>,
     pub actions: Vec<Action>,
     pub sized: bool,
@@ -66,7 +67,7 @@ pub trait Member {
 #[derive(Clone)]
 pub struct Line {
     pub action: Option<(String, String)>,
-    pub input: String,
+    pub input: Vec<Json>,
     pub state: State,
     pub evidence: Vec<String>,
 }
@@ -76,6 +77,15 @@ impl Line {
         self.action
             .as_ref()
             .map_or(START.into(), |(verb, object)| format!("{verb} to={object}"))
+    }
+
+    pub fn input(&self) -> String {
+        self.input
+            .iter()
+            .map(written)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -105,9 +115,9 @@ struct Step {
 
 struct Run<'a> {
     d: &'a Diagram,
-    c: &'a Check,
     steps: Vec<Step>,
     sized: bool,
+    machine: bool,
     runs: u64,
     added: u64,
     first: State,
@@ -182,11 +192,11 @@ impl Run<'_> {
     fn sized(&self, case: &Case, mut state: State) -> State {
         if self.sized {
             for o in &self.d.objects {
-                for pool in o.pools.iter().filter(|pool| o.initial.contains_key(*pool)) {
+                for pool in o.pools.iter().filter(|pool| o.start.contains_key(*pool)) {
                     state
                         .entry(o.name.clone())
                         .or_default()
-                        .insert(pool.clone(), Value::Int(case.size(pool) as i128));
+                        .insert(pool.clone(), json!(case.size(pool)));
                 }
             }
         }
@@ -201,7 +211,7 @@ impl Run<'_> {
         let mut real = State::new();
         let mut line = Line {
             action: None,
-            input: String::new(),
+            input: Vec::new(),
             state: State::new(),
             evidence: Vec::new(),
         };
@@ -234,7 +244,7 @@ impl Run<'_> {
             let report = match inputs.is_empty() {
                 true => m.turn(&Turn::Read)?,
                 false => {
-                    line.input = inputs.iter().map(written).collect::<Vec<_>>().join(" ");
+                    line.input = inputs.clone();
                     let mut adds = pools.iter().map(|(_, add)| *add);
                     let calls: Vec<Call> = m
                         .hello()
@@ -268,12 +278,40 @@ impl Run<'_> {
             self.added += pools.len() as u64;
         }
         let real = self.sized(case, real);
-        let judged = self.c.judge(&real, &real, &real, "");
+        let started = self.d.started(&real);
         line.state = real.clone();
-        line.evidence = judged.clone().unwrap_or_default();
+        line.evidence = started.clone().unwrap_or_default();
         self.trace.push(line);
         self.first = real.clone();
+        let judged = match started {
+            Some(evidence) => Some(evidence),
+            None => self.judged(case, None, &real)?,
+        };
         Ok(judged.map_or(Ok(real), Err))
+    }
+
+    fn judged(
+        &mut self,
+        case: &Case,
+        rule: Option<usize>,
+        real: &State,
+    ) -> Result<Option<Vec<String>>, Halt> {
+        let d = self.d;
+        for (index, invariant) in d.invariants().into_iter().enumerate() {
+            if self.machine && !case.invariant(index)? {
+                continue;
+            }
+            if let Some(rule) = rule {
+                self.tally[rule].checks += 1;
+            }
+            if let Some(evidence) = invariant.judge(&self.first, real) {
+                if let Some(line) = self.trace.last_mut() {
+                    line.evidence = evidence.clone();
+                }
+                return Ok(Some(evidence));
+            }
+        }
+        Ok(None)
     }
 
     fn step(
@@ -282,7 +320,6 @@ impl Run<'_> {
         members: &mut Members,
         rule: usize,
         real: &mut State,
-        model: &mut State,
     ) -> Result<Stepped, Halt> {
         let Step {
             verb,
@@ -291,15 +328,12 @@ impl Run<'_> {
             action,
         } = &self.steps[rule];
         let (verb, object, owner, action) = (verb.clone(), object.clone(), *owner, *action);
-        let to = self
-            .d
-            .enabled(model)
-            .into_iter()
-            .find(|(o, v, _)| o.name == object && *v == verb)
-            .map(|(_, _, to)| to);
+        if !self.d.enabled(&object, &verb, real) {
+            return Ok(Stepped::Refused);
+        }
         let mut line = Line {
             action: Some((verb.clone(), object.clone())),
-            input: String::new(),
+            input: Vec::new(),
             state: State::new(),
             evidence: Vec::new(),
         };
@@ -310,7 +344,7 @@ impl Run<'_> {
         let mut report = Report::Refused;
         let mut empty = false;
         for _ in 0..TRIES {
-            if to.is_none() || !matches!(report, Report::Refused) {
+            if !matches!(report, Report::Refused) {
                 break;
             }
             let drawn = match case.draw(&members[owner].hello().actions[action].drawn) {
@@ -321,11 +355,7 @@ impl Run<'_> {
                 drawn => drawn?,
             };
             let (from, input) = (&drawn[0], &drawn[1]);
-            line.input = [written(from), written(input)]
-                .into_iter()
-                .filter(|part| !part.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
+            line.input = vec![from.clone(), input.clone()];
             let call = Call {
                 line: members[owner].hello().actions[action].line,
                 input,
@@ -340,7 +370,7 @@ impl Run<'_> {
         let (mut next, added) = match report {
             Report::State(part, added) => (merged(real.clone(), part), added),
             Report::Refused => {
-                if to.is_some() && !empty {
+                if !empty {
                     self.refused.insert(verb);
                 }
                 return Ok(Stepped::Refused);
@@ -364,11 +394,24 @@ impl Run<'_> {
             }
         }
         let next = self.sized(case, next);
-        model.insert(object, to.unwrap_or_default());
-        let applies = self.c.applies(&self.first, real, &next, &verb);
         self.tally[rule].steps += 1;
-        self.tally[rule].checks += u64::from(applies);
-        let judged = self.c.judge(&self.first, real, &next, &verb);
+        self.tally[rule].checks += 1;
+        let error = members
+            .iter()
+            .flat_map(|m| &m.hello().errors)
+            .find(|(o, _)| *o == object)
+            .map(|(_, key)| key.clone());
+        let judged = self.d.stepped(
+            &object,
+            &verb,
+            error.as_deref(),
+            &Seen {
+                start: &self.first,
+                before: real,
+                after: &next,
+                input: line.input.last().unwrap_or(&Json::Null),
+            },
+        );
         line.state = next.clone();
         line.evidence = judged.clone().unwrap_or_default();
         self.trace.push(line);
@@ -381,15 +424,15 @@ impl Run<'_> {
         case: &mut Case,
         members: &mut Members,
     ) -> Result<Option<Vec<String>>, Halt> {
+        self.machine = false;
         let mut real = match self.started(case, members)? {
             Ok(real) => real,
             Err(evidence) => return Ok(Some(evidence)),
         };
-        let mut model = self.d.init.clone();
         if case.chance(PATH)? {
             let path: Vec<usize> = self
                 .d
-                .steps
+                .path
                 .iter()
                 .filter_map(|s| {
                     self.steps
@@ -398,21 +441,32 @@ impl Run<'_> {
                 })
                 .collect();
             for rule in path {
-                match self.step(case, members, rule, &mut real, &mut model)? {
-                    Stepped::Next => {}
+                let failed = match self.step(case, members, rule, &mut real)? {
+                    Stepped::Next => self.judged(case, Some(rule), &real)?,
                     Stepped::Refused => return Err(Halt::Invalid),
-                    Stepped::Failed(evidence) => return Ok(Some(evidence)),
+                    Stepped::Failed(evidence) => Some(evidence),
+                };
+                if failed.is_some() {
+                    return Ok(failed);
                 }
             }
             return Ok(None);
         }
         let rules: Vec<String> = self.tally.iter().map(|t| t.step.clone()).collect();
-        case.machine(&rules, STEPS)?;
+        let invariants: Vec<String> = self
+            .d
+            .invariants()
+            .into_iter()
+            .map(|i| i.name.clone())
+            .collect();
+        case.machine(&rules, &invariants, STEPS)?;
+        self.machine = true;
         while case.round()? {
             let mut rejected = false;
+            let mut last = None;
             while let Some(rule) = case.rule()? {
-                match self.step(case, members, rule, &mut real, &mut model)? {
-                    Stepped::Next => {}
+                match self.step(case, members, rule, &mut real)? {
+                    Stepped::Next => last = Some(rule),
                     Stepped::Refused => {
                         case.rejected()?;
                         rejected = true;
@@ -424,6 +478,9 @@ impl Run<'_> {
                 }
             }
             case.close(rejected)?;
+            if let Some(evidence) = self.judged(case, last, &real)? {
+                return Ok(Some(evidence));
+            }
         }
         case.close(false)?;
         Ok(None)
@@ -491,8 +548,8 @@ pub fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
     })
 }
 
-fn owners(d: &Diagram, c: &Check, members: &Members) -> Result<Vec<Step>, String> {
-    if let Some((o, k)) = c.reads().into_iter().find(|(o, k)| {
+fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
+    if let Some((o, k)) = d.keys().into_iter().find(|(o, k)| {
         let tag = format!("{o}.{k}");
         let counted = d
             .objects
@@ -501,18 +558,15 @@ fn owners(d: &Diagram, c: &Check, members: &Members) -> Result<Vec<Step>, String
         !counted && !members.iter().any(|m| m.hello().reads.contains(&tag))
     }) {
         return Err(format!(
-            "the check reads `{o}.{k}`, and no schema has the annotation `read: {o}.{k}`"
+            "the diagram names `{o}.{k}`, and no schema has the annotation `read: {o}.{k}`"
         ));
     }
     if members.iter().all(|m| m.hello().start.is_empty()) {
         return Err("no runner has a `start`".into());
     }
-    let mut steps: Vec<Step> = Vec::new();
-    for o in &d.objects {
-        for m in &o.moves {
-            if steps.iter().any(|s| s.verb == m.verb && s.object == o.name) {
-                continue;
-            }
+    d.verbs()
+        .into_iter()
+        .map(|(object, verb)| {
             let found: Vec<(usize, usize)> = members
                 .iter()
                 .enumerate()
@@ -522,34 +576,24 @@ fn owners(d: &Diagram, c: &Check, members: &Members) -> Result<Vec<Step>, String
                         .actions
                         .iter()
                         .enumerate()
-                        .filter(|(_, action)| action.verb == m.verb)
+                        .filter(|(_, action)| action.verb == verb)
                         .map(move |(action, _)| (owner, action))
                 })
                 .collect();
             match found.as_slice() {
-                [(owner, action)] => steps.push(Step {
-                    verb: m.verb.clone(),
-                    object: o.name.clone(),
+                [(owner, action)] => Ok(Step {
+                    verb: verb.to_string(),
+                    object: object.to_string(),
                     owner: *owner,
                     action: *action,
                 }),
-                [] => {
-                    return Err(format!(
-                        "the verb `{0}` has no `run` line of the verb `{0}`",
-                        m.verb
-                    ));
-                }
-                _ => {
-                    return Err(format!(
-                        "the verb `{}` has {} `run` lines",
-                        m.verb,
-                        found.len()
-                    ));
-                }
+                [] => Err(format!(
+                    "the verb `{verb}` has no `run` line of the verb `{verb}`"
+                )),
+                _ => Err(format!("the verb `{verb}` has {} `run` lines", found.len())),
             }
-        }
-    }
-    Ok(steps)
+        })
+        .collect()
 }
 
 pub fn simulate(
@@ -558,11 +602,9 @@ pub fn simulate(
     cases: u64,
     key: Option<&str>,
 ) -> Result<Outcome, String> {
-    let c = d.check.as_ref().ok_or("needs `check`")?;
-    let steps = owners(d, c, members)?;
+    let steps = owners(d, members)?;
     let mut run = Run {
         d,
-        c,
         tally: steps
             .iter()
             .map(|s| Tally {
@@ -573,6 +615,7 @@ pub fn simulate(
             .collect(),
         steps,
         sized: members.iter().any(|m| m.hello().sized),
+        machine: false,
         runs: 0,
         added: 0,
         first: State::new(),
@@ -600,6 +643,17 @@ pub fn simulate(
     {
         return Err(format!(
             "each input of `{refused}` fails the schema of its function"
+        ));
+    }
+    if let Some(unrun) = run
+        .tally
+        .iter()
+        .filter(|t| t.steps == 0 && !ended.failed)
+        .map(verb)
+        .next()
+    {
+        return Err(format!(
+            "each `on` line runs in one case or more, and `on \"{unrun}\"` runs in none"
         ));
     }
     let ran = Ran {

@@ -6,7 +6,7 @@ use std::ffi::c_char;
 use std::ptr;
 
 use weft_draw::{Code, Theme};
-use weft_parse::{Diagram, Verdict};
+use weft_parse::Diagram;
 use weft_wire::{DONE, JOIN, TURN};
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -31,17 +31,6 @@ pub enum weft_format_t {
     WEFT_FORMAT_SVG_LIGHT = 0,
     WEFT_FORMAT_SVG_DARK = 1,
     WEFT_FORMAT_ASCII = 2,
-}
-#[repr(C)]
-pub enum weft_status_t {
-    WEFT_STATUS_NO_CHECK = 0,
-    WEFT_STATUS_PASSES = 1,
-    WEFT_STATUS_FAILS = 2,
-}
-#[repr(C)]
-pub struct weft_verdict_t {
-    pub status: u32,
-    pub step: usize,
 }
 pub struct WeftContext {
     last_error: Box<[u8]>,
@@ -174,37 +163,6 @@ pub unsafe extern "C" fn weft_render(
             WEFT_E_RENDER
         }
     }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn weft_check(
-    ctx: *mut WeftContext,
-    config: weft_string_t,
-    source: weft_string_t,
-    out_verdict: *mut weft_verdict_t,
-) -> weft_result_t {
-    let d = match unsafe { diagram(ctx, "weft_check", config, source) } {
-        Ok(d) => d,
-        Err(rc) => return rc,
-    };
-    let Some(out) = (unsafe { out_verdict.as_mut() }) else {
-        set_error(ctx, "weft_check: out_verdict is NULL");
-        return WEFT_E_INVALID_ARG;
-    };
-    *out = match d.verdict() {
-        None => weft_verdict_t {
-            status: weft_status_t::WEFT_STATUS_NO_CHECK as u32,
-            step: 0,
-        },
-        Some(Verdict::Passes) => weft_verdict_t {
-            status: weft_status_t::WEFT_STATUS_PASSES as u32,
-            step: 0,
-        },
-        Some(Verdict::Fails { step, .. }) => weft_verdict_t {
-            status: weft_status_t::WEFT_STATUS_FAILS as u32,
-            step,
-        },
-    };
-    WEFT_OK
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_owned_string_free(

@@ -1,5 +1,4 @@
 mod bun;
-mod setup;
 mod transport;
 
 use std::path::{Component, Path, PathBuf};
@@ -9,17 +8,15 @@ use serde_json::{Value as Json, json};
 use weft_parse::{Adapter, Config, Diagram, Name, Role};
 use weft_simulator::{Member, Outcome, simulate};
 
-use setup::Setup;
 use transport::{HUB, listen};
 
 const WAIT: Duration = Duration::from_secs(60);
 
 fn verbs(d: &Diagram) -> Vec<String> {
     let mut all: Vec<String> = d
-        .objects
-        .iter()
-        .flat_map(|o| &o.moves)
-        .map(|m| m.verb.clone())
+        .verbs()
+        .into_iter()
+        .map(|(_, verb)| verb.to_string())
         .collect();
     all.sort_unstable();
     all.dedup();
@@ -76,9 +73,6 @@ pub fn run(
     key: Option<&str>,
 ) -> Result<Outcome, String> {
     let file = file.strip_prefix(".").unwrap_or(file);
-    if (&config.transport, &config.adapter) == (&None, &Adapter::Default) {
-        return simulate(d, &mut [Box::new(Setup::new(d, file))], config.cases, key);
-    }
     if d.impls.is_empty() {
         return Err("a runner needs `impl \"<adapter>\" { … }` in the diagram".into());
     }
@@ -127,27 +121,13 @@ mod tests {
 setup {
   person "user"
   browser "page" count=0 {DRAW
-    state count=0 {
-      on "send" count=1
-    }
-    state count=1 {
-      on "reload" count=1
-    }
+    on "send" count=(input)"n"
+    on "reload"
   }
 }
 action {
   send from="user" to="page"
-  reload from="user" to="page" page.count=0
-}
-check {
-  invariant {
-    forall "browser" "page" {
-      implies {
-        in "step" "reload"
-        eq (next)"browser.count" "browser.count"
-      }
-    }
-  }
+  reload from="user" to="page"
 }
 impl "bun" {
   module "page" "../src/page.ts"
@@ -166,28 +146,19 @@ setup {
   person "user"
   browser "page" count=0 opened=0 {
     pool "opened"
-    state count=0 opened=0 {
-      on "open" count=1 opened=1
-    }
-    state count=1 opened=1 {
-      on "open" count=1 opened=1
-      on "close" count=0 opened=0
+    on "open" count=(next)"page.count" opened=(next)"page.opened"
+    on "close" count=(next)"page.count" opened=(next)"page.opened"
+    invariant "closed" {
+      implies {
+        eq "page.opened" 0
+        eq "page.count" (start)"page.count"
+      }
     }
   }
 }
 action {
   open from="user" to="page"
-  close from="user" to="page" page.count=1
-}
-check {
-  invariant {
-    forall "browser" "page" {
-      implies {
-        eq (next)"browser.opened" 0
-        eq (next)"browser.count" (start)"browser.count"
-      }
-    }
-  }
+  close from="user" to="page"
 }
 impl "bun" {
   module "page" "../src/page.ts"
@@ -421,10 +392,7 @@ impl "bun" {
     }
 
     fn steps(o: &Outcome) -> Vec<(String, String)> {
-        o.trace
-            .iter()
-            .map(|l| (l.step(), l.input.clone()))
-            .collect()
+        o.trace.iter().map(|l| (l.step(), l.input())).collect()
     }
 
     #[test]
@@ -498,9 +466,9 @@ impl "bun" {
         assert_eq!(
             o.trace[2].evidence,
             [
-                "browser = page",
+                "invariant \"closed\" { implies(eq(page.opened, 0), eq(page.count, start(page.count))) }",
                 "eq(0, 0) = true",
-                "eq(next(browser.count), start(browser.count)) = eq(6, 0) = false"
+                "eq(page.count, start(page.count)) = eq(6, 0) = false"
             ]
         );
         Ok(())
@@ -515,17 +483,6 @@ impl "bun" {
             reloader_with_no_change,
         )?;
         assert!(!o.failed);
-        Ok(())
-    }
-
-    #[test]
-    fn the_setup_adapter_runs_the_diagram_without_the_code() -> Result<(), String> {
-        let config = weft_parse::config(&format!("{CONFIG}adapter \"default\" cases=50\n"))
-            .map_err(|e| e.to_string())?;
-        let d = weft_parse::parse(&PAGE.replace("DRAW", ""), &config).map_err(|e| e.to_string())?;
-        let o = run(&config, &d, Path::new(FILE), None)?;
-        assert!(!o.failed);
-        assert_eq!(o.cases, 50);
         Ok(())
     }
 

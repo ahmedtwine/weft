@@ -1,5 +1,6 @@
-use std::{cmp::Reverse, ffi::OsStr, fs, iter, path::Path};
+use std::{cmp::Reverse, collections::BTreeSet, ffi::OsStr, fs, iter, path::Path};
 
+use serde_json::{Value as Json, json};
 use weft_draw::{Card, Code};
 use weft_parse::{Ran, Span, State};
 use weft_simulator::Outcome;
@@ -13,6 +14,7 @@ const GUTTER: usize = 8;
 const NARROWEST: usize = 24;
 const WIDEST: usize = 52;
 const LINES: usize = 6;
+const SHORT: usize = 32;
 
 pub fn kinds(ran: &Ran) -> Vec<(&str, &[Span])> {
     iter::once((START, ran.start.as_slice()))
@@ -169,29 +171,24 @@ pub fn code(ran: &Ran, path: &str) -> Result<Code, String> {
     })
 }
 
-fn row(name: &str, value: &str) -> String {
-    format!(
-        r#"<tr><td class="text-light">{}</td><td>{value}</td></tr>"#,
-        escape(name)
-    )
+fn at<'a>(state: &'a State, object: &str, key: &str) -> Option<&'a Json> {
+    state.get(object)?.get(key)
 }
 
-fn state(now: &State, before: Option<&State>) -> String {
-    now.iter()
-        .flat_map(|(object, pairs)| {
-            pairs.iter().map(move |(key, value)| {
-                let was = before.and_then(|b| b.get(object)?.get(key));
-                let shown = escape(&value.to_string());
-                row(
-                    &format!("{object}.{key}"),
-                    &match was.is_some_and(|w| w != value) {
-                        true => format!("<mark>{shown}</mark>"),
-                        false => shown,
-                    },
-                )
-            })
-        })
-        .collect()
+fn cell(value: &Json, changed: bool) -> String {
+    let shown = match value {
+        Json::String(s) if s.is_empty() => "\"\"".to_string(),
+        Json::String(s) if s.chars().count() <= SHORT => escape(s),
+        Json::String(_) | Json::Array(_) | Json::Object(_) => format!(
+            r#"<pretty-json expand="0" truncate-string="{SHORT}">{}</pretty-json>"#,
+            escape(&value.to_string())
+        ),
+        other => other.to_string(),
+    };
+    match changed {
+        true => format!("<td><mark>{shown}</mark></td>"),
+        false => format!("<td>{shown}</td>"),
+    }
 }
 
 pub fn panel(o: &Outcome) -> Result<String, String> {
@@ -199,7 +196,17 @@ pub fn panel(o: &Outcome) -> Result<String, String> {
         |name: &str| weft_draw::icon(name).ok_or_else(|| format!("`{name}` is not a Lucide icon"));
     let (pass, fail) = (icon(PASS)?, icon(FAIL)?);
     let last = o.trace.len().saturating_sub(1);
-    let mut steps: Vec<String> = o
+    let keys: BTreeSet<(&String, &String)> = o
+        .trace
+        .iter()
+        .flat_map(|l| &l.state)
+        .flat_map(|(object, pairs)| pairs.keys().map(move |key| (object, key)))
+        .collect();
+    let head: String = keys
+        .iter()
+        .map(|(object, key)| format!("<th>{}</th>", escape(&format!("{object}.{key}"))))
+        .collect();
+    let rows: String = o
         .trace
         .iter()
         .enumerate()
@@ -208,33 +215,37 @@ pub fn panel(o: &Outcome) -> Result<String, String> {
                 true => (r#" class="e""#, fail),
                 false => ("", pass),
             };
-            let label = match k {
-                0 => "Start".to_string(),
-                k => format!("Step {k}"),
+            let inputs: Vec<&Json> = l.input.iter().filter(|i| !i.is_null()).collect();
+            let input = match inputs.as_slice() {
+                [] => "<td></td>".to_string(),
+                [one] => cell(one, false),
+                many => cell(&json!(many), false),
             };
-            let action = l.action.as_ref().map_or(String::new(), |(verb, object)| {
-                row("step", &format!("{} {}", escape(verb), escape(object)))
-            });
-            let input = match l.input.is_empty() {
-                true => String::new(),
-                false => row("input", &escape(&l.input)),
-            };
-            let check = match l.evidence.is_empty() {
-                true => "true".to_string(),
-                false => l
-                    .evidence
+            let before = k.checked_sub(1).map(|b| &o.trace[b].state);
+            let state: String = keys
+                .iter()
+                .map(|(object, key)| {
+                    match at(&l.state, object, key) {
+                        Some(value) => cell(
+                            value,
+                            before.is_some_and(|before| at(before, object, key) != Some(value)),
+                        ),
+                        None => "<td></td>".to_string(),
+                    }
+                })
+                .collect();
+            format!(
+                r#"<tr{class}><td><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{drawn}</svg> {k}</td><td>{}</td>{input}{state}<td>{}</td></tr>"#,
+                escape(&l.step()),
+                l.evidence
                     .iter()
                     .map(|e| escape(e))
                     .collect::<Vec<_>>()
-                    .join("<br>"),
-            };
-            format!(
-                r#"<details{class}><summary><span class="hstack gap-2"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{drawn}</svg>{label}</span></summary><div class="table"><table><tbody>{action}{input}{}{}</tbody></table></div></details>"#,
-                state(&l.state, k.checked_sub(1).map(|b| &o.trace[b].state)),
-                row("check", &check)
+                    .join("<br>")
             )
         })
         .collect();
-    steps.rotate_right(usize::from(o.failed));
-    Ok(format!("<aside>{}</aside>", steps.concat()))
+    Ok(format!(
+        r#"<div class="table t"><table><thead><tr><th>step</th><th>action</th><th>input</th>{head}<th>check</th></tr></thead><tbody>{rows}</tbody></table></div>"#
+    ))
 }

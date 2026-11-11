@@ -1,6 +1,6 @@
 use serde_json::{Value as Json, json};
 use weft_hegel::{Annotation, Bound, Generator};
-use weft_parse::{Draw, Value};
+use weft_parse::Draw;
 
 const SHAPED: [&str; 7] = ["type", "enum", "const", "anyOf", "oneOf", "allOf", "not"];
 const ANY: &str = "";
@@ -206,15 +206,7 @@ fn narrow(g: &mut Generator, at: &mut Vec<String>, draw: &Draw, values: &[Json])
 }
 
 pub fn narrowed(mut g: Generator, draw: &Draw) -> (Generator, usize) {
-    let values: Vec<Json> = draw
-        .values
-        .iter()
-        .map(|v| match v {
-            Value::Text(s) => json!(s),
-            Value::Int(n) => json!(*n as i64),
-        })
-        .collect();
-    let found = narrow(&mut g, &mut Vec::new(), draw, &values);
+    let found = narrow(&mut g, &mut Vec::new(), draw, &draw.values);
     (g, found)
 }
 
@@ -599,7 +591,7 @@ mod tests {
     fn draw(path: &str, values: &[&str]) -> Draw {
         Draw {
             path: path.split('.').map(String::from).collect(),
-            values: values.iter().map(|v| Value::Text(v.to_string())).collect(),
+            values: values.iter().map(|v| json!(v)).collect(),
             keys: false,
         }
     }

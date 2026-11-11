@@ -6,7 +6,7 @@ use merman::ascii::AsciiRenderOptions;
 use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest};
 use serde_json::Value;
 use vendor::lucide::ICONS;
-use weft_parse::{Diagram, Verdict};
+use weft_parse::Diagram;
 
 const WRAP: usize = 24;
 const PAD: f64 = 10.0;
@@ -31,8 +31,6 @@ pub struct Palette {
     pub muted: &'static str,
     pub surface: &'static str,
     pub border: &'static str,
-    pub critical: &'static str,
-    fail: &'static str,
 }
 
 const LIGHT: Palette = Palette {
@@ -41,8 +39,6 @@ const LIGHT: Palette = Palette {
     muted: "#6e6e6e",
     surface: "#f6f6f6",
     border: "#c4c4c4",
-    critical: "#e45756",
-    fail: "#fbe4e3",
 };
 
 const DARK: Palette = Palette {
@@ -51,16 +47,12 @@ const DARK: Palette = Palette {
     muted: "#9a9a9a",
     surface: "#202020",
     border: "#4a4a4a",
-    critical: "#f06b6a",
-    fail: "#3d2222",
 };
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Initial,
-    State,
-    Check,
-    Broken,
+    Rule,
 }
 
 pub struct Card {
@@ -85,8 +77,6 @@ struct Plan<'a> {
     heads: Vec<Vec<String>>,
     notes: Vec<Note<'a>>,
     initial: Vec<(usize, String)>,
-    rects: usize,
-    failed: Option<usize>,
     svg: bool,
 }
 
@@ -145,11 +135,7 @@ fn col(d: &Diagram, name: &str) -> usize {
 
 fn order(d: &Diagram) -> Vec<usize> {
     let mut seen = Vec::new();
-    let steps = d.steps.iter().flat_map(|s| {
-        [col(d, &s.from), col(d, &s.to)]
-            .into_iter()
-            .chain(s.set.iter().map(|(o, _)| col(d, o)))
-    });
+    let steps = d.path.iter().flat_map(|s| [col(d, &s.from), col(d, &s.to)]);
     for i in steps.chain(0..d.objects.len()) {
         if !seen.contains(&i) {
             seen.push(i);
@@ -161,8 +147,7 @@ fn order(d: &Diagram) -> Vec<usize> {
 fn stereotype(kind: Kind) -> &'static str {
     match kind {
         Kind::Initial => "«initial»",
-        Kind::State => "«state»",
-        Kind::Check | Kind::Broken => "«check»",
+        Kind::Rule => "«on»",
     }
 }
 
@@ -193,8 +178,6 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
         heads: Vec::new(),
         notes: Vec::new(),
         initial: Vec::new(),
-        rects: 0,
-        failed: None,
         svg,
     };
     if svg {
@@ -238,19 +221,7 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
         card(&mut p, format!("o{first},o{last}"), start);
     }
     let mut placed: Vec<&str> = Vec::new();
-    let failed = match d.verdict() {
-        Some(Verdict::Fails { step, .. }) => Some(step),
-        _ => None,
-    };
-    p.failed = failed;
-    let checks = d.checks();
-    for (k, s) in d.steps.iter().enumerate() {
-        let here = failed == Some(k);
-        let checked: Vec<_> = checks.iter().filter(|(at, _)| *at == k).collect();
-        if here {
-            let _ = writeln!(p.source, "  rect rgb(0, 0, 0)");
-            p.rects += 1;
-        }
+    for s in &d.path {
         let _ = writeln!(
             p.source,
             "  o{}->>o{}: {}",
@@ -270,33 +241,17 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
                 found,
             );
         }
-        for (object, value) in s
-            .set
-            .iter()
-            .filter(|(o, _)| !checked.iter().any(|(_, m)| &m.object == o))
-        {
-            note(
-                &mut p,
-                format!("o{}", col(d, object)),
-                weft_parse::shown(value),
-                Kind::State,
-            );
-        }
-        for (_, m) in &checked {
-            let kind = match m.passed {
-                true => Kind::Check,
-                false => Kind::Broken,
-            };
-            note(
-                &mut p,
-                format!("o{}", col(d, &m.object)),
-                m.text.clone(),
-                kind,
-            );
-        }
-        if here {
-            let _ = writeln!(p.source, "  end");
-        }
+        let rules: Vec<String> = d
+            .rules(&s.to, &s.verb)
+            .into_iter()
+            .map(|rule| rule.source())
+            .collect();
+        note(
+            &mut p,
+            format!("o{}", col(d, &s.to)),
+            rules.join("\n"),
+            Kind::Rule,
+        );
     }
     p
 }
@@ -458,16 +413,6 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x0:.1} {y0:.1} {w:.1} {h:.1}" width="{w:.0}" height="{h:.0}" style="max-width:100%;height:auto" font-family="{FONT}" font-size="13"><rect x="{x0:.1}" y="{y0:.1}" width="{w:.1}" height="{h:.1}" fill="{}"/>"#,
         p.bg
     );
-    for n in sorted(&nodes, "rect-").into_iter().take(plan.rects) {
-        let (nw, nh) = (num(n, "width"), num(n, "height"));
-        let _ = write!(
-            out,
-            r#"<rect x="{:.1}" y="{:.1}" width="{nw:.1}" height="{nh:.1}" rx="6" fill="{}"/>"#,
-            num(n, "x") - nw / 2.0,
-            num(n, "y") - nh / 2.0,
-            p.fail
-        );
-    }
     for e in edges.iter().filter(|e| {
         e["id"]
             .as_str()
@@ -491,7 +436,7 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
         .collect();
     for (k, e) in sorted(&edges, "msg-").into_iter().enumerate() {
         let pts = points(e);
-        let (Some(&(ax, ay)), Some(s)) = (pts.first(), d.steps.get(k)) else {
+        let (Some(&(ax, ay)), Some(s)) = (pts.first(), d.path.get(k)) else {
             continue;
         };
         let (path, prev, end, mid) = match (s.from == s.to, pts.as_slice()) {
@@ -522,15 +467,13 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
             ),
             (false, _) => continue,
         };
-        let failed = plan.failed == Some(k);
-        let ink = if failed { p.critical } else { p.fg };
+        let ink = p.fg;
         let _ = write!(
             out,
             r#"<path d="{path}" fill="none" stroke="{ink}" stroke-width="1.25"/>"#
         );
         arrow(&mut out, prev, end, ink);
-        let ink_tag = if failed { p.critical } else { p.muted };
-        tag(&mut out, mid, &format!("«{}»", s.verb), ink_tag, p.bg);
+        tag(&mut out, mid, &format!("«{}»", s.verb), p.muted, p.bg);
         let _ = write!(
             out,
             r#"<circle cx="{ax:.1}" cy="{ay:.1}" r="8.5" fill="{ink}"/><text x="{ax:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="700" fill="{}">{}</text>"#,
@@ -564,14 +507,6 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
                     );
                 }
             }
-            Note::Text(text, Kind::Broken) => node(
-                &mut out,
-                (x, y),
-                Kind::Broken,
-                text,
-                (p.critical, p.critical),
-                p,
-            ),
             Note::Text(text, kind) => node(&mut out, (x, y), *kind, text, (p.border, p.fg), p),
         }
     }
@@ -675,31 +610,18 @@ mod tests {
 setup {
   person "agent"
   browser "page" snapshot="snap_0" {
-    state snapshot="snap_0" {
-      on "click" snapshot="snap_1"
-    }
-    state snapshot="snap_1"
+    on "click" snapshot="snap_1"
   }
   element "origin" value="San Diego" {
-    state value="San Diego" {
-      on "type" value="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
+    on "type" value="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
+    invariant "shown" {
+      neq "origin.value" ""
     }
-    state value="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
   }
 }
 action {
   type from="agent" to="origin"
-  click from="agent" to="page" origin.value="San Diego"
-}
-check {
-  invariant {
-    forall "element" "origin" {
-      implies {
-        in "step" "click"
-        eq (next)"element.value" "element.value"
-      }
-    }
-  }
+  click from="agent" to="page"
 }
 "#;
 

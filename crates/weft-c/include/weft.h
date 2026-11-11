@@ -17,12 +17,6 @@ typedef enum {
   WEFT_FORMAT_ASCII = 2,
 } weft_format_t;
 
-typedef enum {
-  WEFT_STATUS_NO_CHECK = 0,
-  WEFT_STATUS_PASSES = 1,
-  WEFT_STATUS_FAILS = 2,
-} weft_status_t;
-
 typedef struct weft_context_t weft_context_t;
 
 typedef struct {
@@ -31,11 +25,6 @@ typedef struct {
 } weft_string_t;
 
 typedef weft_string_t weft_owned_string_t;
-
-typedef struct {
-  uint32_t status;
-  size_t step;
-} weft_verdict_t;
 
 weft_context_t *weft_context_new(void);
 
@@ -48,11 +37,6 @@ weft_result_t weft_render(weft_context_t *ctx,
                           weft_string_t source,
                           uint32_t format,
                           weft_owned_string_t *out_result);
-
-weft_result_t weft_check(weft_context_t *ctx,
-                         weft_string_t config,
-                         weft_string_t source,
-                         weft_verdict_t *out_verdict);
 
 weft_result_t weft_owned_string_free(weft_context_t *ctx, weft_owned_string_t *result);
 
