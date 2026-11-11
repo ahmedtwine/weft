@@ -2753,4 +2753,137 @@ impl "bun" {
             ),
         ]);
     }
+
+    #[test]
+    fn a_file_of_weft_has_one_form_for_each_name_and_each_value() {
+        let value = |found: &str, line: &str| {
+            format!("`{found}` of `{line}` is not a value of weft: {FORM}")
+        };
+        let line = |name: &str| format!("`{name}` is not a line of weft: {FORM}");
+        let cases = [
+            (
+                "person \"user\"",
+                "person user",
+                Err(value("user", "person")),
+            ),
+            (
+                "type from=\"user\"",
+                "type from=user",
+                Err(value("from=user", "type")),
+            ),
+            (
+                "person \"user\"",
+                "person #\"user\"#",
+                Err(value("#\"user\"#", "person")),
+            ),
+            (
+                "person \"user\"",
+                "person \"\"\"\n    user\n    \"\"\"",
+                Err(value("\"\"\"\n    user\n    \"\"\"", "person")),
+            ),
+            (
+                "person \"user\"",
+                "person \"user\" agent=#true",
+                Err(value("agent=#true", "person")),
+            ),
+            (
+                "element \"origin\" value=",
+                "element \"origin\" \"value\"=",
+                Err(value("\"value\"=\"San Francisco\"", "element")),
+            ),
+            (
+                "person \"user\"",
+                "\"person\" \"user\"",
+                Err(line("person")),
+            ),
+            (
+                "person \"user\"",
+                "(kind)person \"user\"",
+                Err(line("person")),
+            ),
+            (
+                "person \"user\"\n",
+                "person \"user\";\n",
+                Err(line("person")),
+            ),
+            (
+                "type from=\"user\" to=\"origin\"",
+                "type from=\"user\" \\\n    to=\"origin\"",
+                Ok(()),
+            ),
+        ];
+        for (from, to, want) in cases {
+            assert_eq!(built(BASE, from, to), want, "{to}");
+        }
+    }
+
+    #[test]
+    fn a_draw_block_has_the_values_of_each_key_of_an_input() {
+        let block = "    pool \"opened\"\n    draw {\n      id 1 2\n      attributes {\n        class \"a\" \"b\"\n        title\n      }\n    }\n";
+        let d = parse(
+            &POOL.replacen("    pool \"opened\"\n", block, 1),
+            &config(CONFIG).unwrap(),
+        )
+        .unwrap();
+        let draws: Vec<(String, Vec<String>, bool)> = d.objects[1]
+            .draws
+            .iter()
+            .map(|d| {
+                (
+                    d.path.join("."),
+                    d.values.iter().map(Value::quint).collect(),
+                    d.keys,
+                )
+            })
+            .collect();
+        let draw = |path: &str, values: &[&str], keys: bool| {
+            (
+                path.to_string(),
+                values.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+                keys,
+            )
+        };
+        assert_eq!(
+            draws,
+            [
+                draw("id", &["1", "2"], false),
+                draw("attributes", &["\"class\"", "\"title\""], true),
+                draw("attributes.class", &["\"a\"", "\"b\""], false),
+                draw("attributes.title", &[], false),
+            ]
+        );
+        let at = |e: &str| Err(format!("browser page: {e}"));
+        let cases = [
+            ("      id 1 2\n", "      id 1 1\n", at("`id` of `draw` has `1` twice")),
+            (
+                "      id 1 2\n",
+                "      id 1\n      id 2\n",
+                at("`draw` sets `id` twice"),
+            ),
+            ("      attributes {\n", "      attributes \"a\" {\n", at(DRAW)),
+            ("    draw {\n", "    draw \"id\" {\n", at(DRAW)),
+            (
+                "    draw {\n",
+                "    draw {\n      n 1\n    }\n    draw {\n",
+                at("has one `draw`"),
+            ),
+            (
+                "verb=\"close\"",
+                "verb=\"shut\"",
+                Err(
+                    r#"`run "opened" verb="shut" consume="opened"` names the verb `shut`, and no object of `setup` has `on shut`"#
+                        .to_string(),
+                ),
+            ),
+            (
+                "  module \"page\" \"../src/page.ts\"\n",
+                "  module \"page\" \"../src/page.ts\"\n  module \"other\" \"../src/other.ts\"\n",
+                Err("no line of `impl bun` names `module \"other\"`".to_string()),
+            ),
+        ];
+        let base = POOL.replacen("    pool \"opened\"\n", block, 1);
+        for (from, to, want) in cases {
+            assert_eq!(built(&base, from, to), want, "{to}");
+        }
+    }
 }
