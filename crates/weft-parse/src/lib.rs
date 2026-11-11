@@ -54,6 +54,7 @@ pub enum Role {
 pub struct Draw {
     pub path: Vec<String>,
     pub values: Vec<Value>,
+    pub keys: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +65,10 @@ pub struct Name {
 
 impl fmt::Display for Name {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}.{}", self.module, self.export)
+        match self.export.is_empty() {
+            true => f.write_str(&self.module),
+            false => write!(f, "{}.{}", self.module, self.export),
+        }
     }
 }
 
@@ -72,25 +76,43 @@ impl fmt::Display for Name {
 pub struct Use {
     pub role: Role,
     pub function: Name,
-    pub schema: Option<Name>,
-    pub tag: Option<String>,
+    pub input: Option<Name>,
+    pub output: Option<Name>,
     pub error: Option<Name>,
+    pub tag: Option<String>,
+    pub verb: Option<String>,
+    pub pool: Option<String>,
+    pub from: Option<(String, bool)>,
 }
 
 impl Use {
     pub fn line(&self) -> String {
-        let (role, key) = match self.role {
-            Role::Start => ("start", "input"),
-            Role::Read => ("read", "output"),
-            Role::Run => ("run", "input"),
+        let role = match self.role {
+            Role::Start => "start",
+            Role::Read => "read",
+            Role::Run => "run",
         };
-        match (&self.schema, &self.tag) {
-            (Some(schema), Some(tag)) => {
-                format!("`{role} {} {key}={schema} tag={tag}`", self.function)
-            }
-            (Some(schema), None) => format!("`{role} {} {key}={schema}`", self.function),
-            (None, _) => format!("`{role} {}`", self.function),
-        }
+        let named =
+            |key: &str, name: &Option<Name>| name.as_ref().map(|n| format!(" {key}=\"{n}\""));
+        let text =
+            |key: &str, text: &Option<String>| text.as_ref().map(|t| format!(" {key}=\"{t}\""));
+        let parts = [
+            named("input", &self.input),
+            named("output", &self.output),
+            named("error", &self.error),
+            text("tag", &self.tag),
+            text("verb", &self.verb),
+            text("pool", &self.pool),
+            self.from.as_ref().map(|(pool, consume)| match consume {
+                true => format!(" consume=\"{pool}\""),
+                false => format!(" from=\"{pool}\""),
+            }),
+        ];
+        format!(
+            "`{role} \"{}\"{}`",
+            self.function,
+            parts.into_iter().flatten().collect::<String>()
+        )
     }
 }
 
@@ -181,6 +203,7 @@ pub struct Object {
     pub states: Vec<Pairs>,
     pub moves: Vec<Move>,
     pub draws: Vec<Draw>,
+    pub pools: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -215,9 +238,16 @@ pub enum Op {
     Iuminus,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum At {
+    Now,
+    Next,
+    Start,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Field(String, bool),
+    Field(String, At),
     Value(Value),
     Step,
     App(Op, Vec<Expr>),
@@ -247,12 +277,12 @@ pub struct Check {
 pub struct Mark {
     pub object: String,
     pub text: String,
-    pub kept: bool,
+    pub passed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    Holds,
+    Passes,
     Fails { step: usize, evidence: Vec<String> },
 }
 
@@ -269,6 +299,7 @@ impl std::error::Error for Error {}
 
 #[derive(Clone, Copy)]
 struct Ctx<'a> {
+    start: &'a State,
     cur: &'a State,
     nxt: &'a State,
     verb: &'a str,
@@ -476,8 +507,9 @@ impl Op {
 impl Expr {
     fn leaf(&self, o: &str) -> Option<String> {
         match self {
-            Expr::Field(k, false) => Some(format!("{o}.{k}")),
-            Expr::Field(k, true) => Some(format!("next({o}.{k})")),
+            Expr::Field(k, At::Now) => Some(format!("{o}.{k}")),
+            Expr::Field(k, At::Next) => Some(format!("next({o}.{k})")),
+            Expr::Field(k, At::Start) => Some(format!("start({o}.{k})")),
             Expr::Value(v) => Some(v.quint()),
             Expr::Step => Some("step".into()),
             Expr::App(..) => None,
@@ -530,7 +562,8 @@ impl Expr {
             format!("{} {word} {}", all[0].english(o), list(&set, "or"))
         };
         match self {
-            Expr::Field(k, true) => format!("the next {o}.{k}"),
+            Expr::Field(k, At::Next) => format!("the next {o}.{k}"),
+            Expr::Field(k, At::Start) => format!("the start {o}.{k}"),
             Expr::App(op @ (Op::And | Op::Or), all) => each(all, &format!(", {} ", op.word())),
             Expr::App(Op::Implies, all) => format!("if {}", each(all, ", then ")),
             Expr::App(Op::In, all) => member(all, "is"),
@@ -540,10 +573,10 @@ impl Expr {
                 e => format!("not {}", e.english(o)),
             },
             Expr::App(Op::Eq, all) => match all.as_slice() {
-                [Expr::Field(k, true), Expr::Field(j, false)] if k == j => {
+                [Expr::Field(k, At::Next), Expr::Field(j, At::Now)] if k == j => {
                     format!("{o}.{k} stays unchanged")
                 }
-                [Expr::Field(k, true), b] => format!("{o}.{k} becomes {}", b.english(o)),
+                [Expr::Field(k, At::Next), b] => format!("{o}.{k} becomes {}", b.english(o)),
                 _ => each(all, " equals "),
             },
             Expr::App(op, all) if all.len() == 1 => format!("{}{}", op.word(), all[0].english(o)),
@@ -561,9 +594,10 @@ impl Expr {
                 .map(Lit::Bool)
         };
         match self {
-            Expr::Field(k, next) => match next {
-                true => c.nxt,
-                false => c.cur,
+            Expr::Field(k, at) => match at {
+                At::Now => c.cur,
+                At::Next => c.nxt,
+                At::Start => c.start,
             }
             .get(o)?
             .get(k)
@@ -592,15 +626,15 @@ impl Expr {
         }
     }
 
-    fn holds(&self, c: &Ctx, o: &str) -> bool {
+    fn passes(&self, c: &Ctx, o: &str) -> bool {
         self.truth(c, o) == Some(true)
     }
 
     fn guarded(&self, c: &Ctx, o: &str) -> bool {
         match self {
             Expr::App(Op::And | Op::Or, all) => all.iter().any(|e| e.guarded(c, o)),
-            Expr::App(Op::Implies, all) => all[0].holds(c, o),
-            Expr::App(Op::In, all) if matches!(all[0], Expr::Step) => self.holds(c, o),
+            Expr::App(Op::Implies, all) => all[0].passes(c, o),
+            Expr::App(Op::In, all) if matches!(all[0], Expr::Step) => self.passes(c, o),
             _ => true,
         }
     }
@@ -609,7 +643,7 @@ impl Expr {
         match self {
             Expr::App(Op::And, all) => all
                 .iter()
-                .find(|e| !e.holds(c, o))
+                .find(|e| !e.passes(c, o))
                 .map_or(self, |e| e.failed(c, o)),
             Expr::App(Op::Implies, all) => all[1].failed(c, o),
             e => e,
@@ -620,7 +654,7 @@ impl Expr {
         match self {
             Expr::App(Op::And, all) => all
                 .iter()
-                .find(|e| !e.holds(c, o))
+                .find(|e| !e.passes(c, o))
                 .map_or_else(Vec::new, |e| e.evidence(c, bound, o)),
             Expr::App(Op::Implies, all) => [
                 vec![format!("{} = true", all[0].valued(c, o))],
@@ -654,11 +688,11 @@ impl Expr {
             .collect()
     }
 
-    fn fields(&self) -> Vec<(&String, bool)> {
+    fn fields(&self) -> Vec<(&String, At)> {
         self.all()
             .into_iter()
             .filter_map(|e| match e {
-                Expr::Field(k, next) => Some((k, *next)),
+                Expr::Field(k, at) => Some((k, *at)),
                 _ => None,
             })
             .collect()
@@ -709,7 +743,7 @@ fn written(p: &Pairs) -> String {
 
 impl Check {
     fn stepped(&self) -> bool {
-        self.body.fields().iter().any(|(_, next)| *next)
+        self.body.fields().iter().any(|(_, at)| *at == At::Next)
     }
 
     fn now<'a>(&self, c: &Ctx<'a>) -> Ctx<'a> {
@@ -721,7 +755,7 @@ impl Check {
 
     fn broken(&self, c: &Ctx) -> Option<&String> {
         let now = self.now(c);
-        self.objects.iter().find(|o| !self.body.holds(&now, o))
+        self.objects.iter().find(|o| !self.body.passes(&now, o))
     }
 
     fn evidence(&self, c: &Ctx, o: &str) -> Vec<String> {
@@ -734,28 +768,44 @@ impl Check {
 
     fn mark(&self, c: &Ctx, o: &str) -> Option<Mark> {
         let now = self.now(c);
-        let kept = self.body.holds(&now, o);
+        let passed = self.body.passes(&now, o);
         let state = c.nxt.get(o).map_or(String::new(), shown);
         self.body.guarded(&now, o).then(|| Mark {
             object: o.to_string(),
-            text: match kept {
+            text: match passed {
                 true => state,
                 false => format!(
                     "{state}\n{} = false",
                     self.body.failed(&now, o).valued(&now, o)
                 ),
             },
-            kept,
+            passed,
         })
     }
 
-    pub fn judge(&self, cur: &State, nxt: &State, verb: &str) -> Option<Vec<String>> {
-        let c = Ctx { cur, nxt, verb };
+    pub fn judge(
+        &self,
+        start: &State,
+        cur: &State,
+        nxt: &State,
+        verb: &str,
+    ) -> Option<Vec<String>> {
+        let c = Ctx {
+            start,
+            cur,
+            nxt,
+            verb,
+        };
         self.broken(&c).map(|o| self.evidence(&c, o))
     }
 
-    pub fn applies(&self, cur: &State, nxt: &State, verb: &str) -> bool {
-        let c = Ctx { cur, nxt, verb };
+    pub fn applies(&self, start: &State, cur: &State, nxt: &State, verb: &str) -> bool {
+        let c = Ctx {
+            start,
+            cur,
+            nxt,
+            verb,
+        };
         let now = self.now(&c);
         self.objects.iter().any(|o| self.body.guarded(&now, o))
     }
@@ -834,6 +884,7 @@ impl Diagram {
         let mut out = Vec::new();
         for (k, (s, cur, nxt)) in self.walk().iter().enumerate() {
             let ctx = Ctx {
+                start: &self.init,
                 cur,
                 nxt,
                 verb: &s.verb,
@@ -852,6 +903,7 @@ impl Diagram {
         let c = self.check.as_ref()?;
         for (step, (s, cur, nxt)) in self.walk().iter().enumerate() {
             let ctx = Ctx {
+                start: &self.init,
                 cur,
                 nxt,
                 verb: &s.verb,
@@ -863,7 +915,7 @@ impl Diagram {
                 });
             }
         }
-        Some(Verdict::Holds)
+        Some(Verdict::Passes)
     }
 }
 
@@ -957,7 +1009,6 @@ fn name(n: &KdlNode) -> &str {
 fn text(v: &KdlValue) -> String {
     match v {
         KdlValue::String(s) => s.clone(),
-        KdlValue::Bool(b) => b.to_string(),
         other => other.to_string(),
     }
 }
@@ -1002,17 +1053,25 @@ fn pairs(n: &KdlNode) -> Result<Pairs, String> {
 }
 
 fn shape(n: &KdlNode, count: usize, allowed: &[&str], block: bool) -> Result<Vec<String>, String> {
-    if let Some(e) = n.entries().iter().find(|e| {
-        !matches!(
-            (e.name(), e.value()),
-            (_, KdlValue::String(_)) | (Some(_), KdlValue::Integer(_))
-        )
-    }) {
+    if let Some(e) = n
+        .entries()
+        .iter()
+        .find(|e| e.ty().is_some() || matches!((e.name(), e.value()), (None, KdlValue::Integer(_))))
+    {
         return Err(format!(
-            "`{}` takes strings, and integers as values, not `{}`",
+            "`{}` takes strings, and integers as values of keys, not `{}`",
             name(n),
             e.to_string().trim()
         ));
+    }
+    if let Some(k) = keys(n).into_iter().find(|k| {
+        n.entries()
+            .iter()
+            .filter(|e| e.name().is_some_and(|key| key.value() == *k))
+            .count()
+            > 1
+    }) {
+        return Err(format!("`{}` sets `{k}` twice", name(n)));
     }
     let given = args(n);
     if given.len() != count {
@@ -1026,7 +1085,7 @@ fn shape(n: &KdlNode, count: usize, allowed: &[&str], block: bool) -> Result<Vec
         return Err(format!("`{}` takes no `{k}`", name(n)));
     }
     if !block && n.children().is_some() {
-        return Err(format!("`{}` holds no lines", name(n)));
+        return Err(format!("`{}` has no lines", name(n)));
     }
     Ok(given)
 }
@@ -1060,7 +1119,7 @@ fn state(n: &KdlNode, o: &mut Object, src: &str) -> Result<(), String> {
             }
             other => {
                 return Err(format!(
-                    "`state {}` holds `on`, not `{other}`",
+                    "`state {}` has `on`, not `{other}`",
                     written(&full)
                 ));
             }
@@ -1105,6 +1164,7 @@ fn object(n: &KdlNode, config: &Config, src: &str) -> Result<Object, String> {
         states: Vec::new(),
         moves: Vec::new(),
         draws: Vec::new(),
+        pools: Vec::new(),
     };
     let stateless = !n.iter_children().any(|c| name(c) == "state");
     match (kind, o.initial.is_empty(), stateless) {
@@ -1128,10 +1188,21 @@ fn object(n: &KdlNode, config: &Config, src: &str) -> Result<Object, String> {
     for c in n.iter_children() {
         match name(c) {
             "state" => state(c, &mut o, src),
-            "draw" => draw(c).map(|d| o.draws.push(d)),
-            other => Err(format!("holds `state` and `draw`, not `{other}`")),
+            "draw" if !o.draws.is_empty() => Err("has one `draw`".into()),
+            "draw" => draw(c, &[], &mut o.draws),
+            "pool" => shape(c, 1, &[], false).map(|mut given| o.pools.push(given.remove(0))),
+            other => Err(format!("has `state`, `draw` and `pool`, not `{other}`")),
         }
         .map_err(at)?;
+    }
+    if let Some(pool) = o
+        .pools
+        .iter()
+        .find(|pool| matches!(o.initial.get(*pool), Some(Value::Text(_))))
+    {
+        return Err(at(format!(
+            "`{pool}` is the count of the values of `pool {pool}`, and a count is an integer"
+        )));
     }
     Ok(o)
 }
@@ -1157,27 +1228,53 @@ fn step(n: &KdlNode) -> Result<Step, String> {
     })
 }
 
-fn draw(n: &KdlNode) -> Result<Draw, String> {
-    let wrong = "`draw` takes `<key>.<key>… <value>…`, and a value is a string or an integer";
-    let plain = |e: &KdlEntry| {
-        e.name().is_none() && matches!(e.value(), KdlValue::String(_) | KdlValue::Integer(_))
-    };
-    if !n.entries().iter().all(plain) || n.children().is_some() {
-        return Err(wrong.into());
+const DRAW: &str = "`draw` has `<key> <value>…` lines; a line with `{ }` has the lines of the keys of its part, and no values";
+
+fn draw(n: &KdlNode, path: &[String], out: &mut Vec<Draw>) -> Result<(), String> {
+    if n.entries()
+        .iter()
+        .any(|e| e.name().is_some() || e.ty().is_some())
+    {
+        return Err(DRAW.into());
     }
-    match n.entries() {
-        [path, values @ ..] if !values.is_empty() => Ok(Draw {
-            path: path
-                .value()
-                .as_string()
-                .ok_or(wrong)?
-                .split('.')
-                .map(String::from)
-                .collect(),
-            values: values.iter().map(|e| value(e.value())).collect(),
+    let values: Vec<Value> = n.entries().iter().map(|e| value(e.value())).collect();
+    let keys: Vec<String> = lines(n).iter().map(|c| name(c).to_string()).collect();
+    let at = |key: &str| [path, &[key.to_string()]].concat().join(".");
+    if let Some(key) = keys
+        .iter()
+        .enumerate()
+        .find_map(|(i, key)| keys[..i].contains(key).then_some(key))
+    {
+        return Err(format!("`draw` sets `{}` twice", at(key)));
+    }
+    if let Some(value) = values
+        .iter()
+        .enumerate()
+        .find_map(|(i, value)| values[..i].contains(value).then_some(value))
+    {
+        return Err(format!(
+            "`{}` of `draw` has `{}` twice",
+            path.join("."),
+            value.quint()
+        ));
+    }
+    match (path.is_empty(), values.is_empty(), keys.is_empty()) {
+        (true, true, false) => {}
+        (false, true, false) => out.push(Draw {
+            path: path.to_vec(),
+            values: keys.iter().cloned().map(Value::Text).collect(),
+            keys: true,
         }),
-        _ => Err(wrong.into()),
+        (false, _, true) if n.children().is_none() => out.push(Draw {
+            path: path.to_vec(),
+            values,
+            keys: false,
+        }),
+        _ => return Err(DRAW.into()),
     }
+    lines(n)
+        .iter()
+        .try_for_each(|c| draw(c, &[path, &[name(c).to_string()]].concat(), out))
 }
 
 fn named(n: &KdlNode, text: &str) -> Result<Name, String> {
@@ -1194,31 +1291,68 @@ fn named(n: &KdlNode, text: &str) -> Result<Name, String> {
 }
 
 fn used(n: &KdlNode) -> Result<Use, String> {
-    let (role, schema, allowed): (Role, &str, &[&str]) = match name(n) {
-        "start" => (Role::Start, "input", &["input", "tag", "error"]),
-        "read" => (Role::Read, "output", &["output"]),
-        "run" => (Role::Run, "input", &["input", "error"]),
+    let (role, allowed): (Role, &[&str]) = match name(n) {
+        "start" => (Role::Start, &["input", "tag", "error", "pool"]),
+        "read" => (Role::Read, &["output"]),
+        "run" => (
+            Role::Run,
+            &[
+                "input", "output", "error", "verb", "pool", "from", "consume",
+            ],
+        ),
         other => {
             return Err(format!(
-                "`impl` holds `module`, `start`, `read` and `run`, not `{other}`"
+                "`impl` has `module`, `start`, `read` and `run`, not `{other}`"
             ));
         }
     };
     let function = shape(n, 1, allowed, false)?.remove(0);
-    let tag = n.get("tag").map(text);
-    if tag.is_some() && n.get(schema).is_none() {
-        return Err(format!("`{}` has a `tag` and no `input`", name(n)));
-    }
-    let given = match role {
-        Role::Start => n.get(schema).map(text),
-        Role::Read | Role::Run => Some(need(n, schema)?),
+    let given = |key: &str| n.get(key).map(text);
+    let schema = |key: &str| given(key).map(|s| named(n, &s)).transpose();
+    let from = match (given("from"), given("consume")) {
+        (Some(_), Some(_)) => Err("has `from` and `consume`, and a line takes one of them"),
+        (Some(pool), None) => Ok(Some((pool, false))),
+        (None, Some(pool)) => Ok(Some((pool, true))),
+        (None, None) => Ok(None),
+    };
+    let wrong = match (
+        role,
+        given("input"),
+        given("output"),
+        given("tag"),
+        given("verb"),
+    ) {
+        (_, None, _, Some(_), _) => Err("has a `tag` and no `input`"),
+        (Role::Read, _, None, ..) => Err("needs `output`"),
+        (Role::Run, None, _, _, None) => Err("needs `input` or `verb`"),
+        _ => from,
+    };
+    let from = wrong.map_err(|wrong| format!("`{}` {wrong}", name(n)))?;
+    let function = match &from {
+        None => named(n, &function)?,
+        Some((pool, _)) => match function.split_once('.').unwrap_or((&function, "")) {
+            (head, method) if head == pool => Name {
+                module: pool.clone(),
+                export: method.to_string(),
+            },
+            _ => {
+                return Err(format!(
+                    "`{} \"{function}\"` draws from the pool `{pool}`, and takes `\"{pool}\"` or `\"{pool}.<method>\"`",
+                    name(n)
+                ));
+            }
+        },
     };
     Ok(Use {
         role,
-        function: named(n, &function)?,
-        schema: given.map(|s| named(n, &s)).transpose()?,
-        tag,
-        error: n.get("error").map(|e| named(n, &text(e))).transpose()?,
+        function,
+        input: schema("input")?,
+        output: schema("output")?,
+        error: schema("error")?,
+        tag: given("tag"),
+        verb: given("verb"),
+        pool: given("pool"),
+        from,
     })
 }
 
@@ -1246,35 +1380,53 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
             _ => found.uses.push(used(c)?),
         }
     }
-    let names = found
+    let names: Vec<&Name> = found
         .uses
         .iter()
-        .flat_map(|u| [Some(&u.function), u.schema.as_ref(), u.error.as_ref()])
-        .flatten();
+        .flat_map(|u| {
+            [
+                u.from.is_none().then_some(&u.function),
+                u.input.as_ref(),
+                u.output.as_ref(),
+                u.error.as_ref(),
+            ]
+        })
+        .flatten()
+        .collect();
     if let Some(unknown) = names
-        .into_iter()
+        .iter()
         .find(|n| !found.modules.iter().any(|(module, _)| *module == n.module))
     {
         return Err(format!(
-            "`{unknown}` names `{}`, and `impl {}` holds no `module {}`",
+            "`{unknown}` names `{}`, and `impl {}` has no `module \"{}\"`",
             unknown.module, found.adapter, unknown.module
+        ));
+    }
+    if let Some((module, _)) = found
+        .modules
+        .iter()
+        .find(|(module, _)| !names.iter().any(|n| n.module == *module))
+    {
+        return Err(format!(
+            "no line of `impl {}` names `module \"{module}\"`",
+            found.adapter
         ));
     }
     match found.uses.iter().any(|u| u.role != Role::Start) {
         true => Ok(found),
         false => Err(format!(
-            "`impl {}` holds no `read` line and no `run` line",
+            "`impl {}` has no `read` line and no `run` line",
             found.adapter
         )),
     }
 }
 
-const CHECK: &str = "`invariant` holds `forall <kind> <object>… { <condition> }`; a condition is a Quint builtin `<op> <term>… { <op line>… }`: `and`, `or`, `not`, `implies`, `iff`, `eq`, `neq`, `in`, `ilt`, `ilte`, `igt`, `igte`, `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` or `iuminus`; a term is `<kind>.<key>`, `(next)<kind>.<key>`, `step`, or a value, and each comparison names at least one `<kind>.<key>` or `step`";
+const CHECK: &str = "`invariant` has `forall \"<kind>\" \"<object>\"… { <condition> }`; a condition is a Quint builtin `<op> <term>… { <op line>… }`: `and`, `or`, `not`, `implies`, `iff`, `eq`, `neq`, `in`, `ilt`, `ilte`, `igt`, `igte`, `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` or `iuminus`; a term is `\"<kind>.<key>\"`, `(next)\"<kind>.<key>\"`, `(start)\"<kind>.<key>\"`, `\"step\"`, or a value, and each comparison names at least one `\"<kind>.<key>\"` or `\"step\"`";
 
 fn only<'a>(n: &'a KdlNode, node: &str) -> Result<&'a KdlNode, String> {
     match lines(n) {
         [one] if name(one) == node => Ok(one),
-        _ => Err(format!("`{}` holds one `{node}`: {CHECK}", name(n))),
+        _ => Err(format!("`{}` has one `{node}`: {CHECK}", name(n))),
     }
 }
 
@@ -1303,11 +1455,19 @@ fn term(e: &KdlEntry, bound: &str) -> Result<Expr, String> {
         (None, None, KdlValue::String(s)) if s == "step" => Ok(Expr::Step),
         (None, None, KdlValue::String(s)) => Ok(field(s).map_or_else(
             || Expr::Value(Value::Text(s.clone())),
-            |k| Expr::Field(k, false),
+            |k| Expr::Field(k, At::Now),
         )),
-        (None, Some("next"), KdlValue::String(s)) => field(s)
-            .map(|k| Expr::Field(k, true))
-            .ok_or_else(|| format!("`(next)` takes `{bound}.<key>`, not `{s}`: {CHECK}")),
+        (None, Some(at @ ("next" | "start")), KdlValue::String(s)) => field(s)
+            .map(|k| {
+                Expr::Field(
+                    k,
+                    match at {
+                        "next" => At::Next,
+                        _ => At::Start,
+                    },
+                )
+            })
+            .ok_or_else(|| format!("`({at})` takes `{bound}.<key>`, not `{s}`: {CHECK}")),
         (None, None, KdlValue::Integer(n)) => Ok(Expr::Value(Value::Int(*n))),
         _ => Err(format!("`{}` is not a term: {CHECK}", e.to_string().trim())),
     }
@@ -1349,7 +1509,7 @@ fn invariant(n: &KdlNode) -> Result<Check, String> {
     };
     let body = match lines(forall) {
         [one] => expr(one, &bound)?,
-        _ => return Err(format!("`forall` holds one condition: {CHECK}")),
+        _ => return Err(format!("`forall` has one condition: {CHECK}")),
     };
     Ok(Check {
         kind: Kind::parse(&bound)?,
@@ -1402,7 +1562,7 @@ fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
         let ty = c.body.ty(x, &bound)?;
         if ty != Ty::Bool {
             return Err(format!(
-                "`forall` holds a condition, not `{}` of type {ty}",
+                "`forall` has a condition, not `{}` of type {ty}",
                 c.body.quint(&bound)
             ));
         }
@@ -1438,9 +1598,9 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
             d.impls.push(found);
             continue;
         }
-        let holds = match parent {
+        let lines = match parent {
             "setup" => "objects",
-            "action" => "`<verb> from=<object> to=<object>` lines",
+            "action" => "`<verb> from=\"<object>\" to=\"<object>\"` lines",
             "check" => "one `invariant`",
             other => return Err(format!("`{other}` is not setup, action, check or impl")),
         };
@@ -1453,13 +1613,51 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
                 ("setup", _) => d.objects.push(object(c, config, src)?),
                 ("action", _) => d.steps.push(step(c)?),
                 ("check", "invariant") if d.check.is_none() => d.check = Some(invariant(c)?),
-                ("check", "invariant") => return Err("`check` holds one `invariant`".into()),
-                _ => return Err(format!("`{parent}` holds {holds}")),
+                ("check", "invariant") => return Err("`check` has one `invariant`".into()),
+                _ => return Err(format!("`{parent}` has {lines}")),
             }
         }
     }
     if d.objects.is_empty() {
         return Err("no objects".into());
+    }
+    let pools: Vec<&String> = d.objects.iter().flat_map(|o| &o.pools).collect();
+    if let Some(pool) = pools
+        .iter()
+        .enumerate()
+        .find_map(|(at, pool)| pools[..at].contains(pool).then_some(pool))
+    {
+        return Err(format!("`pool {pool}` is set twice"));
+    }
+    if let Some((u, pool)) = d.impls.iter().flat_map(|i| &i.uses).find_map(|u| {
+        [u.pool.as_ref(), u.from.as_ref().map(|(pool, _)| pool)]
+            .into_iter()
+            .flatten()
+            .find(|pool| !pools.contains(pool))
+            .map(|pool| (u, pool))
+    }) {
+        return Err(format!(
+            "{} names the pool `{pool}`, and no object of `setup` has `pool \"{pool}\"`",
+            u.line()
+        ));
+    }
+    let verbs: Vec<&String> = d
+        .objects
+        .iter()
+        .flat_map(|o| &o.moves)
+        .map(|m| &m.verb)
+        .collect();
+    if let Some((u, verb)) = d.impls.iter().flat_map(|i| &i.uses).find_map(|u| {
+        [u.tag.as_ref(), u.verb.as_ref()]
+            .into_iter()
+            .flatten()
+            .find(|verb| !verbs.contains(verb))
+            .map(|verb| (u, verb))
+    }) {
+        return Err(format!(
+            "{} names the verb `{verb}`, and no object of `setup` has `on {verb}`",
+            u.line()
+        ));
     }
     let mut known = HashSet::new();
     for o in &d.objects {
@@ -1487,7 +1685,7 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
             step + 1
         )),
         _ => Err(format!(
-            "the run keeps `{}` at each `action` line",
+            "the run passes `{}` at each `action` line",
             c.source()
         )),
     }
@@ -1559,6 +1757,7 @@ fn run(objects: &[Object], init: &State, steps: &mut [Step], c: &Check) -> Resul
 fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
     let start = d.init.clone();
     let first = Ctx {
+        start: &start,
         cur: &start,
         nxt: &start,
         verb: "",
@@ -1577,7 +1776,7 @@ fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
             ]
             .concat();
             next.insert(o.name.clone(), v);
-            if c.judge(&now, &next, verb).is_some() {
+            if c.judge(&d.init, &now, &next, verb).is_some() {
                 return Err(format!(
                     "`{}` fails in the setup after {}",
                     c.source(),
@@ -1592,7 +1791,48 @@ fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
     Ok(())
 }
 
+const FORM: &str = "a file of weft has the KDL that versions 1 and 2 share: the name of a line and a key are words, a value is a string in `\"` or an integer, a line ends at the end of its text line, and `\\` at the end of a text line continues the line";
+
+fn form(doc: &KdlDocument) -> Result<(), String> {
+    let word = |repr: Option<&str>| !repr.is_some_and(|r| r.starts_with(['"', '#']));
+    for n in doc.nodes() {
+        if n.ty().is_some()
+            || !word(n.name().repr())
+            || n.format().is_some_and(|f| f.terminator.starts_with(';'))
+        {
+            return Err(format!("`{}` is not a line of weft: {FORM}", name(n)));
+        }
+        for e in n.entries() {
+            let repr = e.format().map_or("", |f| f.value_repr.as_str());
+            let fits = match e.value() {
+                KdlValue::String(_) => repr.starts_with('"') && !repr.starts_with("\"\"\""),
+                KdlValue::Integer(_) => repr
+                    .strip_prefix('-')
+                    .unwrap_or(repr)
+                    .bytes()
+                    .all(|b| b.is_ascii_digit()),
+                _ => false,
+            };
+            if !fits || !e.name().is_none_or(|k| word(k.repr())) {
+                return Err(format!(
+                    "`{}` of `{}` is not a value of weft: {FORM}",
+                    e.to_string().trim(),
+                    name(n)
+                ));
+            }
+        }
+        n.children().map_or(Ok(()), form)?;
+    }
+    Ok(())
+}
+
 fn document(src: &str) -> Result<KdlDocument, Error> {
+    let doc = parsed(src)?;
+    form(&doc).map_err(Error)?;
+    Ok(doc)
+}
+
+fn parsed(src: &str) -> Result<KdlDocument, Error> {
     KdlDocument::parse_v2(src).map_err(|e| {
         let found: Vec<String> = e
             .diagnostics
@@ -1679,16 +1919,18 @@ pub fn config(src: &str) -> Result<Config, Error> {
                 return Err(Error("`transport` is set twice".into()));
             }
             "transport" => {
-                let (key, transport): (&str, fn(String) -> Transport) =
-                    match args(n).first().map(String::as_str) {
-                        Some("unix") => ("path", Transport::Unix),
-                        Some("http") => ("url", Transport::Http),
-                        _ => {
-                            return Err(Error(
-                                "`transport` is `unix path=<socket>` or `http url=<url>`".into(),
+                let (key, transport): (&str, fn(String) -> Transport) = match args(n)
+                    .first()
+                    .map(String::as_str)
+                {
+                    Some("unix") => ("path", Transport::Unix),
+                    Some("http") => ("url", Transport::Http),
+                    _ => {
+                        return Err(Error(
+                                "`transport` is `\"unix\" path=\"<socket>\"` or `\"http\" url=\"<url>\"`".into(),
                             ));
-                        }
-                    };
+                    }
+                };
                 shape(n, 1, &[key], false).map_err(Error)?;
                 c.transport = Some(transport(need(n, key).map_err(Error)?));
             }
@@ -1699,7 +1941,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
                 let adapter = match args(n).first().map(String::as_str) {
                     Some("default") => Adapter::Default,
                     Some("bun") => Adapter::Bun,
-                    _ => return Err(Error("`adapter` is `default` or `bun`".into())),
+                    _ => return Err(Error("`adapter` is `\"default\"` or `\"bun\"`".into())),
                 };
                 let name = shape(n, 1, &["cases"], false).map_err(Error)?.remove(0);
                 let cases = match n.get("cases") {
@@ -1708,7 +1950,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
                 }
                 .ok_or_else(|| {
                     Error(format!(
-                        "`adapter {name}` takes `cases=<count>`, a count above 0"
+                        "`adapter \"{name}\"` takes `cases=<count>`, a count above 0"
                     ))
                 })?;
                 c.adapter = adapter;
@@ -1724,7 +1966,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
     }
     match (c.include.is_empty(), c.theme.is_empty()) {
         (true, _) => Err(Error("needs `include \"<glob>\"`".into())),
-        (_, true) => Err(Error("needs `theme light` or `theme dark`".into())),
+        (_, true) => Err(Error("needs `theme \"light\"` or `theme \"dark\"`".into())),
         _ => Ok(c),
     }
 }
@@ -1738,41 +1980,41 @@ mod tests {
     use super::*;
 
     const CONFIG: &str = r#"include "**/*.weft.kdl"
-theme light
-style person icon=user
-style api icon=server
-style browser icon=app-window
-style element icon=square-dashed-mouse-pointer"#;
+theme "light"
+style "person" icon="user"
+style "api" icon="server"
+style "browser" icon="app-window"
+style "element" icon="square-dashed-mouse-pointer""#;
 
     const BASE: &str = r#"
 setup {
-  person user
-  browser history snapshot=snap_0 {
-    state snapshot=snap_0 {
-      on leave snapshot=snap_1
+  person "user"
+  browser "history" snapshot="snap_0" {
+    state snapshot="snap_0" {
+      on "leave" snapshot="snap_1"
     }
-    state snapshot=snap_1 {
-      on back snapshot=snap_0
+    state snapshot="snap_1" {
+      on "back" snapshot="snap_0"
     }
   }
-  element origin value="San Francisco" {
+  element "origin" value="San Francisco" {
     state value="San Francisco" {
-      on type value=Lahore
+      on "type" value="Lahore"
     }
-    state value=Lahore
+    state value="Lahore"
   }
 }
 action {
-  type from=user to=origin
-  leave from=user to=history
-  back from=user to=history origin.value="San Francisco"
+  type from="user" to="origin"
+  leave from="user" to="history"
+  back from="user" to="history" origin.value="San Francisco"
 }
 check {
   invariant {
-    forall element origin {
+    forall "element" "origin" {
       implies {
-        in step back
-        eq (next)element.value element.value
+        in "step" "back"
+        eq (next)"element.value" "element.value"
       }
     }
   }
@@ -1781,44 +2023,81 @@ check {
 
     const SUBMIT: &str = r#"
 setup {
-  person user
-  element input value="" {
+  person "user"
+  element "input" value="" {
     state value="" {
-      on type value=Sent
+      on "type" value="Sent"
     }
-    state value=Sent
+    state value="Sent"
   }
-  browser page snapshot=snap_0 count=0 {
-    state snapshot=snap_0 count=0 {
-      on send snapshot=snap_0 count=1
+  browser "page" snapshot="snap_0" count=0 {
+    state snapshot="snap_0" count=0 {
+      on "send" snapshot="snap_0" count=1
     }
-    state snapshot=snap_0 count=1 {
-      on reload snapshot=snap_0 count=1
+    state snapshot="snap_0" count=1 {
+      on "reload" snapshot="snap_0" count=1
     }
   }
 }
 action {
-  type from=user to=input
-  send from=input to=page
-  reload from=user to=page page.count=2
+  type from="user" to="input"
+  send from="input" to="page"
+  reload from="user" to="page" page.count=2
 }
 check {
   invariant {
-    forall browser page {
+    forall "browser" "page" {
       and {
         implies {
-          in step send
-          eq (next)browser.count {
-            iadd browser.count 1
+          in "step" "send"
+          eq (next)"browser.count" {
+            iadd "browser.count" 1
           }
         }
         implies {
-          in step reload
-          eq (next)browser.count browser.count
+          in "step" "reload"
+          eq (next)"browser.count" "browser.count"
         }
       }
     }
   }
+}
+"#;
+
+    const POOL: &str = r#"
+setup {
+  person "user"
+  browser "page" count=0 opened=0 {
+    pool "opened"
+    state count=0 opened=0 {
+      on "open" count=1 opened=1
+    }
+    state count=1 opened=1 {
+      on "open" count=1 opened=1
+      on "close" count=0 opened=0
+    }
+  }
+}
+action {
+  open from="user" to="page"
+  close from="user" to="page" page.count=1
+}
+check {
+  invariant {
+    forall "browser" "page" {
+      implies {
+        eq (next)"browser.opened" 0
+        eq (next)"browser.count" (start)"browser.count"
+      }
+    }
+  }
+}
+impl "bun" {
+  module "page" "../src/page.ts"
+  start "page.clear"
+  read "page.page" output="page.pageSchema"
+  run "page.open" input="page.openSchema" pool="opened"
+  run "opened" consume="opened" verb="close"
 }
 "#;
 
@@ -1835,11 +2114,11 @@ check {
         }
     }
 
-    fn mark(text: &str, kept: bool) -> Mark {
+    fn mark(text: &str, passed: bool) -> Mark {
         Mark {
             object: "page".into(),
             text: text.into(),
-            kept,
+            passed,
         }
     }
 
@@ -1882,22 +2161,22 @@ check {
     fn explore_breaks_the_check_from_the_setup_alone() {
         let cases = [
             (
-                "      on reload snapshot=snap_0 count=1\n    }\n",
-                "      on reload snapshot=snap_0 count=2\n    }\n    state snapshot=snap_0 count=2\n",
+                "      on \"reload\" snapshot=\"snap_0\" count=1\n    }\n",
+                "      on \"reload\" snapshot=\"snap_0\" count=2\n    }\n    state snapshot=\"snap_0\" count=2\n",
                 Err(
                     r#"`always(forall(Set(page), browser => and(implies(in(step, Set("send")), eq(next(browser.count), iadd(browser.count, 1))), implies(in(step, Set("reload")), eq(next(browser.count), browser.count)))))` fails in the setup after send to=page (count=1 snapshot="snap_0"), reload to=page (count=2 snapshot="snap_0")"#,
                 ),
             ),
             (
-                "      on send snapshot=snap_0 count=1\n    }\n    state snapshot=snap_0 count=1 {\n      on reload snapshot=snap_0 count=1\n",
-                "      on send snapshot=snap_0 count=2\n    }\n    state snapshot=snap_0 count=2 {\n      on reload snapshot=snap_0 count=2\n",
+                "      on \"send\" snapshot=\"snap_0\" count=1\n    }\n    state snapshot=\"snap_0\" count=1 {\n      on \"reload\" snapshot=\"snap_0\" count=1\n",
+                "      on \"send\" snapshot=\"snap_0\" count=2\n    }\n    state snapshot=\"snap_0\" count=2 {\n      on \"reload\" snapshot=\"snap_0\" count=2\n",
                 Err(
                     r#"`always(forall(Set(page), browser => and(implies(in(step, Set("send")), eq(next(browser.count), iadd(browser.count, 1))), implies(in(step, Set("reload")), eq(next(browser.count), browser.count)))))` fails in the setup after send to=page (count=2 snapshot="snap_0")"#,
                 ),
             ),
             (
-                "        implies {\n          in step reload\n          eq (next)browser.count browser.count\n        }\n",
-                "        eq browser.count 1\n",
+                "        implies {\n          in \"step\" \"reload\"\n          eq (next)\"browser.count\" \"browser.count\"\n        }\n",
+                "        eq \"browser.count\" 1\n",
                 Err(
                     r#"`always(forall(Set(page), browser => and(implies(in(step, Set("send")), eq(next(browser.count), iadd(browser.count, 1))), eq(browser.count, 1))))` fails in the start state"#,
                 ),
@@ -1912,61 +2191,63 @@ check {
     fn each_term_is_typed() {
         let cases = [
             (
-                "      on send snapshot=snap_0 count=1\n",
-                "      on send snapshot=snap_0 count=\"1\"\n",
+                "      on \"send\" snapshot=\"snap_0\" count=1\n",
+                "      on \"send\" snapshot=\"snap_0\" count=\"1\"\n",
                 Err("browser page: `count=\"1\"` of `page` is not of the type of `count=0`"),
             ),
             (
-                "browser page snapshot=snap_0 count=0 {",
-                "browser page snapshot=snap_0 count=0.5 {",
-                Err("browser: `browser` takes strings, and integers as values, not `count=0.5`"),
+                "browser \"page\" snapshot=\"snap_0\" count=0 {",
+                "browser \"page\" snapshot=\"snap_0\" count=0.5 {",
+                Err(&format!(
+                    "`count=0.5` of `browser` is not a value of weft: {FORM}"
+                )),
             ),
             (
-                "iadd browser.count 1",
-                "iadd browser.count \"1\"",
+                "iadd \"browser.count\" 1",
+                "iadd \"browser.count\" \"1\"",
                 Err("`iadd(browser.count, \"1\")` takes two integers, not integer and string"),
             ),
             (
-                "eq (next)browser.count browser.count",
-                "eq (next)browser.count browser.snapshot",
+                "eq (next)\"browser.count\" \"browser.count\"",
+                "eq (next)\"browser.count\" \"browser.snapshot\"",
                 Err(
                     "`eq(next(browser.count), browser.snapshot)` takes two terms of one type, not integer and string",
                 ),
             ),
             (
-                "iadd browser.count 1",
-                "isum browser.count 1",
+                "iadd \"browser.count\" 1",
+                "isum \"browser.count\" 1",
                 Err(&format!("`isum` is not a builtin: {CHECK}")),
             ),
             (
-                "iadd browser.count 1",
-                "iadd browser.count",
+                "iadd \"browser.count\" 1",
+                "iadd \"browser.count\"",
                 Err(&format!("`iadd` takes two integers: {CHECK}")),
             ),
             (
-                "in step reload",
-                "ilte browser.count browser.snapshot",
+                "in \"step\" \"reload\"",
+                "ilte \"browser.count\" \"browser.snapshot\"",
                 Err(
                     "`ilte(browser.count, browser.snapshot)` takes two integers, not integer and string",
                 ),
             ),
             (
-                "in step reload",
-                "iadd browser.count 1",
+                "in \"step\" \"reload\"",
+                "iadd \"browser.count\" 1",
                 Err(
                     "`implies(iadd(browser.count, 1), eq(next(browser.count), browser.count))` takes two conditions, not integer and boolean",
                 ),
             ),
             (
-                "in step reload",
+                "in \"step\" \"reload\"",
                 "ilte 1 2",
                 Err(&format!(
                     "`ilte(1, 2)` names at least one `browser.<key>` or `step`: {CHECK}"
                 )),
             ),
             (
-                "in step reload",
-                "in step browser.snapshot",
+                "in \"step\" \"reload\"",
+                "in \"step\" \"browser.snapshot\"",
                 Err("`in step` takes verbs, not `browser.snapshot`"),
             ),
         ];
@@ -1975,8 +2256,86 @@ check {
         }
     }
 
+    #[test]
+    fn a_pool_has_the_results_of_a_run_line_for_a_later_run_line() {
+        let d = parse(POOL, &config(CONFIG).unwrap()).unwrap();
+        assert_eq!(d.objects[1].pools, ["opened"]);
+        let lines: Vec<String> = d.impls[0].uses.iter().map(Use::line).collect();
+        assert_eq!(
+            lines,
+            [
+                r#"`start "page.clear"`"#,
+                r#"`read "page.page" output="page.pageSchema"`"#,
+                r#"`run "page.open" input="page.openSchema" pool="opened"`"#,
+                r#"`run "opened" verb="close" consume="opened"`"#,
+            ]
+        );
+        let c = d.check.as_ref().unwrap();
+        assert_eq!(
+            c.source(),
+            "always(forall(Set(page), browser => implies(eq(next(browser.opened), 0), eq(next(browser.count), start(browser.count)))))"
+        );
+        assert_eq!(
+            c.english(),
+            "Always, for each browser in page, if browser.opened becomes 0, then browser.count becomes the start browser.count"
+        );
+        let cases = [
+            (
+                "    pool \"opened\"\n",
+                "    pool \"closers\"\n",
+                Err(
+                    r#"`run "page.open" input="page.openSchema" pool="opened"` names the pool `opened`, and no object of `setup` has `pool "opened"`"#,
+                ),
+            ),
+            (
+                "    pool \"opened\"\n",
+                "    pool \"opened\"\n    pool \"opened\"\n",
+                Err("`pool opened` is set twice"),
+            ),
+            (
+                "run \"opened\" consume=\"opened\" verb=\"close\"",
+                "run \"page.close\" from=\"opened\" verb=\"close\"",
+                Err(
+                    r#"`run "page.close"` draws from the pool `opened`, and takes `"opened"` or `"opened.<method>"`"#,
+                ),
+            ),
+            (
+                "run \"opened\" consume=\"opened\" verb=\"close\"",
+                "run \"opened.close\" from=\"opened\" verb=\"close\"",
+                Ok(()),
+            ),
+            (
+                "run \"opened\" consume=\"opened\" verb=\"close\"",
+                "run \"opened\" consume=\"opened\"",
+                Err("`run` needs `input` or `verb`"),
+            ),
+            (
+                "run \"opened\" consume=\"opened\" verb=\"close\"",
+                "run \"opened\" from=\"opened\" consume=\"opened\" verb=\"close\"",
+                Err("`run` has `from` and `consume`, and a line takes one of them"),
+            ),
+            (
+                "run \"page.open\" input=\"page.openSchema\" pool=\"opened\"",
+                "run \"page.open\" input=\"page.openSchema\" pool=#true",
+                Err(&format!(
+                    "`pool=#true` of `run` is not a value of weft: {FORM}"
+                )),
+            ),
+            (
+                "(start)\"browser.count\"",
+                "(start)\"browser\"",
+                Err(&format!(
+                    "`(start)` takes `browser.<key>`, not `browser`: {CHECK}"
+                )),
+            ),
+        ];
+        for (from, to, want) in cases {
+            assert_eq!(built(POOL, from, to), want.map_err(String::from), "{to}");
+        }
+    }
+
     fn condition(src: &str) -> Check {
-        let doc = KdlDocument::parse_v2(src).unwrap();
+        let doc = document(src).unwrap();
         Check {
             kind: Kind::Browser,
             objects: vec!["page".into()],
@@ -1997,137 +2356,162 @@ check {
     #[test]
     fn each_builtin_gives_the_value_of_the_quint_evaluator() {
         let cases = [
-            ("ilte (next)browser.count browser.count", 1, 1, true),
-            ("ilte (next)browser.count browser.count", 1, 2, false),
-            ("ilt (next)browser.count browser.count", 1, 0, true),
-            ("ilt (next)browser.count browser.count", 1, 1, false),
-            ("igte (next)browser.count browser.count", 1, 1, true),
-            ("igte (next)browser.count browser.count", 1, 0, false),
-            ("igt (next)browser.count browser.count", 1, 2, true),
-            ("igt (next)browser.count browser.count", 1, 1, false),
-            ("neq (next)browser.count browser.count", 1, 2, true),
-            ("neq (next)browser.count browser.count", 1, 1, false),
-            ("or { eq browser.count 1; eq browser.count 2; }", 0, 2, true),
+            ("ilte (next)\"browser.count\" \"browser.count\"", 1, 1, true),
             (
-                "or { eq browser.count 1; eq browser.count 2; }",
+                "ilte (next)\"browser.count\" \"browser.count\"",
+                1,
+                2,
+                false,
+            ),
+            ("ilt (next)\"browser.count\" \"browser.count\"", 1, 0, true),
+            ("ilt (next)\"browser.count\" \"browser.count\"", 1, 1, false),
+            ("igte (next)\"browser.count\" \"browser.count\"", 1, 1, true),
+            (
+                "igte (next)\"browser.count\" \"browser.count\"",
+                1,
+                0,
+                false,
+            ),
+            ("igt (next)\"browser.count\" \"browser.count\"", 1, 2, true),
+            ("igt (next)\"browser.count\" \"browser.count\"", 1, 1, false),
+            ("neq (next)\"browser.count\" \"browser.count\"", 1, 2, true),
+            ("neq (next)\"browser.count\" \"browser.count\"", 1, 1, false),
+            (
+                "or {\neq \"browser.count\" 1\neq \"browser.count\" 2\n}",
+                0,
+                2,
+                true,
+            ),
+            (
+                "or {\neq \"browser.count\" 1\neq \"browser.count\" 2\n}",
                 0,
                 3,
                 false,
             ),
-            ("not { eq browser.count 1; }", 0, 2, true),
-            ("not { eq browser.count 1; }", 0, 1, false),
-            ("iff { eq browser.count 1; in step send; }", 0, 1, true),
-            ("iff { eq browser.count 1; in step send; }", 0, 2, false),
+            ("not {\neq \"browser.count\" 1\n}", 0, 2, true),
+            ("not {\neq \"browser.count\" 1\n}", 0, 1, false),
             (
-                "eq (next)browser.count { isub browser.count 1; }",
+                "iff {\neq \"browser.count\" 1\nin \"step\" \"send\"\n}",
+                0,
+                1,
+                true,
+            ),
+            (
+                "iff {\neq \"browser.count\" 1\nin \"step\" \"send\"\n}",
+                0,
+                2,
+                false,
+            ),
+            (
+                "eq (next)\"browser.count\" {\nisub \"browser.count\" 1\n}",
                 3,
                 2,
                 true,
             ),
             (
-                "eq (next)browser.count { imul browser.count 2; }",
+                "eq (next)\"browser.count\" {\nimul \"browser.count\" 2\n}",
                 3,
                 6,
                 true,
             ),
             (
-                "eq (next)browser.count { imul browser.count 2; }",
+                "eq (next)\"browser.count\" {\nimul \"browser.count\" 2\n}",
                 3,
                 5,
                 false,
             ),
             (
-                "eq (next)browser.count { idiv browser.count 2; }",
+                "eq (next)\"browser.count\" {\nidiv \"browser.count\" 2\n}",
                 7,
                 3,
                 true,
             ),
             (
-                "eq (next)browser.count { idiv browser.count 2; }",
+                "eq (next)\"browser.count\" {\nidiv \"browser.count\" 2\n}",
                 -7,
                 -3,
                 true,
             ),
             (
-                "eq (next)browser.count { imod browser.count 2; }",
+                "eq (next)\"browser.count\" {\nimod \"browser.count\" 2\n}",
                 7,
                 1,
                 true,
             ),
             (
-                "eq (next)browser.count { imod browser.count 2; }",
+                "eq (next)\"browser.count\" {\nimod \"browser.count\" 2\n}",
                 -7,
                 -1,
                 true,
             ),
             (
-                "eq (next)browser.count { ipow browser.count 3; }",
+                "eq (next)\"browser.count\" {\nipow \"browser.count\" 3\n}",
                 2,
                 8,
                 true,
             ),
             (
-                "eq (next)browser.count { iuminus browser.count; }",
+                "eq (next)\"browser.count\" {\niuminus \"browser.count\"\n}",
                 2,
                 -2,
                 true,
             ),
             (
-                "eq (next)browser.count { idiv 6 browser.count; }",
+                "eq (next)\"browser.count\" {\nidiv 6 \"browser.count\"\n}",
                 0,
                 0,
                 false,
             ),
             (
-                "eq (next)browser.count { imod 6 browser.count; }",
+                "eq (next)\"browser.count\" {\nimod 6 \"browser.count\"\n}",
                 0,
                 0,
                 false,
             ),
             (
-                "eq (next)browser.count { ipow browser.count 0; }",
+                "eq (next)\"browser.count\" {\nipow \"browser.count\" 0\n}",
                 0,
                 1,
                 false,
             ),
             (
-                "eq (next)browser.count { ipow 2 browser.count; }",
+                "eq (next)\"browser.count\" {\nipow 2 \"browser.count\"\n}",
                 -1,
                 0,
                 false,
             ),
             (
-                "eq (next)browser.count { iadd browser.count 1; }",
+                "eq (next)\"browser.count\" {\niadd \"browser.count\" 1\n}",
                 i128::MAX,
                 i128::MIN,
                 false,
             ),
             (
-                "implies { neq browser.count 0; eq 3 { idiv 6 browser.count; }; }",
+                "implies {\nneq \"browser.count\" 0\neq 3 {\nidiv 6 \"browser.count\"\n}\n}",
                 0,
                 0,
                 true,
             ),
             (
-                "implies { neq browser.count 0; eq 3 { idiv 6 browser.count; }; }",
+                "implies {\nneq \"browser.count\" 0\neq 3 {\nidiv 6 \"browser.count\"\n}\n}",
                 2,
                 2,
                 true,
             ),
             (
-                "implies { neq browser.count 0; eq 3 { idiv 6 browser.count; }; }",
+                "implies {\nneq \"browser.count\" 0\neq 3 {\nidiv 6 \"browser.count\"\n}\n}",
                 3,
                 3,
                 false,
             ),
-            ("in browser.snapshot snap_1 snap_0", 0, 0, true),
-            ("in browser.snapshot snap_1 snap_2", 0, 0, false),
-            ("in step open send", 0, 0, true),
-            ("in step open reload", 0, 0, false),
+            ("in \"browser.snapshot\" \"snap_1\" \"snap_0\"", 0, 0, true),
+            ("in \"browser.snapshot\" \"snap_1\" \"snap_2\"", 0, 0, false),
+            ("in \"step\" \"open\" \"send\"", 0, 0, true),
+            ("in \"step\" \"open\" \"reload\"", 0, 0, false),
         ];
-        for (src, cur, nxt, holds) in cases {
-            let broken = condition(src).judge(&page(cur), &page(nxt), "send");
-            assert_eq!(broken.is_none(), holds, "{src} from {cur} to {nxt}");
+        for (src, cur, nxt, passes) in cases {
+            let broken = condition(src).judge(&page(cur), &page(cur), &page(nxt), "send");
+            assert_eq!(broken.is_none(), passes, "{src} from {cur} to {nxt}");
         }
     }
 
@@ -2135,32 +2519,32 @@ check {
     fn each_builtin_reads_as_quint_and_as_english() {
         let cases = [
             (
-                "ilte (next)browser.count browser.count",
+                "ilte (next)\"browser.count\" \"browser.count\"",
                 "ilte(next(browser.count), browser.count)",
                 "the next browser.count is at most browser.count",
             ),
             (
-                "or { igt browser.count 1; not { eq browser.snapshot snap_0; }; }",
+                "or {\nigt \"browser.count\" 1\nnot {\neq \"browser.snapshot\" \"snap_0\"\n}\n}",
                 r#"or(igt(browser.count, 1), not(eq(browser.snapshot, "snap_0")))"#,
                 r#"browser.count is more than 1, or browser.snapshot does not equal "snap_0""#,
             ),
             (
-                "implies { not { in step send open; }; eq (next)browser.count browser.count; }",
+                "implies {\nnot {\nin \"step\" \"send\" \"open\"\n}\neq (next)\"browser.count\" \"browser.count\"\n}",
                 r#"implies(not(in(step, Set("send", "open"))), eq(next(browser.count), browser.count))"#,
                 "if step is not send or open, then browser.count stays unchanged",
             ),
             (
-                "not { ilt browser.count 1; }",
+                "not {\nilt \"browser.count\" 1\n}",
                 "not(ilt(browser.count, 1))",
                 "not browser.count is less than 1",
             ),
             (
-                "iff { neq browser.count 0; in browser.snapshot snap_0 snap_1; }",
+                "iff {\nneq \"browser.count\" 0\nin \"browser.snapshot\" \"snap_0\" \"snap_1\"\n}",
                 r#"iff(neq(browser.count, 0), in(browser.snapshot, Set("snap_0", "snap_1")))"#,
                 "browser.count does not equal 0 if and only if browser.snapshot is snap_0 or snap_1",
             ),
             (
-                "eq (next)browser.count { imod { ipow browser.count 2; iuminus 3; }; }",
+                "eq (next)\"browser.count\" {\nimod {\nipow \"browser.count\" 2\niuminus 3\n}\n}",
                 "eq(next(browser.count), imod(ipow(browser.count, 2), iuminus(3)))",
                 "browser.count becomes browser.count ^ 2 mod -3",
             ),
@@ -2176,9 +2560,9 @@ check {
 
     #[test]
     fn the_evidence_shows_the_value_of_each_integer_builtin() {
-        let c = condition("ilte (next)browser.count { isub browser.count 1; }");
+        let c = condition("ilte (next)\"browser.count\" {\nisub \"browser.count\" 1\n}");
         assert_eq!(
-            c.judge(&page(3), &page(5), "send"),
+            c.judge(&page(3), &page(3), &page(5), "send"),
             Some(vec![
                 "browser = page".into(),
                 "ilte(next(browser.count), isub(browser.count, 1)) = ilte(5, 2) = false".into()
@@ -2187,7 +2571,7 @@ check {
     }
 
     #[test]
-    fn each_object_and_each_on_line_keeps_its_line_in_the_file() {
+    fn each_object_and_each_on_line_has_its_line_in_the_file() {
         let d = parse(BASE, &config(CONFIG).unwrap()).unwrap();
         let lines: Vec<String> = d
             .objects
@@ -2214,7 +2598,7 @@ check {
     fn the_run_breaks_the_check_at_its_last_line() {
         let d = parse(BASE, &config(CONFIG).unwrap()).unwrap();
         let Some(Verdict::Fails { step, .. }) = d.verdict() else {
-            panic!("the run keeps the check");
+            panic!("the run passes the check");
         };
         assert_eq!(step, 2);
         assert_eq!(
@@ -2224,7 +2608,7 @@ check {
                 Mark {
                     object: "origin".into(),
                     text: "value = San Francisco\neq(\"San Francisco\", \"Lahore\") = false".into(),
-                    kept: false,
+                    passed: false,
                 }
             )]
         );
@@ -2238,38 +2622,38 @@ check {
     fn each_object_and_each_state_is_reached_by_an_action_line() {
         each(&[
             (
-                "  person user\n",
-                "  person user\n  person admin\n",
+                "  person \"user\"\n",
+                "  person \"user\"\n  person \"admin\"\n",
                 Err("no `action` line reaches `admin`"),
             ),
             (
-                "  person user\n",
-                "  person user\n  api correlation\n",
+                "  person \"user\"\n",
+                "  person \"user\"\n  api \"correlation\"\n",
                 Err("no `action` line reaches `correlation`"),
             ),
             (
-                "  person user\n",
-                "  person user\n  browser page snapshot=snap_0 {\n    state snapshot=snap_0\n  }\n",
+                "  person \"user\"\n",
+                "  person \"user\"\n  browser \"page\" snapshot=\"snap_0\" {\n    state snapshot=\"snap_0\"\n  }\n",
                 Err("no `action` line reaches `page`"),
             ),
             (
-                "    state value=Lahore\n",
-                "    state value=Lahore {\n      on type value=Tokyo\n    }\n    state value=Tokyo\n",
+                "    state value=\"Lahore\"\n",
+                "    state value=\"Lahore\" {\n      on \"type\" value=\"Tokyo\"\n    }\n    state value=\"Tokyo\"\n",
                 Err("no `action` line reaches the state `value=\"Tokyo\"` of `origin`"),
             ),
             (
-                "      on back snapshot=snap_0\n",
-                "      on back snapshot=snap_0\n      on leave snapshot=snap_2\n    }\n    state snapshot=snap_2 {\n",
+                "      on \"back\" snapshot=\"snap_0\"\n",
+                "      on \"back\" snapshot=\"snap_0\"\n      on \"leave\" snapshot=\"snap_2\"\n    }\n    state snapshot=\"snap_2\" {\n",
                 Err("no `action` line reaches the state `snapshot=\"snap_2\"` of `history`"),
             ),
             (
-                "      on leave snapshot=snap_1\n",
-                "      on leave snapshot=snap_1\n      on forward snapshot=snap_1\n",
+                "      on \"leave\" snapshot=\"snap_1\"\n",
+                "      on \"leave\" snapshot=\"snap_1\"\n      on \"forward\" snapshot=\"snap_1\"\n",
                 Ok(()),
             ),
             (
-                "  leave from=user to=history\n",
-                "  forward from=user to=history\n",
+                "  leave from=\"user\" to=\"history\"\n",
+                "  forward from=\"user\" to=\"history\"\n",
                 Err("`action` line 2: `history` has no `on forward` line"),
             ),
         ]);
@@ -2279,82 +2663,82 @@ check {
     fn each_start_state_and_each_state_is_key_value() {
         each(&[
             (
-                "element origin value=\"San Francisco\" {",
-                "element origin \"San Francisco\" {",
+                "element \"origin\" value=\"San Francisco\" {",
+                "element \"origin\" \"San Francisco\" {",
                 Err("element: `element` takes 1 names, not 2"),
             ),
             (
-                "    state value=Lahore\n",
-                "    state Lahore\n",
+                "    state value=\"Lahore\"\n",
+                "    state \"Lahore\"\n",
                 Err("element origin: `state` takes 0 names, not 1"),
             ),
             (
-                "      on type value=Lahore\n",
-                "      on type Lahore\n",
+                "      on \"type\" value=\"Lahore\"\n",
+                "      on \"type\" \"Lahore\"\n",
                 Err("element origin: `on` takes 1 names, not 2"),
             ),
             (
-                "element origin value=\"San Francisco\" {",
-                "element origin {",
+                "element \"origin\" value=\"San Francisco\" {",
+                "element \"origin\" {",
                 Err("`origin` has states and no `<key>=<value>` on its line"),
             ),
             (
-                "  person user\n",
-                "  person user\n  api correlation value=ready\n",
+                "  person \"user\"\n",
+                "  person \"user\"\n  api \"correlation\" value=\"ready\"\n",
                 Err("`correlation` sets `value=\"ready\"` and has no states"),
             ),
             (
-                "  person user\n",
-                "  person user name=agent\n",
+                "  person \"user\"\n",
+                "  person \"user\" name=\"agent\"\n",
                 Err("`user` is a person, and a person has no states"),
             ),
             (
-                "    state value=Lahore\n",
-                "    state city=Lahore\n",
+                "    state value=\"Lahore\"\n",
+                "    state city=\"Lahore\"\n",
                 Err("element origin: `state city=\"Lahore\"` sets no `value`"),
             ),
             (
-                "    state value=Lahore\n",
-                "    state value=Lahore city=Lahore\n",
+                "    state value=\"Lahore\"\n",
+                "    state value=\"Lahore\" city=\"Lahore\"\n",
                 Err("element origin: `origin` has no `city`"),
             ),
             (
-                "    state value=Lahore\n",
-                "    state value=Lahore value=Tokyo\n",
+                "    state value=\"Lahore\"\n",
+                "    state value=\"Lahore\" value=\"Tokyo\"\n",
                 Err("element origin: `state` sets `value` twice"),
             ),
             (
-                "      on type value=Lahore\n",
-                "      on type city=Lahore\n",
+                "      on \"type\" value=\"Lahore\"\n",
+                "      on \"type\" city=\"Lahore\"\n",
                 Err("element origin: `origin` has no `city`"),
             ),
             (
-                "      on type value=Lahore\n",
-                "      on type value=Tokyo\n",
+                "      on \"type\" value=\"Lahore\"\n",
+                "      on \"type\" value=\"Tokyo\"\n",
                 Err(
                     "the state `value=\"San Francisco\"` of `origin` has `on type`, and `value=\"Tokyo\"` is not a state of `origin`",
                 ),
             ),
             (
-                "element origin value=\"San Francisco\" {",
-                "element origin value=Tokyo {",
+                "element \"origin\" value=\"San Francisco\" {",
+                "element \"origin\" value=\"Tokyo\" {",
                 Err("the start state `value=\"Tokyo\"` of `origin` is not one of its states"),
             ),
             (
-                "eq (next)element.value element.value",
-                "eq (next)element element",
+                "eq (next)\"element.value\" \"element.value\"",
+                "eq (next)\"element\" \"element\"",
                 Err(&format!(
                     "`(next)` takes `element.<key>`, not `element`: {CHECK}"
                 )),
             ),
             (
-                "eq (next)element.value element.value",
-                "eq (next)element.city element.city",
+                "eq (next)\"element.value\" \"element.value\"",
+                "eq (next)\"element.city\" \"element.city\"",
                 Err("`origin` has no `city`"),
             ),
             (
-                "eq (next)element.value element.value",
-                "eq (next)element.value Tokyo",
+                "eq (next)\"element.value\" \"element.value\"",
+                "eq (next)\"element.value\" \"Tokyo\"",
                 Err("`value=\"Tokyo\"` is in no state of `origin`"),
             ),
             (
@@ -2364,7 +2748,7 @@ check {
             ),
             (
                 "origin.value=\"San Francisco\"",
-                "origin.value=Tokyo",
+                "origin.value=\"Tokyo\"",
                 Ok(()),
             ),
         ]);

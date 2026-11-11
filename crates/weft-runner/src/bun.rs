@@ -50,9 +50,9 @@ pub fn start(name: &str, at: &str, session: Arc<Session>) -> Result<JoinHandle<S
         let status = child
             .wait()
             .map_or("no status".to_string(), |s| s.to_string());
-        let told = fs::read_to_string(dir.join("bun.log")).unwrap_or_default();
+        let log = fs::read_to_string(dir.join("bun.log")).unwrap_or_default();
         let _ = fs::remove_dir_all(&dir);
-        let said = format!("bun test ends with {status}: {told}");
+        let said = format!("bun test ends with {status}: {log}");
         session.lose(&said);
         said
     }))

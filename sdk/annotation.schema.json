@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WeftMeta",
+  "description": "The `weft` annotation of a part of a schema.",
+  "type": "object",
+  "properties": {
+    "verb": {
+      "type": "string",
+      "description": "The branch of an input that is one action of this verb."
+    },
+    "read": {
+      "type": "string",
+      "description": "The value of `<object>.<key>` in the state."
+    },
+    "pool": {
+      "type": "string",
+      "description": "Each drawn value of this part goes to this Hegel pool."
+    },
+    "from": {
+      "type": "string",
+      "description": "This part is a value of this Hegel pool."
+    },
+    "consume": {
+      "type": "boolean",
+      "description": "A `from` draw removes the value from the pool."
+    },
+    "maxLeaves": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The most leaves of one value of a schema that names itself."
+    },
+    "maxDepth": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The most levels of one value of a schema that names itself."
+    },
+    "grammar": {
+      "type": "string",
+      "description": "A Lark grammar of the texts of this part."
+    },
+    "start": {
+      "type": "string",
+      "description": "The start rule of the grammar."
+    }
+  },
+  "additionalProperties": false
+}

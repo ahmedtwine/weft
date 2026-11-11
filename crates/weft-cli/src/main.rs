@@ -21,11 +21,13 @@ use weft_draw::Theme;
 use weft_parse::{Config, Diagram, Verdict};
 use weft_simulator::{Outcome, view};
 
-const USAGE: &str = "usage: weft [--ui]";
+const USAGE: &str = "usage: weft [--ui | <file>…]";
 const CONFIG: &str = "weft.kdl";
 const SUFFIX: &str = ".weft.kdl";
 const ADDRESS: &str = "127.0.0.1:7357";
 const INPUT: usize = 80;
+const DRAWN: &str = "* draw ";
+const SHARE: &str = " of test cases";
 static PAGE: Mutex<Option<(Option<SystemTime>, String)>> = Mutex::new(None);
 
 struct Report {
@@ -41,7 +43,7 @@ struct Checked {
     checks: u64,
 }
 
-fn files() -> Result<(Vec<PathBuf>, Config, Theme), String> {
+fn files(only: &[String]) -> Result<(Vec<PathBuf>, Config, Theme), String> {
     let source =
         fs::read_to_string(CONFIG).map_err(|_| format!("{CONFIG} is not in this directory"))?;
     let at = |e: String| format!("{CONFIG}: {e}");
@@ -60,7 +62,9 @@ fn files() -> Result<(Vec<PathBuf>, Config, Theme), String> {
         .build()
         .filter_map(Result::ok)
         .map(|e| e.into_path())
-        .filter(|p| p.is_file() && set.is_match(p.strip_prefix(".").unwrap_or(p)))
+        .map(|p| p.strip_prefix(".").map(Path::to_path_buf).unwrap_or(p))
+        .filter(|p| p.is_file() && set.is_match(p))
+        .filter(|p| only.is_empty() || only.iter().any(|named| Path::new(named) == p))
         .collect();
     found.sort();
     match found.is_empty() {
@@ -176,7 +180,18 @@ fn tables(o: &Outcome) -> Vec<Table> {
             })
             .collect(),
     };
-    [trace, tally, code]
+    let drawn = Table {
+        head: &["draw", "cases"],
+        rows: o
+            .output
+            .iter()
+            .filter_map(|line| line.trim().strip_prefix(DRAWN)?.rsplit_once(": "))
+            .map(|(value, share)| {
+                vec![value.to_string(), share.trim_end_matches(SHARE).to_string()]
+            })
+            .collect(),
+    };
+    [trace, tally, code, drawn]
         .into_iter()
         .filter(|t| !t.rows.is_empty())
         .collect()
@@ -260,8 +275,8 @@ fn checked(file: &Path, config: &Config, theme: Theme, drawn: bool) -> Checked {
         })
 }
 
-fn report(drawn: bool) -> Result<Report, String> {
-    let (files, config, theme) = files()?;
+fn report(drawn: bool, only: &[String]) -> Result<Report, String> {
+    let (files, config, theme) = files(only)?;
     let width = match config.transport {
         Some(_) => 1,
         None => thread::available_parallelism().map_or(1, usize::from),
@@ -371,8 +386,8 @@ fn current() -> String {
     match last.as_ref() {
         Some((at, page)) if *at == changed => page.clone(),
         _ => {
-            let page =
-                report(true).map_or_else(|e| format!("<pre>{}</pre>", escape(&e)), |r| page(&r));
+            let page = report(true, &[])
+                .map_or_else(|e| format!("<pre>{}</pre>", escape(&e)), |r| page(&r));
             *last = Some((changed, page.clone()));
             page
         }
@@ -394,7 +409,7 @@ fn respond(mut stream: TcpStream) -> std::io::Result<()> {
 }
 
 fn serve() -> Result<(), String> {
-    files()?;
+    files(&[])?;
     let listener = TcpListener::bind(ADDRESS).map_err(|e| format!("{ADDRESS}: {e}"))?;
     println!("Weft Report: http://{ADDRESS}");
     thread::spawn(current);
@@ -404,9 +419,9 @@ fn serve() -> Result<(), String> {
     Ok(())
 }
 
-fn check() -> Result<bool, String> {
+fn check(only: &[String]) -> Result<bool, String> {
     let started = Instant::now();
-    let r = report(false)?;
+    let r = report(false, only)?;
     r.lines.iter().for_each(|l| println!("{l}"));
     let fail = r.lines.iter().filter(|l| l.starts_with('✕')).count();
     println!(
@@ -425,8 +440,8 @@ fn check() -> Result<bool, String> {
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let run = match args.as_slice() {
-        [] => check(),
         [ui] if ui == "--ui" => serve().map(|_| false),
+        only if only.iter().all(|named| !named.starts_with('-')) => check(only),
         _ => Err(USAGE.to_string()),
     };
     match run {

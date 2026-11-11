@@ -1,19 +1,22 @@
 import koffi from "koffi";
 
-type Pairs = Record<string, string | number>;
 type Owned = { data: unknown; len: number };
-export type State = Record<string, Pairs>;
 export type Name = [module: string, name: string];
 export type Use = {
   role: "start" | "read" | "run";
   function: Name;
-  schema: Name | null;
-  tag: string | null;
+  input: Name | null;
+  output: Name | null;
   error: Name | null;
+  from: boolean;
 };
 export type Code = { adapter: string; modules: Record<string, string>; uses: Use[] }[];
-export type Turn = { start?: unknown[]; run?: string; input?: unknown; done?: true };
-export type Report = { state: State } | { thrown: string } | { refused: true };
+export type Call = { use: number; input: unknown; from: number | null; add: number | null };
+export type Turn = { step?: string; calls: Call[]; done?: true };
+export type Report =
+  | { outputs: Record<number, unknown>; errors: Record<number, unknown>; added: number[] }
+  | { thrown: string }
+  | { refused: true };
 
 const library = process.env.WEFT_LIB;
 if (!library) throw new Error("WEFT_LIB is not set");

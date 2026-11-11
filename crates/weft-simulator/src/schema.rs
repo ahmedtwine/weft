@@ -1,292 +1,361 @@
 use serde_json::{Value as Json, json};
+use weft_hegel::{Annotation, Bound, Generator};
 use weft_parse::{Draw, Value};
 
 const SHAPED: [&str; 7] = ["type", "enum", "const", "anyOf", "oneOf", "allOf", "not"];
 const ANY: &str = "";
 const ROOT: &str = "#";
+const DEFS: &str = "#/$defs/";
 const SAFE: i64 = (1 << 53) - 1;
+const FORMATS: [(&str, Generator); 9] = [
+    ("email", Generator::Email),
+    ("uri", Generator::Url),
+    ("hostname", Generator::Domain),
+    ("uuid", Generator::Uuid),
+    ("ipv4", Generator::Ipv4),
+    ("ipv6", Generator::Ipv6),
+    ("date", Generator::Date),
+    ("time", Generator::Time),
+    ("date-time", Generator::Datetime),
+];
 
-#[derive(Clone, PartialEq)]
-pub enum Choice {
-    Bool,
-    Int(i64, i64),
-    Text(u64, Option<u64>),
-    Pattern(String),
-    Format(Format),
-    Number(Bound, Bound),
-    Enum(Vec<Json>),
-    AnyOf(Vec<Choice>),
-    Array(Box<Choice>, u64, Option<u64>, bool),
-    Tuple(Vec<Choice>),
-    Record(Box<Choice>, Box<Choice>),
-    Object(Vec<(String, Choice, bool)>),
-    Rec(String, Box<Choice>, Box<Choice>),
-    Var(String),
+pub struct Branch {
+    pub verb: Option<String>,
+    pub generator: Generator,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Bound {
-    Open,
-    At(f64),
-    Past(f64),
+pub struct Tag {
+    pub path: Vec<String>,
+    pub object: String,
+    pub key: String,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Format {
-    Email,
-    Uri,
-    Hostname,
-    Uuid,
-    Ipv4,
-    Ipv6,
+fn any() -> Generator {
+    let subtree = || Box::new(Generator::Subtree(ANY.into()));
+    Generator::Recursive(
+        ANY.into(),
+        Box::new(Generator::OneOf(vec![
+            Generator::Constant(Json::Null),
+            Generator::Boolean,
+            Generator::Integer(-SAFE, SAFE),
+            Generator::Text(0, None),
+            Generator::List(subtree(), 0, None, false),
+            Generator::Dict(Box::new(Generator::Text(0, None)), subtree()),
+        ])),
+        None,
+        None,
+    )
 }
 
-impl Format {
-    const ALL: [(&'static str, Format); 6] = [
-        ("email", Format::Email),
-        ("uri", Format::Uri),
-        ("hostname", Format::Hostname),
-        ("uuid", Format::Uuid),
-        ("ipv4", Format::Ipv4),
-        ("ipv6", Format::Ipv6),
-    ];
-}
-
-impl Choice {
-    pub fn ends(&self) -> bool {
-        match self {
-            Choice::Var(_) => false,
-            Choice::Rec(_, _, shown) => shown.ends(),
-            Choice::AnyOf(all) => all.iter().any(Choice::ends),
-            Choice::Array(item, min, ..) => *min == 0 || item.ends(),
-            Choice::Tuple(all) => all.iter().all(Choice::ends),
-            Choice::Object(fields) => fields.iter().all(|(_, c, required)| !required || c.ends()),
-            _ => true,
-        }
+fn required(field: Generator) -> (Generator, bool) {
+    match field {
+        Generator::Optional(body) => (*body, false),
+        field => (field, true),
     }
+}
 
-    pub fn loops(&self) -> bool {
-        match self {
-            Choice::Var(_) => true,
-            Choice::Rec(_, _, shown) => shown.loops(),
-            Choice::AnyOf(all) | Choice::Tuple(all) => all.iter().any(Choice::loops),
-            Choice::Array(item, ..) => item.loops(),
-            Choice::Record(key, value) => key.loops() || value.loops(),
-            Choice::Object(fields) => fields.iter().any(|(_, c, _)| c.loops()),
-            _ => false,
-        }
-    }
-
-    fn any() -> Choice {
-        let var = || Box::new(Choice::Var(ANY.into()));
-        let body = Box::new(Choice::AnyOf(vec![
-            Choice::Enum(vec![Json::Null]),
-            Choice::Bool,
-            Choice::Int(-SAFE, SAFE),
-            Choice::Text(0, None),
-            Choice::Array(var(), 0, None, false),
-            Choice::Record(Box::new(Choice::Text(0, None)), var()),
-        ]));
-        Choice::Rec(ANY.into(), body.clone(), body)
-    }
-
-    fn merged(self, other: Choice, name: &str) -> Result<Choice, String> {
-        match (self, other) {
-            (Choice::Rec(key, body, shown), other) | (other, Choice::Rec(key, body, shown)) => {
-                Ok(Choice::Rec(key, body, Box::new(shown.merged(other, name)?)))
-            }
-            (Choice::AnyOf(all), other) | (other, Choice::AnyOf(all)) => all
-                .into_iter()
-                .map(|c| c.merged(other.clone(), name))
-                .collect::<Result<_, _>>()
-                .map(Choice::AnyOf),
-            (Choice::Object(mut fields), Choice::Object(more)) => {
-                for (key, choice, required) in more {
-                    match fields.iter_mut().find(|(k, ..)| *k == key) {
-                        Some((_, known, needed)) if *known == choice => *needed |= required,
-                        Some(_) => {
+fn merged(a: Generator, b: Generator, name: &str) -> Result<Generator, String> {
+    match (a, b) {
+        (Generator::Recursive(key, body, depth, leaves), other)
+        | (other, Generator::Recursive(key, body, depth, leaves)) => Ok(Generator::Recursive(
+            key,
+            Box::new(merged(*body, other, name)?),
+            depth,
+            leaves,
+        )),
+        (Generator::OneOf(all), other) | (other, Generator::OneOf(all)) => all
+            .into_iter()
+            .map(|g| merged(g, other.clone(), name))
+            .collect::<Result<_, _>>()
+            .map(Generator::OneOf),
+        (Generator::Record(mut fields), Generator::Record(more)) => {
+            for (key, field) in more {
+                let (field, needed) = required(field);
+                match fields.iter().position(|(k, _)| *k == key) {
+                    Some(at) => {
+                        let (known, was) = required(fields[at].1.clone());
+                        if known != field {
                             return Err(format!(
                                 "the field `{name}.{key}` has two schemas in one `allOf`"
                             ));
                         }
-                        None => fields.push((key, choice, required)),
+                        fields[at].1 = match was || needed {
+                            true => known,
+                            false => Generator::Optional(Box::new(known)),
+                        };
                     }
+                    None => fields.push((
+                        key,
+                        match needed {
+                            true => field,
+                            false => Generator::Optional(Box::new(field)),
+                        },
+                    )),
                 }
-                Ok(Choice::Object(fields))
             }
-            _ => Err(format!(
-                "the field `{name}` has an `allOf` that is not of objects"
-            )),
+            Ok(Generator::Record(fields))
         }
-    }
-
-    fn fit(&mut self, values: &[Json]) -> usize {
-        let fits: Box<dyn Fn(&Json) -> bool> = match self {
-            Choice::Enum(known) => {
-                let known = known.clone();
-                Box::new(move |v| known.contains(v))
-            }
-            Choice::Int(min, max) => {
-                let (min, max) = (*min, *max);
-                Box::new(move |v| v.as_i64().is_some_and(|n| (min..=max).contains(&n)))
-            }
-            Choice::Number(..) => Box::new(Json::is_i64),
-            Choice::Text(..) | Choice::Pattern(_) | Choice::Format(_) => Box::new(Json::is_string),
-            Choice::AnyOf(all) => return all.iter_mut().map(|c| c.fit(values)).sum(),
-            Choice::Array(item, ..) => return item.fit(values),
-            _ => return 0,
-        };
-        let kept: Vec<Json> = values.iter().filter(|v| fits(v)).cloned().collect();
-        match kept.is_empty() {
-            true => 0,
-            false => {
-                *self = Choice::Enum(kept);
-                1
-            }
-        }
-    }
-
-    fn narrow(&mut self, at: &mut Vec<String>, draw: &Draw, values: &[Json]) -> usize {
-        match self {
-            Choice::Object(fields) => fields
-                .iter_mut()
-                .map(|(key, choice, _)| {
-                    at.push(key.clone());
-                    let found = match at.ends_with(&draw.path) {
-                        true => choice.fit(values),
-                        false => 0,
-                    };
-                    let found = match found {
-                        0 => choice.narrow(at, draw, values),
-                        found => found,
-                    };
-                    at.pop();
-                    found
-                })
-                .sum(),
-            Choice::AnyOf(all) | Choice::Tuple(all) => {
-                all.iter_mut().map(|c| c.narrow(at, draw, values)).sum()
-            }
-            Choice::Array(item, ..) | Choice::Record(_, item) => item.narrow(at, draw, values),
-            Choice::Rec(_, body, shown) => {
-                body.narrow(at, draw, values) + shown.narrow(at, draw, values)
-            }
-            _ => 0,
-        }
-    }
-
-    pub fn live(self) -> Option<Choice> {
-        match self {
-            Choice::Enum(values) => (!values.is_empty()).then_some(Choice::Enum(values)),
-            Choice::AnyOf(all) => {
-                let all: Vec<Choice> = all.into_iter().filter_map(Choice::live).collect();
-                (!all.is_empty()).then_some(Choice::AnyOf(all))
-            }
-            Choice::Tuple(all) => all
-                .into_iter()
-                .map(Choice::live)
-                .collect::<Option<_>>()
-                .map(Choice::Tuple),
-            Choice::Object(fields) => fields
-                .into_iter()
-                .filter_map(|(key, choice, required)| match (choice.live(), required) {
-                    (Some(choice), _) => Some(Some((key, choice, required))),
-                    (None, true) => Some(None),
-                    (None, false) => None,
-                })
-                .collect::<Option<_>>()
-                .map(Choice::Object),
-            Choice::Array(item, min, max, unique) => match (item.live(), min) {
-                (Some(item), _) => Some(Choice::Array(Box::new(item), min, max, unique)),
-                (None, 0) => Some(Choice::Tuple(Vec::new())),
-                (None, _) => None,
-            },
-            Choice::Record(key, value) => match (key.live(), value.live()) {
-                (Some(key), Some(value)) => Some(Choice::Record(Box::new(key), Box::new(value))),
-                _ => Some(Choice::Object(Vec::new())),
-            },
-            Choice::Rec(key, body, shown) => match (body.live(), shown.live()) {
-                (Some(body), Some(shown)) => {
-                    Some(Choice::Rec(key, Box::new(body), Box::new(shown)))
-                }
-                _ => None,
-            },
-            other => Some(other),
-        }
-    }
-
-    pub fn narrowed(mut self, draw: &Draw) -> (Choice, usize) {
-        let values: Vec<Json> = draw
-            .values
-            .iter()
-            .map(|v| match v {
-                Value::Text(s) => json!(s),
-                Value::Int(n) => json!(*n as i64),
-            })
-            .collect();
-        let found = self.narrow(&mut Vec::new(), draw, &values);
-        (self, found)
+        _ => Err(format!(
+            "the field `{name}` has an `allOf` that is not of objects"
+        )),
     }
 }
 
-pub fn choice(name: &str, node: &Json) -> Result<Choice, String> {
-    let mut read = Read {
-        defs: node.get("$defs"),
-        open: vec![(ROOT.to_string(), false)],
+fn keyed(g: &mut Generator, draw: &Draw, values: &[Json]) -> usize {
+    match g {
+        Generator::Dict(_, value) => {
+            *g = Generator::Record(
+                values
+                    .iter()
+                    .filter_map(Json::as_str)
+                    .map(|key| (key.to_string(), Generator::Optional(value.clone())))
+                    .collect(),
+            );
+            1
+        }
+        Generator::OneOf(all) => all.iter_mut().map(|g| keyed(g, draw, values)).sum(),
+        Generator::List(body, ..)
+        | Generator::Optional(body)
+        | Generator::Add(_, body)
+        | Generator::Event(_, body) => keyed(body, draw, values),
+        _ => 0,
+    }
+}
+
+fn fit(g: &mut Generator, draw: &Draw, values: &[Json]) -> usize {
+    match (draw.keys, values.is_empty()) {
+        (true, _) => return keyed(g, draw, values),
+        (false, true) => return 1,
+        (false, false) => {}
+    }
+    let fits: Box<dyn Fn(&Json) -> bool> = match g {
+        Generator::SampledFrom(known) => {
+            let known = known.clone();
+            Box::new(move |v| known.contains(v))
+        }
+        Generator::Constant(known) => {
+            let known = known.clone();
+            Box::new(move |v| *v == known)
+        }
+        Generator::Integer(min, max) => {
+            let (min, max) = (*min, *max);
+            Box::new(move |v| v.as_i64().is_some_and(|n| (min..=max).contains(&n)))
+        }
+        Generator::Float(..) => Box::new(Json::is_i64),
+        Generator::Text(..)
+        | Generator::Regex(_)
+        | Generator::Grammar(..)
+        | Generator::Email
+        | Generator::Url
+        | Generator::Domain
+        | Generator::Uuid
+        | Generator::Ipv4
+        | Generator::Ipv6
+        | Generator::Date
+        | Generator::Time
+        | Generator::Datetime => Box::new(Json::is_string),
+        Generator::OneOf(all) => return all.iter_mut().map(|g| fit(g, draw, values)).sum(),
+        Generator::List(body, ..)
+        | Generator::Optional(body)
+        | Generator::Add(_, body)
+        | Generator::Event(_, body) => return fit(body, draw, values),
+        _ => return 0,
     };
-    let body = read.choice(name, node)?;
-    match (read.open.pop().is_some_and(|(_, used)| used), body.ends()) {
-        (false, _) => Ok(body),
-        (true, true) => Ok(Choice::Rec(
-            ROOT.to_string(),
-            Box::new(body.clone()),
-            Box::new(body),
-        )),
-        (true, false) => Err(format!(
-            "the schema `{name}` is in each value of `{name}`, and weft draws no value without an end"
-        )),
+    let fitting: Vec<Json> = values.iter().filter(|v| fits(v)).cloned().collect();
+    match fitting.is_empty() {
+        true => 0,
+        false => {
+            *g = Generator::Event(
+                format!("draw {}", draw.path.join(".")),
+                Box::new(Generator::SampledFrom(fitting)),
+            );
+            1
+        }
+    }
+}
+
+fn narrow(g: &mut Generator, at: &mut Vec<String>, draw: &Draw, values: &[Json]) -> usize {
+    match g {
+        Generator::Record(fields) => fields
+            .iter_mut()
+            .map(|(key, field)| {
+                at.push(key.clone());
+                let found = match at.ends_with(&draw.path) {
+                    true => fit(field, draw, values),
+                    false => 0,
+                };
+                let found = match found {
+                    0 => narrow(field, at, draw, values),
+                    found => found,
+                };
+                at.pop();
+                found
+            })
+            .sum(),
+        Generator::OneOf(all) | Generator::Tuple(all) => {
+            all.iter_mut().map(|g| narrow(g, at, draw, values)).sum()
+        }
+        Generator::List(body, ..)
+        | Generator::Dict(_, body)
+        | Generator::Optional(body)
+        | Generator::Recursive(_, body, ..)
+        | Generator::Add(_, body)
+        | Generator::Event(_, body) => narrow(body, at, draw, values),
+        _ => 0,
+    }
+}
+
+pub fn narrowed(mut g: Generator, draw: &Draw) -> (Generator, usize) {
+    let values: Vec<Json> = draw
+        .values
+        .iter()
+        .map(|v| match v {
+            Value::Text(s) => json!(s),
+            Value::Int(n) => json!(*n as i64),
+        })
+        .collect();
+    let found = narrow(&mut g, &mut Vec::new(), draw, &values);
+    (g, found)
+}
+
+pub fn live(g: Generator) -> Option<Generator> {
+    let boxed = |g: Generator| live(g).map(Box::new);
+    match g {
+        Generator::SampledFrom(values) => {
+            (!values.is_empty()).then_some(Generator::SampledFrom(values))
+        }
+        Generator::OneOf(all) => {
+            let all: Vec<Generator> = all.into_iter().filter_map(live).collect();
+            (!all.is_empty()).then_some(Generator::OneOf(all))
+        }
+        Generator::Tuple(all) => all
+            .into_iter()
+            .map(live)
+            .collect::<Option<_>>()
+            .map(Generator::Tuple),
+        Generator::Record(fields) => fields
+            .into_iter()
+            .filter_map(|(key, field)| match required(field) {
+                (field, true) => Some(live(field).map(|field| (key, field))),
+                (field, false) => {
+                    live(field).map(|field| Some((key, Generator::Optional(Box::new(field)))))
+                }
+            })
+            .collect::<Option<_>>()
+            .map(Generator::Record),
+        Generator::Optional(body) => {
+            Some(boxed(*body).map_or(Generator::Constant(Json::Null), Generator::Optional))
+        }
+        Generator::List(item, min, max, unique) => match (boxed(*item), min) {
+            (Some(item), _) => Some(Generator::List(item, min, max, unique)),
+            (None, 0) => Some(Generator::Tuple(Vec::new())),
+            (None, _) => None,
+        },
+        Generator::Dict(key, value) => match (boxed(*key), boxed(*value)) {
+            (Some(key), Some(value)) => Some(Generator::Dict(key, value)),
+            _ => Some(Generator::Record(Vec::new())),
+        },
+        Generator::Recursive(key, body, depth, leaves) => {
+            boxed(*body).map(|body| Generator::Recursive(key, body, depth, leaves))
+        }
+        Generator::Add(pool, body) => boxed(*body).map(|body| Generator::Add(pool, body)),
+        Generator::Event(label, body) => boxed(*body).map(|body| Generator::Event(label, body)),
+        other => Some(other),
     }
 }
 
 struct Read<'a> {
     defs: Option<&'a Json>,
+    pools: &'a [String],
     open: Vec<(String, bool)>,
 }
 
-impl Read<'_> {
-    fn named(&mut self, name: &str, key: &str, wrong: &str) -> Result<Choice, String> {
+impl<'a> Read<'a> {
+    fn new(node: &'a Json, pools: &'a [String]) -> Read<'a> {
+        Read {
+            defs: node.get("$defs"),
+            pools,
+            open: vec![(ROOT.to_string(), false)],
+        }
+    }
+
+    fn pool(&self, name: &str, pool: &str) -> Result<String, String> {
+        match self.pools.iter().any(|known| known == pool) {
+            true => Ok(pool.to_string()),
+            false => Err(format!(
+                "the field `{name}` names the pool `{pool}`, and no object of `setup` has `pool {pool}`"
+            )),
+        }
+    }
+
+    fn recursive(
+        &mut self,
+        name: &str,
+        key: &str,
+        node: &Json,
+        body: Generator,
+    ) -> Result<Generator, String> {
+        match (
+            self.open.pop().is_some_and(|(_, used)| used),
+            body.ends(&[key]),
+        ) {
+            (false, _) => Ok(body),
+            (true, true) => {
+                let limits = Annotation::of(node)?;
+                Ok(Generator::Recursive(
+                    key.to_string(),
+                    Box::new(body),
+                    limits.max_depth,
+                    limits.max_leaves,
+                ))
+            }
+            (true, false) => Err(format!(
+                "the field `{name}` has the schema `{key}` in each value of `{key}`, and weft draws no value without an end"
+            )),
+        }
+    }
+
+    fn named(&mut self, name: &str, key: &str, wrong: &str) -> Result<Generator, String> {
         if let Some((_, used)) = self.open.iter_mut().find(|(o, _)| o == key) {
             *used = true;
-            return Ok(Choice::Var(key.to_string()));
+            return Ok(Generator::Subtree(key.to_string()));
         }
         let def = self
             .defs
             .and_then(|all| all.get(key))
             .ok_or_else(|| wrong.to_string())?;
         self.open.push((key.to_string(), false));
-        let body = self.choice(name, def);
-        let used = self.open.pop().is_some_and(|(_, used)| used);
-        match (body?, used) {
-            (body, false) => Ok(body),
-            (body, true) if body.ends() => Ok(Choice::Rec(
-                key.to_string(),
-                Box::new(body.clone()),
-                Box::new(body),
-            )),
-            _ => Err(format!(
-                "the field `{name}` has the schema `{key}` in each value of `{key}`, and weft draws no value without an end"
-            )),
+        match self.choice(name, def) {
+            Ok(body) => self.recursive(name, key, def, body),
+            Err(e) => {
+                self.open.pop();
+                Err(e)
+            }
         }
     }
 
-    fn each(&mut self, name: &str, all: &[Json]) -> Result<Vec<Choice>, String> {
+    fn each(&mut self, name: &str, all: &[Json]) -> Result<Vec<Generator>, String> {
         all.iter().map(|b| self.choice(name, b)).collect()
     }
 
-    fn choice(&mut self, name: &str, node: &Json) -> Result<Choice, String> {
+    fn choice(&mut self, name: &str, node: &Json) -> Result<Generator, String> {
+        let meta = Annotation::of(node)?;
+        let body = match (&meta.from, &meta.grammar) {
+            (Some(pool), _) => Generator::Pool(self.pool(name, pool)?, meta.consume),
+            (None, Some(grammar)) => Generator::Grammar(grammar.clone(), meta.start.clone()),
+            (None, None) => self.shaped(name, node)?,
+        };
+        match &meta.pool {
+            Some(pool) => Ok(Generator::Add(self.pool(name, pool)?, Box::new(body))),
+            None => Ok(body),
+        }
+    }
+
+    fn shaped(&mut self, name: &str, node: &Json) -> Result<Generator, String> {
         let int = |k: &str| node.get(k).and_then(Json::as_i64);
         let number = |k: &str| node.get(k).and_then(Json::as_f64);
         let size = |k: &str| node.get(k).and_then(Json::as_u64);
+        let text = |k: &str| node.get(k).and_then(Json::as_str);
         let wrong = format!("the field `{name}` is not a JSON Schema that weft draws: `{node}`");
         let listed = |k: &str| {
             node.get(k)
@@ -298,31 +367,31 @@ impl Read<'_> {
             (_, Some(n)) => Bound::At(n),
             _ => Bound::Open,
         };
-        if let Some(path) = node.get("$ref").and_then(Json::as_str) {
+        if let Some(path) = text("$ref") {
             let key = match path {
                 ROOT => ROOT,
-                other => other.strip_prefix("#/$defs/").ok_or(&wrong)?,
+                other => other.strip_prefix(DEFS).ok_or(&wrong)?,
             };
             return self.named(name, key, &wrong);
         }
         if node.is_object() && !SHAPED.iter().any(|k| node.get(k).is_some()) {
-            return Ok(Choice::any());
+            return Ok(any());
         }
         if node.get("not") == Some(&json!({})) {
-            return Ok(Choice::Enum(Vec::new()));
+            return Ok(Generator::SampledFrom(Vec::new()));
         }
         if let Some(all) = listed("allOf") {
             let mut rest = node.clone();
             rest.as_object_mut().ok_or(&wrong)?.remove("allOf");
             let own = match rest.get("type").is_some() || rest.get("properties").is_some() {
-                true => vec![self.choice(name, &rest)?],
+                true => vec![self.shaped(name, &rest)?],
                 false => Vec::new(),
             };
             return [own, self.each(name, all)?]
                 .concat()
                 .into_iter()
                 .map(Ok)
-                .reduce(|a, b| a?.merged(b?, name))
+                .reduce(|a, b| merged(a?, b?, name))
                 .ok_or(wrong)?;
         }
         if let Some(types) = node.get("type").and_then(Json::as_array) {
@@ -331,21 +400,21 @@ impl Read<'_> {
                 .map(|t| {
                     let mut one = node.clone();
                     one["type"] = t.clone();
-                    self.choice(name, &one)
+                    self.shaped(name, &one)
                 })
                 .collect::<Result<_, _>>()
-                .map(Choice::AnyOf);
+                .map(Generator::OneOf);
         }
         match (
             listed("enum"),
             node.get("const"),
             listed("anyOf").or_else(|| listed("oneOf")),
-            node.get("type").and_then(Json::as_str),
+            text("type"),
         ) {
-            (Some(values), ..) => Ok(Choice::Enum(values.clone())),
-            (_, Some(value), ..) => Ok(Choice::Enum(vec![value.clone()])),
-            (_, _, Some(all), _) => self.each(name, all).map(Choice::AnyOf),
-            (.., Some("integer")) => Ok(Choice::Int(
+            (Some(values), ..) => Ok(Generator::SampledFrom(values.clone())),
+            (_, Some(value), ..) => Ok(Generator::Constant(value.clone())),
+            (_, _, Some(all), _) => self.each(name, all).map(Generator::OneOf),
+            (.., Some("integer")) => Ok(Generator::Integer(
                 int("exclusiveMinimum")
                     .map(|n| n.saturating_add(1))
                     .or(int("minimum"))
@@ -355,35 +424,38 @@ impl Read<'_> {
                     .or(int("maximum"))
                     .unwrap_or(SAFE),
             )),
-            (.., Some("string")) => match (
-                node.get("pattern").and_then(Json::as_str),
-                node.get("format").and_then(Json::as_str),
-            ) {
-                (Some(pattern), _) => Ok(Choice::Pattern(pattern.to_string())),
-                (None, Some(format)) => Format::ALL
-                    .iter()
-                    .find(|(known, _)| *known == format)
-                    .map(|(_, f)| Choice::Format(*f))
-                    .ok_or(wrong),
-                (None, None) => Ok(Choice::Text(
-                    size("minLength").unwrap_or(0),
-                    size("maxLength"),
-                )),
-            },
-            (.., Some("number")) => Ok(Choice::Number(
+            (.., Some("string")) => {
+                match (text("pattern"), text("format"), text("contentEncoding")) {
+                    (Some(pattern), ..) => Ok(Generator::Regex(pattern.to_string())),
+                    (None, _, Some("base64")) => Ok(Generator::Bytes(
+                        size("minLength").unwrap_or(0),
+                        size("maxLength"),
+                    )),
+                    (None, Some(format), _) => FORMATS
+                        .iter()
+                        .find(|(known, _)| *known == format)
+                        .map(|(_, g)| g.clone())
+                        .ok_or(wrong),
+                    (None, None, _) => Ok(Generator::Text(
+                        size("minLength").unwrap_or(0),
+                        size("maxLength"),
+                    )),
+                }
+            }
+            (.., Some("number")) => Ok(Generator::Float(
                 bound("minimum", "exclusiveMinimum"),
                 bound("maximum", "exclusiveMaximum"),
             )),
-            (.., Some("boolean")) => Ok(Choice::Bool),
-            (.., Some("null")) => Ok(Choice::Enum(vec![Json::Null])),
+            (.., Some("boolean")) => Ok(Generator::Boolean),
+            (.., Some("null")) => Ok(Generator::Constant(Json::Null)),
             (.., Some("array")) => match (listed("prefixItems"), node.get("items")) {
                 (Some(all), _) => all
                     .iter()
                     .enumerate()
                     .map(|(i, item)| self.choice(&format!("{name}[{i}]"), item))
                     .collect::<Result<_, _>>()
-                    .map(Choice::Tuple),
-                (None, Some(item)) => Ok(Choice::Array(
+                    .map(Generator::Tuple),
+                (None, Some(item)) => Ok(Generator::List(
                     Box::new(self.choice(&format!("{name}[]"), item)?),
                     size("minItems").unwrap_or(0),
                     size("maxItems"),
@@ -399,15 +471,15 @@ impl Read<'_> {
             {
                 let key = match node.get("propertyNames") {
                     Some(names) => self.choice(&format!("{name}{{}}"), names)?,
-                    None => Choice::Text(0, None),
+                    None => Generator::Text(0, None),
                 };
-                Ok(Choice::Record(
+                Ok(Generator::Dict(
                     Box::new(key),
                     Box::new(self.choice(&format!("{name}{{}}"), &node["additionalProperties"])?),
                 ))
             }
             (.., Some("object")) => {
-                let required: Vec<&str> = node
+                let needed: Vec<&str> = node
                     .get("required")
                     .and_then(Json::as_array)
                     .map_or(Vec::new(), |all| {
@@ -417,15 +489,299 @@ impl Read<'_> {
                     Some(Json::Object(all)) => all
                         .iter()
                         .map(|(k, v)| {
-                            self.choice(&format!("{name}.{k}"), v)
-                                .map(|c| (k.clone(), c, required.contains(&k.as_str())))
+                            let field = self.choice(&format!("{name}.{k}"), v)?;
+                            Ok((
+                                k.clone(),
+                                match needed.contains(&k.as_str()) {
+                                    true => field,
+                                    false => Generator::Optional(Box::new(field)),
+                                },
+                            ))
                         })
-                        .collect::<Result<_, _>>()
-                        .map(Choice::Object),
-                    _ => Ok(Choice::Object(Vec::new())),
+                        .collect::<Result<_, String>>()
+                        .map(Generator::Record),
+                    _ => Ok(Generator::Record(Vec::new())),
                 }
             }
             _ => Err(wrong),
         }
+    }
+}
+
+pub fn whole(name: &str, node: &Json, pools: &[String]) -> Result<Generator, String> {
+    let mut read = Read::new(node, pools);
+    let body = read.choice(name, node)?;
+    read.recursive(name, ROOT, node, body)
+}
+
+pub fn branches(name: &str, node: &Json, pools: &[String]) -> Result<Vec<Branch>, String> {
+    let target = |option: &'_ Json| -> Result<Option<String>, String> {
+        let def = option
+            .get("$ref")
+            .and_then(Json::as_str)
+            .and_then(|path| path.strip_prefix(DEFS))
+            .and_then(|key| node.get("$defs")?.get(key));
+        Ok(Annotation::of(option)?.verb.or(def
+            .map(Annotation::of)
+            .transpose()?
+            .and_then(|meta| meta.verb)))
+    };
+    let options: Vec<&Json> = ["anyOf", "oneOf"]
+        .iter()
+        .find_map(|k| node.get(k).and_then(Json::as_array))
+        .map_or(Vec::new(), |all| all.iter().collect());
+    let verbs = options
+        .iter()
+        .map(|option| target(option))
+        .collect::<Result<Vec<_>, _>>()?;
+    let parts: Vec<(Option<String>, &Json)> = match verbs.iter().any(Option::is_some) {
+        true => verbs.into_iter().zip(options).collect(),
+        false => vec![(Annotation::of(node)?.verb, node)],
+    };
+    let whole = parts.len() == 1;
+    parts
+        .into_iter()
+        .map(|(verb, part)| {
+            let mut read = Read::new(node, pools);
+            let body = read.choice(name, part)?;
+            match (whole, read.open.first()) {
+                (false, Some((_, true))) => Err(format!(
+                    "the schema `{name}` is in a value of one of its branches, and each branch with a verb is one input"
+                )),
+                _ => Ok(Branch {
+                    verb,
+                    generator: read.recursive(name, ROOT, node, body)?,
+                }),
+            }
+        })
+        .collect()
+}
+
+pub fn tags(node: &Json) -> Result<Vec<Tag>, String> {
+    fn walk(node: &Json, at: &mut Vec<String>, out: &mut Vec<Tag>) -> Result<(), String> {
+        if let Some(read) = Annotation::of(node)?.read {
+            let (object, key) = read
+                .split_once('.')
+                .filter(|(object, key)| !object.is_empty() && !key.is_empty())
+                .ok_or_else(|| format!("`read: {read}` is not `<object>.<key>`"))?;
+            out.push(Tag {
+                path: at.clone(),
+                object: object.to_string(),
+                key: key.to_string(),
+            });
+        }
+        if let Some(Json::Object(fields)) = node.get("properties") {
+            for (key, field) in fields {
+                at.push(key.clone());
+                walk(field, at, out)?;
+                at.pop();
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(node, &mut Vec::new(), &mut out)?;
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pools() -> Vec<String> {
+        vec!["ids".to_string()]
+    }
+
+    fn read(schema: Json) -> Result<Generator, String> {
+        whole("input", &schema, &pools())
+    }
+
+    fn draw(path: &str, values: &[&str]) -> Draw {
+        Draw {
+            path: path.split('.').map(String::from).collect(),
+            values: values.iter().map(|v| Value::Text(v.to_string())).collect(),
+            keys: false,
+        }
+    }
+
+    #[test]
+    fn each_annotation_gives_the_generator_of_its_hegel_part() {
+        let id = json!({ "type": "integer", "minimum": 1, "maximum": 9 });
+        let annotated = |weft: Json| {
+            let mut node = id.clone();
+            node["weft"] = weft;
+            read(node)
+        };
+        assert_eq!(
+            annotated(json!({ "pool": "ids" })),
+            Ok(Generator::Add(
+                "ids".into(),
+                Box::new(Generator::Integer(1, 9))
+            ))
+        );
+        assert_eq!(
+            annotated(json!({ "from": "ids" })),
+            Ok(Generator::Pool("ids".into(), false))
+        );
+        assert_eq!(
+            annotated(json!({ "from": "ids", "consume": true })),
+            Ok(Generator::Pool("ids".into(), true))
+        );
+        assert_eq!(
+            read(
+                json!({ "type": "string", "weft": { "grammar": "start: \"a\"", "start": "start" } })
+            ),
+            Ok(Generator::Grammar(
+                "start: \"a\"".into(),
+                Some("start".into())
+            ))
+        );
+        assert_eq!(
+            read(json!({
+                "type": "object",
+                "properties": { "children": { "type": "array", "items": { "$ref": "#" } } },
+                "required": ["children"],
+                "weft": { "maxLeaves": 40, "maxDepth": 6 }
+            })),
+            Ok(Generator::Recursive(
+                ROOT.into(),
+                Box::new(Generator::Record(vec![(
+                    "children".into(),
+                    Generator::List(Box::new(Generator::Subtree(ROOT.into())), 0, None, false)
+                )])),
+                Some(6),
+                Some(40)
+            ))
+        );
+    }
+
+    #[test]
+    fn weft_refuses_an_annotation_that_it_does_not_know() {
+        let wrong = |weft: Json| read(json!({ "type": "integer", "weft": weft })).unwrap_err();
+        assert!(
+            wrong(json!({ "pool": "names" })).contains("no object of `setup` has `pool names`")
+        );
+        assert!(wrong(json!({ "pol": "ids" })).contains("is not an annotation of weft"));
+        assert!(wrong(json!({ "consume": "yes" })).contains("is not an annotation of weft"));
+        assert!(wrong(json!("send")).contains("is not an annotation of weft"));
+    }
+
+    #[test]
+    fn each_format_and_encoding_gives_the_native_generator() {
+        let text = |key: &str, value: &str| read(json!({ "type": "string", key: value }));
+        assert_eq!(text("format", "date"), Ok(Generator::Date));
+        assert_eq!(text("format", "time"), Ok(Generator::Time));
+        assert_eq!(text("format", "date-time"), Ok(Generator::Datetime));
+        assert_eq!(text("format", "hostname"), Ok(Generator::Domain));
+        assert_eq!(
+            text("contentEncoding", "base64"),
+            Ok(Generator::Bytes(0, None))
+        );
+        assert_eq!(text("pattern", "^a$"), Ok(Generator::Regex("^a$".into())));
+    }
+
+    #[test]
+    fn a_draw_line_gives_the_keys_of_a_record_and_the_values_of_each_key() {
+        let element = read(json!({
+            "type": "object",
+            "properties": {
+                "attributes": { "type": "object", "additionalProperties": { "type": "string" } }
+            },
+            "required": ["attributes"]
+        }))
+        .unwrap();
+        let (keyed, found) = narrowed(
+            element,
+            &Draw {
+                keys: true,
+                ..draw("attributes", &["style", "title"])
+            },
+        );
+        assert_eq!(found, 1);
+        let optional = |g: Generator| Generator::Optional(Box::new(g));
+        assert_eq!(
+            keyed,
+            Generator::Record(vec![(
+                "attributes".into(),
+                Generator::Record(vec![
+                    ("style".into(), optional(Generator::Text(0, None))),
+                    ("title".into(), optional(Generator::Text(0, None))),
+                ])
+            )])
+        );
+        let (valued, found) = narrowed(keyed, &draw("attributes.title", &["Sent Jun 11"]));
+        assert_eq!(found, 1);
+        assert_eq!(
+            valued,
+            Generator::Record(vec![(
+                "attributes".into(),
+                Generator::Record(vec![
+                    ("style".into(), optional(Generator::Text(0, None))),
+                    (
+                        "title".into(),
+                        optional(Generator::Event(
+                            "draw attributes.title".into(),
+                            Box::new(Generator::SampledFrom(vec![json!("Sent Jun 11")]))
+                        ))
+                    ),
+                ])
+            )])
+        );
+    }
+
+    #[test]
+    fn each_branch_with_a_verb_is_one_input_and_each_read_has_its_path() {
+        let schema = json!({
+            "oneOf": [
+                { "type": "object", "properties": {}, "weft": { "verb": "send" } },
+                { "type": "object", "properties": { "id": { "type": "integer", "weft": { "from": "ids" } } }, "required": ["id"], "weft": { "verb": "remove" } },
+                { "type": "object", "properties": {} }
+            ]
+        });
+        let found: Vec<(Option<String>, Generator)> = branches("input", &schema, &pools())
+            .unwrap()
+            .into_iter()
+            .map(|b| (b.verb, b.generator))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (Some("send".into()), Generator::Record(Vec::new())),
+                (
+                    Some("remove".into()),
+                    Generator::Record(vec![("id".into(), Generator::Pool("ids".into(), false))])
+                ),
+                (None, Generator::Record(Vec::new())),
+            ]
+        );
+        let output = json!({
+            "type": "object",
+            "properties": {
+                "page": { "type": "object", "properties": { "text": { "not": {}, "weft": { "read": "page.text" } } } },
+                "count": { "type": "integer", "weft": { "read": "page.count" } }
+            }
+        });
+        let mut found: Vec<(Vec<String>, String, String)> = tags(&output)
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.path, t.object, t.key))
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                (
+                    vec!["count".to_string()],
+                    "page".to_string(),
+                    "count".to_string()
+                ),
+                (
+                    vec!["page".to_string(), "text".to_string()],
+                    "page".to_string(),
+                    "text".to_string()
+                ),
+            ]
+        );
+        assert!(tags(&json!({ "weft": { "read": "count" } })).is_err());
     }
 }

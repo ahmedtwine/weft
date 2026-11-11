@@ -35,7 +35,7 @@ pub enum weft_format_t {
 #[repr(C)]
 pub enum weft_status_t {
     WEFT_STATUS_NO_CHECK = 0,
-    WEFT_STATUS_HOLDS = 1,
+    WEFT_STATUS_PASSES = 1,
     WEFT_STATUS_FAILS = 2,
 }
 #[repr(C)]
@@ -195,8 +195,8 @@ pub unsafe extern "C" fn weft_check(
             status: weft_status_t::WEFT_STATUS_NO_CHECK as u32,
             step: 0,
         },
-        Some(Verdict::Holds) => weft_verdict_t {
-            status: weft_status_t::WEFT_STATUS_HOLDS as u32,
+        Some(Verdict::Passes) => weft_verdict_t {
+            status: weft_status_t::WEFT_STATUS_PASSES as u32,
             step: 0,
         },
         Some(Verdict::Fails { step, .. }) => weft_verdict_t {

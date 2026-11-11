@@ -101,7 +101,7 @@ fn open(transport: Option<&Transport>) -> Result<String, String> {
                 .strip_prefix("http://")
                 .map(|rest| rest.split('/').next().unwrap_or_default())
                 .ok_or_else(|| {
-                    format!("`transport http url={url}` has no `http://<host>:<port>`")
+                    format!("`transport \"http\" url=\"{url}\"` has no `http://<host>:<port>`")
                 })?;
             let listener = TcpListener::bind(host).map_err(|e| format!("{host}: {e}"))?;
             let peers = Peers::default();

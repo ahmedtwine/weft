@@ -283,7 +283,7 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
             );
         }
         for (_, m) in &checked {
-            let kind = match m.kept {
+            let kind = match m.passed {
                 true => Kind::Check,
                 false => Kind::Broken,
             };
@@ -673,30 +673,30 @@ mod tests {
 
     const DIAGRAM: &str = r#"
 setup {
-  person agent
-  browser page snapshot=snap_0 {
-    state snapshot=snap_0 {
-      on click snapshot=snap_1
+  person "agent"
+  browser "page" snapshot="snap_0" {
+    state snapshot="snap_0" {
+      on "click" snapshot="snap_1"
     }
-    state snapshot=snap_1
+    state snapshot="snap_1"
   }
-  element origin value="San Diego" {
+  element "origin" value="San Diego" {
     state value="San Diego" {
-      on type value="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
+      on "type" value="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
     }
     state value="Lahore, Pakistan, Lahore, Pakistan, Lahore, Pakistan"
   }
 }
 action {
-  type from=agent to=origin
-  click from=agent to=page origin.value="San Diego"
+  type from="agent" to="origin"
+  click from="agent" to="page" origin.value="San Diego"
 }
 check {
   invariant {
-    forall element origin {
+    forall "element" "origin" {
       implies {
-        in step click
-        eq (next)element.value element.value
+        in "step" "click"
+        eq (next)"element.value" "element.value"
       }
     }
   }
@@ -713,7 +713,7 @@ check {
     }
 
     #[test]
-    fn each_state_wraps_to_two_lines_and_keeps_each_word() {
+    fn each_state_wraps_to_two_lines_and_shows_each_word() {
         for s in STATES {
             let lines = wrap(s, WRAP);
             assert!(lines.len() <= 2, "{s} wraps to {} lines", lines.len());
@@ -728,10 +728,10 @@ check {
     }
 
     const CONFIG: &str = r#"include "**/*.weft.kdl"
-theme light
-style person icon=user
-style browser icon=app-window
-style element icon=square-dashed-mouse-pointer"#;
+theme "light"
+style "person" icon="user"
+style "browser" icon="app-window"
+style "element" icon="square-dashed-mouse-pointer""#;
 
     fn diagram() -> Diagram {
         weft_parse::parse(DIAGRAM, &weft_parse::config(CONFIG).unwrap()).unwrap()

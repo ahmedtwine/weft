@@ -1,13 +1,15 @@
 {
   "name": "weft",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
   "bin": {
     "weft": "./sdk/bin.ts"
   },
   "exports": {
-    "./harness": "./sdk/harness.ts"
+    "./harness": "./sdk/harness.ts",
+    "./annotation": "./sdk/annotation.ts",
+    "./annotation.schema.json": "./sdk/annotation.schema.json"
   },
   "dependencies": {
     "koffi": "^3.0.2"

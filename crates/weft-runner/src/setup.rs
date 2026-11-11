@@ -1,7 +1,9 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 
+use serde_json::Value as Json;
 use weft_parse::{Diagram, Ran, Span, State};
-use weft_simulator::{Choice, Hello, Member, Report, Turn};
+use weft_simulator::{Action, Generator, Hello, Member, Report, Start, Turn};
 
 pub struct Setup<'a> {
     d: &'a Diagram,
@@ -12,7 +14,6 @@ pub struct Setup<'a> {
 
 impl<'a> Setup<'a> {
     pub fn new(d: &'a Diagram, file: &Path) -> Setup<'a> {
-        let none = || Choice::Object(Vec::new());
         Setup {
             d,
             file: file.display().to_string(),
@@ -23,13 +24,29 @@ impl<'a> Setup<'a> {
                     .iter()
                     .flat_map(|(o, pairs)| pairs.keys().map(move |k| format!("{o}.{k}")))
                     .collect(),
-                start: vec![none()],
+                start: vec![Start {
+                    line: 0,
+                    input: None,
+                    pool: None,
+                }],
                 actions: d
                     .objects
                     .iter()
                     .flat_map(|o| &o.moves)
-                    .map(|m| (m.verb.clone(), none()))
+                    .map(|m| &m.verb)
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(|verb| Action {
+                        verb: verb.clone(),
+                        line: 0,
+                        drawn: Generator::Tuple(vec![
+                            Generator::Constant(Json::Null),
+                            Generator::Constant(Json::Null),
+                        ]),
+                        pool: None,
+                    })
                     .collect(),
+                sized: false,
             },
         }
     }
@@ -55,7 +72,7 @@ impl Member for Setup<'_> {
             }
             Turn::Read | Turn::Done => {}
         }
-        Ok(Report::State(self.now.clone()))
+        Ok(Report::State(self.now.clone(), Vec::new()))
     }
 
     fn finish(&mut self) -> Result<Ran, String> {

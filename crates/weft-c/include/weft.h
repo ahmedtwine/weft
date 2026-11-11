@@ -19,7 +19,7 @@ typedef enum {
 
 typedef enum {
   WEFT_STATUS_NO_CHECK = 0,
-  WEFT_STATUS_HOLDS = 1,
+  WEFT_STATUS_PASSES = 1,
   WEFT_STATUS_FAILS = 2,
 } weft_status_t;
 

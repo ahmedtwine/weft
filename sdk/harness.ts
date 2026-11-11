@@ -3,29 +3,31 @@ import { test } from "bun:test";
 import inspector from "node:inspector";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { done, join, type Name, type Report, type State, type Turn, turn, type Use } from "./weft";
+import { type Call, done, join, type Name, type Report, type Turn, turn, type Use } from "./weft";
 
 type Schema = {
-  _zod: { def: { shape?: Record<string, Schema>; options?: Schema[] } };
+  _zod: unknown;
   parse: (value: unknown) => unknown;
   safeParse: (value: unknown) => { success: boolean; data?: unknown };
 };
-type Read = [string[], string];
+type Run = (input?: unknown) => unknown;
 type Used = {
   role: Use["role"];
-  run: (input?: unknown) => unknown;
+  run?: Run;
+  method: string;
   input?: Schema;
+  output?: Schema;
   error?: Schema;
-  reads: Read[];
-  inputs: { tag?: string; schema: Schema }[];
 };
 type Failed = [] | [Schema, string];
+type Called = { result: unknown } | { failed: [Schema, string] } | { thrown: string };
 type Served = { file: string; counts: Int32Array; marks: [number, number][]; starts: number[] };
 type Range = { startOffset: number; endOffset: number; count: number };
 type Taken = { result: { url: string; functions: { ranges: Range[] }[] }[] };
 type Code = Map<string, Set<number>>;
 
 const ADAPTER = "bun";
+const START = "start";
 const SAMPLES = 8;
 const FAULTS = [TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError];
 const SOURCE = new RegExp(
@@ -175,18 +177,8 @@ const loaded = async () => {
   );
   if (!first) throw new Error(`the diagram has no \`impl ${ADAPTER}\` with a \`module\``);
   const { z } = await import(Bun.resolveSync("zod", dirname(Bun.resolveSync(placed(first), process.cwd()))));
-  const tag = (schema: Schema): string | undefined => z.globalRegistry.get(schema)?.weft;
-  const reads = (schema: Schema, at: string[]): Read[] => [
-    ...[tag(schema)].flatMap((name) => (name ? [[at, name] as Read] : [])),
-    ...Object.entries(schema._zod.def.shape ?? {}).flatMap(([key, each]) =>
-      reads(each, [...at, key])
-    ),
-  ];
-  const tagged = (schema: Schema) =>
-    (schema._zod.def.options ?? [schema]).flatMap((option) => {
-      const verb = tag(option);
-      return verb ? [{ tag: verb, schema: option }] : [];
-    });
+  const json = (schema: Schema | undefined, io: "input" | "output") =>
+    schema && z.toJSONSchema(schema, { io, unrepresentable: () => ({ not: {} }) });
   const uses: (Used | null)[] = [];
   for (const { adapter, modules: places, uses: lines } of code) {
     if (adapter !== ADAPTER) {
@@ -205,30 +197,23 @@ const loaded = async () => {
       if (!(name in modules[module])) throw new Error(`\`${module}\` exports no \`${name}\``);
       return modules[module][name];
     };
-    const schema = (name: Name) => {
+    const schema = (name: Name | null) => {
+      if (!name) return undefined;
       const found = exported(name) as Schema;
       if (!found?._zod) throw new Error(`\`${name.join(".")}\` is no Zod schema`);
       return found;
     };
     for (const line of lines) {
-      const run = exported(line.function);
-      if (typeof run !== "function") throw new Error(`\`${line.function.join(".")}\` is no function`);
-      const whole = line.schema ? schema(line.schema) : undefined;
-      const branches = whole && line.tag ? tagged(whole).filter(({ tag }) => tag === line.tag) : [];
-      if (line.tag && branches.length !== 1)
-        throw new Error(
-          `\`${line.schema?.join(".")}\` has ${branches.length} branches with the tag \`${line.tag}\``
-        );
-      const input = line.tag ? branches[0].schema : whole;
-      const error = line.error ? schema(line.error) : undefined;
-      const read = line.role === "read" ? input : error;
+      const run = line.from ? undefined : exported(line.function);
+      if (!line.from && typeof run !== "function")
+        throw new Error(`\`${line.function.join(".")}\` is no function`);
       uses.push({
         role: line.role,
-        run: run as Used["run"],
-        input,
-        error,
-        reads: read ? reads(read, []) : [],
-        inputs: input && line.role !== "read" ? (line.role === "run" ? tagged(input) : [{ schema: input }]) : [],
+        run: run as Run | undefined,
+        method: line.function[1],
+        input: schema(line.input),
+        output: schema(line.output),
+        error: schema(line.error),
       });
     }
   }
@@ -236,15 +221,13 @@ const loaded = async () => {
     uses: uses.map(
       (use) =>
         use && {
-          reads: use.reads.map(([, name]) => name),
-          inputs: use.inputs.map(({ tag, schema }) => ({
-            tag,
-            schema: z.toJSONSchema(schema, { io: "input", unrepresentable: () => ({ not: {} }) }),
-          })),
+          input: json(use.input, "input"),
+          output: json(use.output, "output"),
+          error: json(use.error, "output"),
         }
     ),
   };
-  return { uses: uses.flatMap((use) => (use ? [use] : [])), hello };
+  return { uses, hello };
 };
 
 const accepted = (schema: Schema, value: unknown): [unknown] | [] => {
@@ -272,63 +255,67 @@ const ran = { start: new Map() as Code, actions: new Map<string, Code>() };
 
 const played = async () => {
   const { uses, hello } = await loaded();
-  const state = async (failed?: Schema, message = ""): Promise<State> => {
-    const out: State = {};
-    for (const { role, run, input, error, reads } of uses) {
-      const value =
-        role === "read" ? input?.parse(await run()) : error?.parse(error === failed ? message : "");
-      for (const [at, name] of reads) {
-        const [object, key] = name.split(".");
-        const found = at.reduce<unknown>((node, part) => (node as State)[part], value);
-        out[object] = { ...out[object], [key]: found as string | number };
-      }
-    }
-    return out;
+  const pool = new Map<number, unknown>();
+  const target = (use: Used, from: number | null): Run => {
+    if (use.run) return use.run;
+    const value = pool.get(from ?? -1) as Run & Record<string, Run>;
+    return use.method ? value[use.method].bind(value) : value;
   };
-  const called = async (use: Used, input: unknown): Promise<Report | Failed> => {
-    const thrown = await Promise.resolve()
-      .then(() => use.run(input))
+  const called = async (use: Used, call: Call, input: unknown): Promise<Called> => {
+    const [result, ...thrown] = await Promise.resolve()
+      .then(() => target(use, call.from)(input))
       .then(
-        () => [],
-        (error: unknown) => [error]
+        (result) => [result],
+        (error: unknown) => [undefined, error]
       );
-    if (thrown.length === 0) return [];
+    if (thrown.length === 0) return { result };
     const [error] = thrown;
     if (!(error instanceof Error)) return { thrown: String(error) };
     return FAULTS.some((fault) => error instanceof fault) || !use.error
       ? { thrown: `${error.name}: ${error.message}${thrower(error)}` }
-      : [use.error, error.message];
+      : { failed: [use.error, error.message] };
   };
-  const stepped = async (known: Code, calls: [Used, unknown][]): Promise<Report> => {
-    const inputs = calls.map(([use, raw]) => (use.input ? accepted(use.input, raw) : [undefined]));
-    if (inputs.some((input) => input.length === 0)) return { refused: true };
-    return measured(known, async () => {
-      let failed: Failed = [];
-      for (const [at, [use]] of calls.entries()) {
-        const result = await called(use, inputs[at][0]);
-        if (!Array.isArray(result)) return result;
-        if (result.length > 0) failed = result;
-      }
-      return { state: await state(...failed) };
+  const stepped = async (calls: Call[]): Promise<Report> => {
+    const inputs = calls.map(({ use, input }) => {
+      const schema = uses[use]?.input;
+      return schema ? accepted(schema, input) : [undefined];
     });
+    if (inputs.some((input) => input.length === 0)) return { refused: true };
+    const outputs: Record<number, unknown> = {};
+    const errors: Record<number, unknown> = {};
+    const added: number[] = [];
+    let [failed, message]: Failed = [];
+    for (const [at, call] of calls.entries()) {
+      const use = uses[call.use];
+      if (!use) throw new Error(`the diagram has no line ${call.use} for \`impl ${ADAPTER}\``);
+      const [input] = inputs[at];
+      const ended = await called(use, call, input);
+      if ("thrown" in ended) return ended;
+      if ("failed" in ended) {
+        [failed, message] = ended.failed;
+        continue;
+      }
+      if (call.add !== null) {
+        pool.set(call.add, ended.result);
+        added.push(call.add);
+      }
+      if (use.output) outputs[call.use] = use.output.parse({ input, result: ended.result });
+    }
+    for (const [at, use] of uses.entries()) {
+      if (use?.role === "read") outputs[at] = use.output?.parse(await use.run?.());
+      if (use?.error) errors[at] = use.error.parse(use.error === failed ? message : "");
+    }
+    return { outputs, errors, added };
   };
-  const starts = uses.filter(({ role }) => role === "start");
-  const actions = new Map(
-    uses.flatMap((use) =>
-      use.inputs.flatMap(({ tag, schema }) => (tag ? [[tag, { ...use, input: schema } as Used] as const] : []))
-    )
-  );
-  const play = async ({ start: first, run: verb = "", input }: Turn): Promise<Report> => {
-    if (first !== undefined)
-      return stepped(
-        ran.start,
-        starts.map((use, at) => [use, first[at]])
-      );
-    const action = actions.get(verb);
-    if (!action) return { state: await state() };
-    const known = ran.actions.get(verb) ?? new Map();
-    ran.actions.set(verb, known);
-    return stepped(known, [[action, input]]);
+  const play = ({ step, calls }: Turn): Promise<Report> => {
+    if (step === undefined) return stepped(calls);
+    if (step === START) {
+      pool.clear();
+      return measured(ran.start, () => stepped(calls));
+    }
+    const known = ran.actions.get(step) ?? new Map();
+    ran.actions.set(step, known);
+    return measured(known, () => stepped(calls));
   };
   let now = turn(hello);
   while (!now.done) now = turn(await play(now));

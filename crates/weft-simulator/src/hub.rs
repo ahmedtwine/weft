@@ -3,14 +3,16 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde_json::Value as Json;
-use weft_parse::{Draw, Pairs, Ran, Role, Span, State, Use, Value};
+use weft_hegel::Generator;
+use weft_parse::{Draw, Ran, Role, Span, State, Use, Value};
 use weft_wire::{DONE, JOIN, Reader, Short, TURN, Writer};
 
-use crate::schema::{Choice, choice};
-use crate::{Hello, Member, Report, Turn};
+use crate::schema::{Branch, Tag, branches, live, narrowed, tags, whole};
+use crate::{Action, Hello, Member, Report, Start, Turn};
 
 const REFUSED: i32 = 1;
 const CUT: &str = "the message of the runner is too short";
+const SOURCES: [&str; 2] = ["outputs", "errors"];
 
 #[derive(Default)]
 struct Desk {
@@ -20,8 +22,15 @@ struct Desk {
     lost: Option<String>,
 }
 
+struct Read {
+    line: usize,
+    source: &'static str,
+    tag: Tag,
+}
+
 pub struct Seat {
     hello: Hello,
+    reads: Vec<Read>,
     found: Vec<usize>,
     desk: Mutex<Desk>,
     changed: Condvar,
@@ -37,6 +46,7 @@ pub struct Session {
     code: String,
     uses: Vec<Use>,
     draws: Vec<Draw>,
+    pools: Vec<String>,
     joined: Mutex<Joined>,
     changed: Condvar,
 }
@@ -60,115 +70,199 @@ fn held<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
     lock.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn listed<'a>(node: &'a Json, key: &str) -> &'a [Json] {
-    node.get(key)
+fn hello(session: &Session, said: &Json) -> Result<Seat, String> {
+    let Session {
+        uses, draws, pools, ..
+    } = session;
+    let all = said
+        .get("uses")
         .and_then(Json::as_array)
-        .map_or(&[], Vec::as_slice)
-}
-
-fn hello(uses: &[Use], draws: &[Draw], said: &Json) -> Result<(Hello, Vec<usize>), String> {
-    let all = listed(said, "uses");
+        .map_or(&[][..], Vec::as_slice);
     if all.len() != uses.len() {
         return Err(format!(
-            "the runner sends {} uses, and `impl` holds {} lines",
+            "the runner sends {} uses, and `impl` has {} lines",
             all.len(),
             uses.len()
         ));
     }
-    let mut hello = Hello::default();
+    let mut hello = Hello {
+        sized: true,
+        ..Hello::default()
+    };
+    let mut reads: Vec<Read> = Vec::new();
     let mut found = vec![0; draws.len()];
-    for (u, node) in uses.iter().zip(all).filter(|(_, node)| !node.is_null()) {
-        let line = u.line();
-        let reads = listed(node, "reads")
-            .iter()
-            .filter_map(|tag| tag.as_str().map(String::from));
-        let mut inputs = listed(node, "inputs")
-            .iter()
-            .map(|input| {
-                Ok((
-                    input.get("tag").and_then(Json::as_str),
-                    choice(
-                        &u.schema.as_ref().unwrap_or(&u.function).to_string(),
-                        input.get("schema").unwrap_or(&Json::Null),
-                    )?
-                    .live()
-                    .ok_or_else(|| format!("{line} has an input with no value that weft draws"))?,
-                ))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+    let mut drawn = |generator: Generator, line: &str| {
+        let mut generator = live(generator)
+            .ok_or_else(|| format!("{line} has an input with no value that weft draws"))?;
         for (draw, found) in draws.iter().zip(&mut found) {
-            inputs = inputs
-                .into_iter()
-                .map(|(tag, choice)| {
-                    let (choice, count) = choice.narrowed(draw);
-                    *found += count;
-                    (tag, choice)
-                })
-                .collect();
+            let (narrow, count) = narrowed(generator, draw);
+            *found += count;
+            generator = narrow;
         }
-        let before = hello.reads.len();
-        hello.reads.extend(reads);
-        match (u.role, inputs.as_slice()) {
-            (Role::Read, []) if hello.reads.len() > before => {}
-            (Role::Read, _) => {
+        Ok::<Generator, String>(generator)
+    };
+    for (at, (u, node)) in uses
+        .iter()
+        .zip(all)
+        .enumerate()
+        .filter(|(_, (_, node))| !node.is_null())
+    {
+        let line = u.line();
+        let schema = |key: &str| {
+            node.get(key)
+                .ok_or_else(|| format!("the runner sends no `{key}` schema for {line}"))
+        };
+        let before = reads.len();
+        for (source, name) in SOURCES.into_iter().zip([&u.output, &u.error]) {
+            if name.is_some() {
+                reads.extend(
+                    tags(schema(&source[..source.len() - 1])?)?
+                        .into_iter()
+                        .map(|tag| Read {
+                            line: at,
+                            source,
+                            tag,
+                        }),
+                );
+            }
+        }
+        let input = u
+            .input
+            .as_ref()
+            .map(|name| Ok::<_, String>((name.to_string(), schema("input")?)))
+            .transpose()?;
+        match (u.role, input, &u.tag, &u.verb) {
+            (Role::Read, ..) if reads.len() > before => {}
+            (Role::Read, ..) => {
                 return Err(format!(
-                    "{line} is a `read`, and its schema has no tag `<object>.<key>`"
+                    "{line} is a `read`, and its schema has no `read` annotation"
                 ));
             }
-            (Role::Start, [(_, start)]) => hello.start.push(start.clone()),
-            (Role::Start, []) if u.schema.is_none() => {
-                hello.start.push(Choice::Enum(vec![Json::Null]));
+            (Role::Start, None, ..) => hello.start.push(Start {
+                line: at,
+                input: None,
+                pool: u.pool.clone(),
+            }),
+            (Role::Start, Some((name, json)), tag, _) => {
+                let generator = match tag {
+                    None => whole(&name, json, pools)?,
+                    Some(tag) => {
+                        let mut tagged: Vec<Branch> = branches(&name, json, pools)?
+                            .into_iter()
+                            .filter(|b| b.verb.as_ref() == Some(tag))
+                            .collect();
+                        match (tagged.pop(), tagged.is_empty()) {
+                            (Some(branch), true) => branch.generator,
+                            _ => {
+                                return Err(format!(
+                                    "{line} needs one branch with the verb `{tag}`"
+                                ));
+                            }
+                        }
+                    }
+                };
+                hello.start.push(Start {
+                    line: at,
+                    input: Some(drawn(generator, &line)?),
+                    pool: u.pool.clone(),
+                });
             }
-            (Role::Start, _) => {
-                return Err(format!("{line} is a `start`, and it takes one input"));
-            }
-            (Role::Run, []) => {
-                return Err(format!(
-                    "{line} is a `run`, and its schema has no tag of a verb"
-                ));
-            }
-            (Role::Run, _) => {
-                for (tag, choice) in inputs {
-                    let verb = tag.ok_or_else(|| format!("{line} has an input with no tag"))?;
-                    hello.actions.push((verb.to_string(), choice));
+            (Role::Run, input, _, verb) => {
+                let from = u
+                    .from
+                    .as_ref()
+                    .map(|(pool, consume)| Generator::Pool(pool.clone(), *consume));
+                let inputs: Vec<(String, Option<Generator>)> = match (input, verb) {
+                    (None, verb) => verb.iter().map(|verb| (verb.clone(), None)).collect(),
+                    (Some((name, json)), Some(verb)) => {
+                        vec![(verb.clone(), Some(whole(&name, json, pools)?))]
+                    }
+                    (Some((name, json)), None) => branches(&name, json, pools)?
+                        .into_iter()
+                        .filter_map(|b| Some((b.verb?, Some(b.generator))))
+                        .collect(),
+                };
+                if inputs.is_empty() {
+                    return Err(format!(
+                        "{line} is a `run`, and its schema has no `verb` annotation"
+                    ));
+                }
+                for (verb, input) in inputs {
+                    hello.actions.push(Action {
+                        verb,
+                        line: at,
+                        drawn: Generator::Tuple(vec![
+                            from.clone().unwrap_or(Generator::Constant(Json::Null)),
+                            input
+                                .map(|g| drawn(g, &line))
+                                .transpose()?
+                                .unwrap_or(Generator::Constant(Json::Null)),
+                        ]),
+                        pool: u.pool.clone(),
+                    });
                 }
             }
         }
     }
-    Ok((hello, found))
-}
-
-fn state(node: &Json) -> Result<State, String> {
-    node.as_object()
-        .ok_or_else(|| format!("the state `{node}` is no object"))?
+    hello.reads = reads
         .iter()
-        .map(|(object, keys)| {
-            let pairs = keys
-                .as_object()
-                .ok_or_else(|| format!("the state of `{object}` is no object"))?
-                .iter()
-                .map(|(key, v)| match (v.as_str(), v.as_i64()) {
-                    (Some(s), _) => Ok((key.clone(), Value::Text(s.to_string()))),
-                    (_, Some(n)) => Ok((key.clone(), Value::Int(n.into()))),
-                    _ => Err(format!(
-                        "`{object}.{key}` is `{v}`, and a state is a text or a whole number"
-                    )),
-                })
-                .collect::<Result<Pairs, String>>()?;
-            Ok((object.clone(), pairs))
-        })
-        .collect()
+        .map(|r| format!("{}.{}", r.tag.object, r.tag.key))
+        .collect();
+    Ok(Seat {
+        hello,
+        reads,
+        found,
+        desk: Mutex::default(),
+        changed: Condvar::new(),
+    })
 }
 
-fn report(said: &Json) -> Result<Report, String> {
+fn state(reads: &[Read], said: &Json) -> Result<State, String> {
+    let mut state = State::new();
+    for Read { line, source, tag } in reads {
+        let Some(whole) = said.get(source).and_then(|all| all.get(line.to_string())) else {
+            continue;
+        };
+        let (object, key) = (&tag.object, &tag.key);
+        let value = tag
+            .path
+            .iter()
+            .try_fold(whole, |node, part| node.get(part))
+            .ok_or_else(|| format!("the value `{whole}` has no `{object}.{key}`"))?;
+        let value = match (value.as_str(), value.as_i64()) {
+            (Some(s), _) => Value::Text(s.to_string()),
+            (_, Some(n)) => Value::Int(n.into()),
+            _ => {
+                return Err(format!(
+                    "`{object}.{key}` is `{value}`, and a state is a text or a whole number"
+                ));
+            }
+        };
+        state
+            .entry(object.clone())
+            .or_default()
+            .insert(key.clone(), value);
+    }
+    Ok(state)
+}
+
+fn report(reads: &[Read], said: &Json) -> Result<Report, String> {
     match (
-        said.get("state"),
+        SOURCES.iter().all(|source| said.get(source).is_some()),
         said.get("thrown").and_then(Json::as_str),
         said.get("refused"),
     ) {
-        (Some(s), None, None) => state(s).map(Report::State),
-        (None, Some(error), None) => Ok(Report::Thrown(error.to_string())),
-        (None, None, Some(_)) => Ok(Report::Refused),
+        (true, None, None) => {
+            let added = said
+                .get("added")
+                .and_then(Json::as_array)
+                .map_or(Vec::new(), |all| {
+                    all.iter().filter_map(Json::as_u64).collect()
+                });
+            Ok(Report::State(state(reads, said)?, added))
+        }
+        (false, Some(error), None) => Ok(Report::Thrown(error.to_string())),
+        (false, None, Some(_)) => Ok(Report::Refused),
         _ => Err(format!("the runner reports `{said}`")),
     }
 }
@@ -234,18 +328,16 @@ impl Session {
                 !joined
                     .seats
                     .iter()
-                    .any(|s| s.hello.actions.iter().any(|(tag, _)| tag == *verb))
+                    .any(|s| s.hello.actions.iter().any(|action| action.verb == **verb))
             });
             let (Some(verb), None) = (missing, &joined.lost) else {
-                let unused = self
-                    .draws
-                    .iter()
-                    .enumerate()
-                    .find(|(at, _)| joined.seats.iter().all(|s| s.found[*at] == 0));
+                let unused = self.draws.iter().enumerate().find(|(at, draw)| {
+                    !draw.keys && joined.seats.iter().all(|s| s.found[*at] == 0)
+                });
                 return match (joined.lost.clone(), unused) {
                     (Some(why), _) => Err(why),
                     (None, Some((_, draw))) => Err(format!(
-                        "the line `draw {}` names a field of no input, or no value of the line is a value of the field",
+                        "the line `{}` of `draw` names a field of no input, or no value of the line is a value of the field",
                         draw.path.join(".")
                     )),
                     (None, None) => Ok(joined
@@ -258,7 +350,9 @@ impl Session {
             let left = until
                 .checked_duration_since(Instant::now())
                 .ok_or_else(|| {
-                    format!("the verb `{verb}` has no runner with an input of the tag `{verb}`")
+                    format!(
+                        "the verb `{verb}` has no runner with a `run` line of the verb `{verb}`"
+                    )
                 })?;
             joined = self
                 .changed
@@ -277,11 +371,19 @@ impl Session {
 }
 
 impl Hub {
-    pub fn open(&self, name: &str, code: String, uses: Vec<Use>, draws: Vec<Draw>) -> Arc<Session> {
+    pub fn open(
+        &self,
+        name: &str,
+        code: String,
+        uses: Vec<Use>,
+        draws: Vec<Draw>,
+        pools: Vec<String>,
+    ) -> Arc<Session> {
         let session = Arc::new(Session {
             code,
             uses,
             draws,
+            pools,
             joined: Mutex::default(),
             changed: Condvar::new(),
         });
@@ -316,20 +418,13 @@ impl Peer {
     fn turn(&mut self, said: &Json) -> Result<String, String> {
         let seat = match &self.seat {
             Some(seat) => {
-                let report = report(said)?;
+                let report = report(&seat.reads, said)?;
                 seat.set(|d| d.report = Some(report));
                 seat.clone()
             }
             None => {
                 let session = self.session()?;
-                let (hello, found) =
-                    hello(&session.uses, &session.draws, said).inspect_err(|e| session.lose(e))?;
-                let seat = Arc::new(Seat {
-                    hello,
-                    found,
-                    desk: Mutex::default(),
-                    changed: Condvar::new(),
-                });
+                let seat = Arc::new(hello(session, said).inspect_err(|e| session.lose(e))?);
                 let mut joined = held(&session.joined);
                 if let Some(why) = &joined.lost {
                     return Err(why.clone());
