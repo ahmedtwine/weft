@@ -101,7 +101,7 @@ fn merged(a: Generator, b: Generator, name: &str) -> Result<Generator, String> {
     }
 }
 
-fn keyed(g: &mut Generator, draw: &Draw, values: &[Json]) -> usize {
+fn keyed(g: &mut Generator, values: &[Json]) -> usize {
     match g {
         Generator::Dict(_, value) => {
             *g = Generator::Record(
@@ -113,18 +113,18 @@ fn keyed(g: &mut Generator, draw: &Draw, values: &[Json]) -> usize {
             );
             1
         }
-        Generator::OneOf(all) => all.iter_mut().map(|g| keyed(g, draw, values)).sum(),
+        Generator::OneOf(all) => all.iter_mut().map(|g| keyed(g, values)).sum(),
         Generator::List(body, ..)
         | Generator::Optional(body)
         | Generator::Add(_, body)
-        | Generator::Event(_, body) => keyed(body, draw, values),
+        | Generator::Event(_, body) => keyed(body, values),
         _ => 0,
     }
 }
 
 fn fit(g: &mut Generator, draw: &Draw, values: &[Json]) -> usize {
     match (draw.keys, values.is_empty()) {
-        (true, _) => return keyed(g, draw, values),
+        (true, _) => return keyed(g, values),
         (false, true) => return 1,
         (false, false) => {}
     }
@@ -283,7 +283,7 @@ impl<'a> Read<'a> {
         match self.pools.iter().any(|known| known == pool) {
             true => Ok(pool.to_string()),
             false => Err(format!(
-                "the field `{name}` names the pool `{pool}`, and no object of `setup` has `pool {pool}`"
+                "the field `{name}` names the pool `{pool}`, and no object of `setup` has `pool \"{pool}\"`"
             )),
         }
     }
@@ -659,7 +659,7 @@ mod tests {
     fn weft_refuses_an_annotation_that_it_does_not_know() {
         let wrong = |weft: Json| read(json!({ "type": "integer", "weft": weft })).unwrap_err();
         assert!(
-            wrong(json!({ "pool": "names" })).contains("no object of `setup` has `pool names`")
+            wrong(json!({ "pool": "names" })).contains("no object of `setup` has `pool \"names\"`")
         );
         assert!(wrong(json!({ "pol": "ids" })).contains("is not an annotation of weft"));
         assert!(wrong(json!({ "consume": "yes" })).contains("is not an annotation of weft"));

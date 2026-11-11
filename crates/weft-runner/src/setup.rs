@@ -67,7 +67,9 @@ impl Member for Setup<'_> {
                     .into_iter()
                     .find(|(o, v, _)| o.name == *object && v == verb)
                     .map(|(_, _, to)| to)
-                    .ok_or_else(|| format!("`{object}` has no `on {verb}` line from its state"))?;
+                    .ok_or_else(|| {
+                        format!("`{object}` has no `on \"{verb}\"` line from its state")
+                    })?;
                 self.now.insert(object.to_string(), to);
             }
             Turn::Read | Turn::Done => {}

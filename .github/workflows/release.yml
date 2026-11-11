@@ -80,7 +80,7 @@ jobs:
           code=0
           said=$(bun sdk/bin.ts --help 2>&1) || code=$?
           test "$code" = 2
-          test "$said" = "usage: weft [--ui]"
+          test "$said" = "usage: weft [--ui | <file>…]"
       - name: Load libweft from the release
         run: WEFT_LIB="dist/$GITHUB_REF_NAME/${{ matrix.target }}/${{ matrix.library }}" bun -e 'await import("./sdk/weft.ts")'
 

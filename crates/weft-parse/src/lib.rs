@@ -957,7 +957,7 @@ impl Object {
         for (k, m) in self.moves.iter().enumerate() {
             if !self.states.contains(&m.to) {
                 return Err(format!(
-                    "the state `{}` of `{o}` has `on {}`, and `{}` is not a state of `{o}`",
+                    "the state `{}` of `{o}` has `on \"{}\"`, and `{}` is not a state of `{o}`",
                     written(&m.from),
                     m.verb,
                     written(&m.to)
@@ -968,7 +968,7 @@ impl Object {
                 .any(|p| p.verb == m.verb && p.from == m.from)
             {
                 return Err(format!(
-                    "`{o}` has two `on {}` lines in the state `{}`",
+                    "`{o}` has two `on \"{}\"` lines in the state `{}`",
                     m.verb,
                     written(&m.from)
                 ));
@@ -1133,7 +1133,7 @@ fn on(n: &KdlNode, o: &Object, from: &Pairs, src: &str) -> Result<Move, String> 
     let verb = shape(n, 1, &keys(n), false)?.remove(0);
     let given = pairs(n)?;
     if given.is_empty() {
-        return Err(format!("`on {verb}` takes `<key>=<value>`"));
+        return Err(format!("`on \"{verb}\"` takes `<key>=<value>`"));
     }
     Ok(Move {
         to: o.overlay(from, &given)?,
@@ -1150,7 +1150,7 @@ fn object(n: &KdlNode, config: &Config, src: &str) -> Result<Object, String> {
         .iter()
         .find(|(k, _)| *k == kind)
         .map(|(_, i)| i.clone())
-        .ok_or_else(|| format!("`{kind}` has no `style {kind}` in the config"))?;
+        .ok_or_else(|| format!("`{kind}` has no `style \"{kind}\"` in the config"))?;
     let named = shape(n, 1, &keys(n), true)
         .map_err(|e| format!("{kind}: {e}"))?
         .remove(0);
@@ -1201,7 +1201,7 @@ fn object(n: &KdlNode, config: &Config, src: &str) -> Result<Object, String> {
         .find(|pool| matches!(o.initial.get(*pool), Some(Value::Text(_))))
     {
         return Err(at(format!(
-            "`{pool}` is the count of the values of `pool {pool}`, and a count is an integer"
+            "`{pool}` is the count of the values of `pool \"{pool}\"`, and a count is an integer"
         )));
     }
     Ok(o)
@@ -1284,7 +1284,7 @@ fn named(n: &KdlNode, text: &str) -> Result<Name, String> {
             export: export.to_string(),
         }),
         _ => Err(format!(
-            "`{}` takes `<module>.<export>`, not `{text}`",
+            "`{}` takes `\"<module>.<export>\"`, not `{text}`",
             name(n)
         )),
     }
@@ -1368,11 +1368,11 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
                 let mut given = shape(c, 2, &[], false)?;
                 let (place, module) = (given.remove(1), given.remove(0));
                 if found.modules.iter().any(|(known, _)| *known == module) {
-                    return Err(format!("`module {module}` is set twice"));
+                    return Err(format!("`module \"{module}\"` is set twice"));
                 }
                 if place.starts_with('.') && !place.starts_with("../") {
                     return Err(format!(
-                        "`module {module}` is a file in the directory of the diagram, and a module is code of the app"
+                        "`module \"{module}\"` is a file in the directory of the diagram, and a module is code of the app"
                     ));
                 }
                 found.modules.push((module, place));
@@ -1398,7 +1398,7 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
         .find(|n| !found.modules.iter().any(|(module, _)| *module == n.module))
     {
         return Err(format!(
-            "`{unknown}` names `{}`, and `impl {}` has no `module \"{}\"`",
+            "`{unknown}` names `{}`, and `impl \"{}\"` has no `module \"{}\"`",
             unknown.module, found.adapter, unknown.module
         ));
     }
@@ -1408,14 +1408,14 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
         .find(|(module, _)| !names.iter().any(|n| n.module == *module))
     {
         return Err(format!(
-            "no line of `impl {}` names `module \"{module}\"`",
+            "no line of `impl \"{}\"` names `module \"{module}\"`",
             found.adapter
         ));
     }
     match found.uses.iter().any(|u| u.role != Role::Start) {
         true => Ok(found),
         false => Err(format!(
-            "`impl {}` has no `read` line and no `run` line",
+            "`impl \"{}\"` has no `read` line and no `run` line",
             found.adapter
         )),
     }
@@ -1529,12 +1529,12 @@ fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
         for (i, e) in steps.iter().enumerate() {
             let Expr::Value(Value::Text(s)) = e else {
                 return Err(format!(
-                    "`in step` takes verbs, not `{}`",
+                    "`in \"step\"` takes verbs, not `{}`",
                     e.quint(&c.kind.to_string())
                 ));
             };
             if steps[..i].contains(e) {
-                return Err(format!("`in step` names `{s}` twice"));
+                return Err(format!("`in \"step\"` names `{s}` twice"));
             }
             if !verbs.contains(&s.as_str()) {
                 return Err(format!("`{s}` is the verb of no `on` line"));
@@ -1551,7 +1551,7 @@ fn checked(d: &Diagram, c: &Check) -> Result<(), String> {
         match (x.kind == c.kind, x.states.is_empty()) {
             (false, _) => {
                 return Err(format!(
-                    "`forall {}` takes the kind of its objects, and `{o}` is of kind `{}`",
+                    "`forall \"{}\"` takes the kind of its objects, and `{o}` is of kind `{}`",
                     c.kind, x.kind
                 ));
             }
@@ -1593,7 +1593,7 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
         if parent == "impl" {
             let found = implemented(n)?;
             if d.impls.iter().any(|i| i.adapter == found.adapter) {
-                return Err(format!("`impl {}` is set twice", found.adapter));
+                return Err(format!("`impl \"{}\"` is set twice", found.adapter));
             }
             d.impls.push(found);
             continue;
@@ -1627,7 +1627,7 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
         .enumerate()
         .find_map(|(at, pool)| pools[..at].contains(pool).then_some(pool))
     {
-        return Err(format!("`pool {pool}` is set twice"));
+        return Err(format!("`pool \"{pool}\"` is set twice"));
     }
     if let Some((u, pool)) = d.impls.iter().flat_map(|i| &i.uses).find_map(|u| {
         [u.pool.as_ref(), u.from.as_ref().map(|(pool, _)| pool)]
@@ -1655,7 +1655,7 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
             .map(|verb| (u, verb))
     }) {
         return Err(format!(
-            "{} names the verb `{verb}`, and no object of `setup` has `on {verb}`",
+            "{} names the verb `{verb}`, and no object of `setup` has `on \"{verb}\"`",
             u.line()
         ));
     }
@@ -1696,11 +1696,11 @@ fn moved(o: &Object, now: &State, verb: &str) -> Result<Pairs, String> {
     match o.moves.iter().find(|m| m.verb == verb && m.from == at) {
         Some(m) => Ok(m.to.clone()),
         None if o.moves.iter().any(|m| m.verb == verb) => Err(format!(
-            "`{}` is `{}`, and no `on {verb}` line starts from it",
+            "`{}` is `{}`, and no `on \"{verb}\"` line starts from it",
             o.name,
             written(&at)
         )),
-        None => Err(format!("`{}` has no `on {verb}` line", o.name)),
+        None => Err(format!("`{}` has no `on \"{verb}\"` line", o.name)),
     }
 }
 
@@ -1791,13 +1791,21 @@ fn explore(d: &Diagram, c: &Check) -> Result<(), String> {
     Ok(())
 }
 
-const FORM: &str = "a file of weft has the KDL that versions 1 and 2 share: the name of a line and a key are words, a value is a string in `\"` or an integer, a line ends at the end of its text line, and `\\` at the end of a text line continues the line";
+const FORM: &str = "a file of weft has the KDL that versions 1 and 2 share: the name of a line and a key are words with no `<`, `>` or `,`, a value is an integer or a string in `\"` with the escapes `\\n`, `\\r`, `\\t`, `\\\\`, `\\\"`, `\\b`, `\\f` and `\\u{…}`, a line ends at the end of its text line, and `\\` at the end of a text line continues the line";
 
 fn form(doc: &KdlDocument) -> Result<(), String> {
-    let word = |repr: Option<&str>| !repr.is_some_and(|r| r.starts_with(['"', '#']));
+    let word = |name: &kdl::KdlIdentifier| {
+        !name.repr().is_some_and(|r| r.starts_with(['"', '#']))
+            && !name.value().contains(['<', '>', ','])
+    };
+    let escaped = |repr: &str| {
+        let mut chars = repr.chars();
+        std::iter::from_fn(|| chars.find(|c| *c == '\\').and_then(|_| chars.next()))
+            .all(|c| "nrt\\\"bfu".contains(c))
+    };
     for n in doc.nodes() {
         if n.ty().is_some()
-            || !word(n.name().repr())
+            || !word(n.name())
             || n.format().is_some_and(|f| f.terminator.starts_with(';'))
         {
             return Err(format!("`{}` is not a line of weft: {FORM}", name(n)));
@@ -1805,7 +1813,9 @@ fn form(doc: &KdlDocument) -> Result<(), String> {
         for e in n.entries() {
             let repr = e.format().map_or("", |f| f.value_repr.as_str());
             let fits = match e.value() {
-                KdlValue::String(_) => repr.starts_with('"') && !repr.starts_with("\"\"\""),
+                KdlValue::String(_) => {
+                    repr.starts_with('"') && !repr.starts_with("\"\"\"") && escaped(repr)
+                }
                 KdlValue::Integer(_) => repr
                     .strip_prefix('-')
                     .unwrap_or(repr)
@@ -1813,7 +1823,7 @@ fn form(doc: &KdlDocument) -> Result<(), String> {
                     .all(|b| b.is_ascii_digit()),
                 _ => false,
             };
-            if !fits || !e.name().is_none_or(|k| word(k.repr())) {
+            if !fits || !e.name().is_none_or(word) {
                 return Err(format!(
                     "`{}` of `{}` is not a value of weft: {FORM}",
                     e.to_string().trim(),
@@ -1911,7 +1921,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
                 let named = shape(n, 1, &["icon"], false).map_err(Error)?.remove(0);
                 let kind = Kind::parse(&named).map_err(|e| Error(format!("`style`: {e}")))?;
                 if c.styles.iter().any(|(k, _)| *k == kind) {
-                    return Err(Error(format!("`style {kind}` is set twice")));
+                    return Err(Error(format!("`style \"{kind}\"` is set twice")));
                 }
                 c.styles.push((kind, need(n, "icon").map_err(Error)?));
             }
@@ -2248,7 +2258,7 @@ impl "bun" {
             (
                 "in \"step\" \"reload\"",
                 "in \"step\" \"browser.snapshot\"",
-                Err("`in step` takes verbs, not `browser.snapshot`"),
+                Err("`in \"step\"` takes verbs, not `browser.snapshot`"),
             ),
         ];
         for (from, to, want) in cases {
@@ -2290,7 +2300,7 @@ impl "bun" {
             (
                 "    pool \"opened\"\n",
                 "    pool \"opened\"\n    pool \"opened\"\n",
-                Err("`pool opened` is set twice"),
+                Err("`pool \"opened\"` is set twice"),
             ),
             (
                 "run \"opened\" consume=\"opened\" verb=\"close\"",
@@ -2654,7 +2664,7 @@ impl "bun" {
             (
                 "  leave from=\"user\" to=\"history\"\n",
                 "  forward from=\"user\" to=\"history\"\n",
-                Err("`action` line 2: `history` has no `on forward` line"),
+                Err("`action` line 2: `history` has no `on \"forward\"` line"),
             ),
         ]);
     }
@@ -2716,7 +2726,7 @@ impl "bun" {
                 "      on \"type\" value=\"Lahore\"\n",
                 "      on \"type\" value=\"Tokyo\"\n",
                 Err(
-                    "the state `value=\"San Francisco\"` of `origin` has `on type`, and `value=\"Tokyo\"` is not a state of `origin`",
+                    "the state `value=\"San Francisco\"` of `origin` has `on \"type\"`, and `value=\"Tokyo\"` is not a state of `origin`",
                 ),
             ),
             (
@@ -2796,6 +2806,12 @@ impl "bun" {
                 "\"person\" \"user\"",
                 Err(line("person")),
             ),
+            ("person \"user\"", "a,b \"user\"", Err(line("a,b"))),
+            (
+                "person \"user\"",
+                "person \"the\\suser\"",
+                Err(value("\"the\\suser\"", "person")),
+            ),
             (
                 "person \"user\"",
                 "(kind)person \"user\"",
@@ -2871,14 +2887,14 @@ impl "bun" {
                 "verb=\"close\"",
                 "verb=\"shut\"",
                 Err(
-                    r#"`run "opened" verb="shut" consume="opened"` names the verb `shut`, and no object of `setup` has `on shut`"#
+                    r#"`run "opened" verb="shut" consume="opened"` names the verb `shut`, and no object of `setup` has `on "shut"`"#
                         .to_string(),
                 ),
             ),
             (
                 "  module \"page\" \"../src/page.ts\"\n",
                 "  module \"page\" \"../src/page.ts\"\n  module \"other\" \"../src/other.ts\"\n",
-                Err("no line of `impl bun` names `module \"other\"`".to_string()),
+                Err("no line of `impl \"bun\"` names `module \"other\"`".to_string()),
             ),
         ];
         let base = POOL.replacen("    pool \"opened\"\n", block, 1);

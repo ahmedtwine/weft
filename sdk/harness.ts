@@ -175,7 +175,7 @@ const loaded = async () => {
   const [first] = code.flatMap(({ adapter, modules }) =>
     adapter === ADAPTER ? Object.values(modules) : []
   );
-  if (!first) throw new Error(`the diagram has no \`impl ${ADAPTER}\` with a \`module\``);
+  if (!first) throw new Error(`the diagram has no \`impl "${ADAPTER}"\` with a \`module\``);
   const { z } = await import(Bun.resolveSync("zod", dirname(Bun.resolveSync(placed(first), process.cwd()))));
   const json = (schema: Schema | undefined, io: "input" | "output") =>
     schema && z.toJSONSchema(schema, { io, unrepresentable: () => ({ not: {} }) });
@@ -287,7 +287,7 @@ const played = async () => {
     let [failed, message]: Failed = [];
     for (const [at, call] of calls.entries()) {
       const use = uses[call.use];
-      if (!use) throw new Error(`the diagram has no line ${call.use} for \`impl ${ADAPTER}\``);
+      if (!use) throw new Error(`the diagram has no line ${call.use} for \`impl "${ADAPTER}"\``);
       const [input] = inputs[at];
       const ended = await called(use, call, input);
       if ("thrown" in ended) return ended;

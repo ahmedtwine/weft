@@ -338,7 +338,7 @@ pub fn icon(name: &str) -> Option<&'static str> {
 
 pub fn styled(styles: &[(weft_parse::Kind, String)]) -> Result<(), String> {
     match styles.iter().find(|(_, i)| icon(i).is_none()) {
-        Some((kind, i)) => Err(format!("`style {kind}`: `{i}` is not a Lucide icon")),
+        Some((kind, i)) => Err(format!("`style \"{kind}\"`: `{i}` is not a Lucide icon")),
         None => Ok(()),
     }
 }

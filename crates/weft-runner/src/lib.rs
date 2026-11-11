@@ -80,7 +80,7 @@ pub fn run(
         return simulate(d, &mut [Box::new(Setup::new(d, file))], config.cases, key);
     }
     if d.impls.is_empty() {
-        return Err("a runner needs `impl <adapter> { … }` in the diagram".into());
+        return Err("a runner needs `impl \"<adapter>\" { … }` in the diagram".into());
     }
     let name = file.display().to_string();
     let at = listen(config.transport.as_ref())?;
@@ -541,7 +541,7 @@ impl "bun" {
             .map(|e| e.to_string())
             .unwrap_or_default();
         assert!(
-            error.contains("`module page` is a file in the directory of the diagram"),
+            error.contains("`module \"page\"` is a file in the directory of the diagram"),
             "{error}"
         );
         Ok(())
@@ -555,7 +555,7 @@ impl "bun" {
             .unwrap_or_default();
         assert!(
             error.contains(
-                "`run page.send input=page.sendSchema` is a `run`, and its schema has no `verb` annotation"
+                r#"`run "page.send" input="page.sendSchema"` is a `run`, and its schema has no `verb` annotation"#
             ),
             "{error}"
         );
