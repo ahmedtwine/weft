@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x64
+            library: libweft.so
+          - os: macos-15
+            target: darwin-arm64
+            library: libweft.dylib
+    steps:
+      - uses: actions/checkout@v5
+      - run: test "$GITHUB_REF_NAME" = "v$(jq -r .version package.json)"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked -p weft-cli -p weft-c
+      - run: tar -czf weft-${{ matrix.target }}.tar.gz -C target/release weft ${{ matrix.library }}
+      - uses: actions/upload-artifact@v5
+        with:
+          name: weft-${{ matrix.target }}
+          path: weft-${{ matrix.target }}.tar.gz
+
+  release:
+    name: Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" weft-*.tar.gz --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes ""
+        env:
+          GH_TOKEN: ${{ github.token }}
