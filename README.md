@@ -15,7 +15,7 @@ weft owns each case and draws each object. A runner sends the JSON Schema of eac
 
 ## Start
 
-Add `weft` from GitHub at a release tag, for example `bun add github:ahmedtwine/weft#v0.1.0`. The `weft` command gets the build of its version for the platform from the GitHub release on its first run, and runs it. Each tag `v<version>` of `package.json` makes a release with builds for `linux-x64` and `darwin-arm64`.
+Add `weft` from GitHub at a release tag, for example `bun add github:ahmedtwine/weft#v0.1.1`. The `weft` command gets the build of its version for the platform from the GitHub release on its first run, and runs it. Each tag `v<version>` of `package.json` makes a release with builds for `linux-x64` and `darwin-arm64`.
 
 `weft.kdl`
 
