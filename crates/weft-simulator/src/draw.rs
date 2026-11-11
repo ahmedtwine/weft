@@ -360,6 +360,15 @@ impl<'c> Drawer<'c> {
 }
 
 impl Case {
+    pub fn chance(&self, share: f64) -> Result<bool, Halt> {
+        let mut heads = false;
+        hegel!(
+            self,
+            hegel_generate_boolean(self.tc, share, false, false, &mut heads)
+        )?;
+        Ok(heads)
+    }
+
     pub fn draw(&self, choice: &Choice) -> Result<Json, Halt> {
         Drawer {
             case: self,

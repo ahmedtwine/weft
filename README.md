@@ -128,7 +128,7 @@ Ran 1 file in 0.98s
 
 A tag is the `weft` key of the metadata of a schema: `.meta({ weft: "send" })`.
 
-An input that the schema does not parse is no step. weft fails the run when each input of one line fails its schema.
+weft draws an input again, up to 4 times, when the schema does not parse it. After that, the input is no step. weft fails the run when each input of one line fails its schema.
 
 A part of a schema with no JSON Schema form has no value, and weft draws no branch that needs it.
 
@@ -148,7 +148,7 @@ setup {
 
 ## Action
 
-weft runs the path of the `action` block in a part of the cases, with a drawn input for each step. The other cases run the verbs in a drawn order. A failing case shrinks in the two forms.
+weft runs the path of the `action` block in a quarter of the cases, with a drawn input for each step. The other cases run the verbs in a drawn order. A failing case shrinks in the two forms.
 
 ## Config
 

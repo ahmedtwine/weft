@@ -14,6 +14,8 @@ pub use hub::{Hub, Peer, Remote, Session};
 pub use schema::Choice;
 
 const STEPS: i64 = 20;
+const TRIES: usize = 4;
+const PATH: f64 = 0.25;
 const ORIGIN: &str = "weft";
 const START: &str = "start";
 
@@ -216,14 +218,15 @@ impl Run<'_> {
             state: State::new(),
             evidence: Vec::new(),
         };
-        let report = match &to {
-            Some(_) => {
-                let input = case.draw(&self.steps[rule].input)?;
-                line.input = written(&input);
-                members[owner].turn(&Turn::Run(&verb, &object, &input))?
+        let mut report = Report::Refused;
+        for _ in 0..TRIES {
+            if to.is_none() || !matches!(report, Report::Refused) {
+                break;
             }
-            None => Report::Refused,
-        };
+            let input = case.draw(&self.steps[rule].input)?;
+            line.input = written(&input);
+            report = members[owner].turn(&Turn::Run(&verb, &object, &input))?;
+        }
         let mut next = match report {
             Report::State(part) => merged(real.clone(), part),
             Report::Refused => {
@@ -266,7 +269,7 @@ impl Run<'_> {
             Err(evidence) => return Ok(Some(evidence)),
         };
         let mut model = self.d.init.clone();
-        if case.draw(&Choice::Bool)? == Json::Bool(true) {
+        if case.chance(PATH)? {
             let path: Vec<usize> = self
                 .d
                 .steps

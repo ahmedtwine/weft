@@ -117,12 +117,11 @@ const taken = async (known: Code) => {
       ? served.get(fileURLToPath(script.url))
       : undefined;
     if (!each || !script.functions.some(({ ranges }) => ranges[0].count > 0)) continue;
+    const wholes = script.functions.map(({ ranges: [whole] }) => whole);
+    const widest = Math.max(...wholes.map(({ endOffset }) => endOffset));
     if (
-      script.functions.some(
-        ({ ranges: [whole] }) =>
-          whole.endOffset > each.counts.length ||
-          (whole.startOffset === 0 && whole.endOffset !== each.counts.length)
-      )
+      widest > each.counts.length ||
+      (wholes.some(({ startOffset }) => startOffset === 0) && widest !== each.counts.length)
     )
       throw new Error(`bun runs other code than weft builds for ${each.file}`);
     each.counts.fill(0);
