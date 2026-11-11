@@ -140,14 +140,13 @@ const taken = async (known: Code) => {
 };
 
 const sampled = new Map<Code, number>();
-const measured = async (known: Code, run: () => Promise<Report>) => {
+const measured = async <T>(known: Code, run: () => T | Promise<T>) => {
   const samples = sampled.get(known) ?? 0;
   if (samples >= SAMPLES) return run();
+  sampled.set(known, samples + 1);
   await post("Profiler.takePreciseCoverage");
   try {
-    const report = await run();
-    if (!("refused" in report)) sampled.set(known, samples + 1);
-    return report;
+    return await run();
   } finally {
     await taken(known);
   }
@@ -276,12 +275,7 @@ const played = async () => {
       ? { thrown: `${error.name}: ${error.message}${thrower(error)}` }
       : { failed: [use.error, error.message] };
   };
-  const stepped = async (calls: Call[]): Promise<Report> => {
-    const inputs = calls.map(({ use, input }) => {
-      const schema = uses[use]?.input;
-      return schema ? accepted(schema, input) : [undefined];
-    });
-    if (inputs.some((input) => input.length === 0)) return { refused: true };
+  const reported = async (calls: Call[], inputs: unknown[][]): Promise<Report> => {
     const outputs: Record<number, unknown> = {};
     const errors: Record<number, unknown> = {};
     const added: number[] = [];
@@ -308,15 +302,23 @@ const played = async () => {
     }
     return { outputs, errors, added };
   };
+  const stepped = async (calls: Call[], known?: Code): Promise<Report> => {
+    const inputs = calls.map(({ use, input }) => {
+      const schema = uses[use]?.input;
+      return schema ? accepted(schema, input) : [undefined];
+    });
+    if (inputs.some((input) => input.length === 0)) return { refused: true };
+    return known ? measured(known, () => reported(calls, inputs)) : reported(calls, inputs);
+  };
   const play = ({ step, calls }: Turn): Promise<Report> => {
     if (step === undefined) return stepped(calls);
     if (step === START) {
       pool.clear();
-      return measured(ran.start, () => stepped(calls));
+      return stepped(calls, ran.start);
     }
     const known = ran.actions.get(step) ?? new Map();
     ran.actions.set(step, known);
-    return measured(known, () => stepped(calls));
+    return stepped(calls, known);
   };
   let now = turn(hello);
   while (!now.done) now = turn(await play(now));
