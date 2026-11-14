@@ -1,11 +1,18 @@
 [package]
-name = "door"
+name = "runner"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [workspace]
 
+[[bin]]
+name = "runner"
+path = "main.rs"
+
 [dependencies]
-serde = { version = "1.0.229", features = ["derive"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
 weft-sdk = { path = "../../../sdk/rust" }

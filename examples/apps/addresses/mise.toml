@@ -1,3 +1,0 @@
-[tasks.build]
-description = "Build the addresses app"
-run = "cargo build --release"

@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fmt::Display;
 use std::fs;
-use std::panic::{self, AssertUnwindSafe};
+use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
+pub use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 pub use serde_json::{Value as Json, json};
@@ -32,6 +33,7 @@ enum Export {
 
 pub struct Module {
     file: PathBuf,
+    source: String,
     exports: HashMap<String, Export>,
 }
 
@@ -86,6 +88,7 @@ impl Module {
             .unwrap_or_else(|| PathBuf::from(file));
         Module {
             file: fs::canonicalize(&found).unwrap_or(found),
+            source: file.to_string(),
             exports: HashMap::new(),
         }
     }
@@ -110,20 +113,34 @@ struct Used {
 
 type Read = Box<dyn Fn() -> Result<Json, String> + Send>;
 
-static STATES: Mutex<Vec<(String, Read)>> = Mutex::new(Vec::new());
+struct Registered {
+    key: String,
+    source: &'static str,
+    schema: Json,
+    read: Read,
+}
 
-pub fn state<T: Serialize>(key: &str, read: impl Fn() -> T + Send + 'static) {
-    let read: Read = Box::new(move || serde_json::to_value(read()).map_err(|e| e.to_string()));
+static STATES: Mutex<Vec<Registered>> = Mutex::new(Vec::new());
+
+#[track_caller]
+pub fn state<T: Serialize + JsonSchema>(key: &str, read: impl Fn() -> T + Send + 'static) {
+    let registered = Registered {
+        key: key.to_string(),
+        source: Location::caller().file(),
+        schema: serde_json::to_value(schemars::schema_for!(T)).unwrap_or(Json::Null),
+        read: Box::new(move || serde_json::to_value(read()).map_err(|e| e.to_string())),
+    };
     if let Ok(mut all) = STATES.lock() {
-        all.retain(|(known, _)| known != key);
-        all.push((key.to_string(), read));
+        all.retain(|known| known.key != key);
+        all.push(registered);
     }
 }
 
-fn states() -> Result<Json, String> {
+fn states(keys: &[String]) -> Result<Json, String> {
     let all = STATES.lock().map_err(|e| e.to_string())?;
     all.iter()
-        .map(|(key, read)| Ok((key.clone(), read()?)))
+        .filter(|s| keys.contains(&s.key))
+        .map(|s| Ok((s.key.clone(), (s.read)()?)))
         .collect::<Result<serde_json::Map<_, _>, String>>()
         .map(Json::Object)
 }
@@ -132,6 +149,7 @@ type Ran = BTreeSet<(usize, String)>;
 
 struct Runner {
     files: Vec<PathBuf>,
+    states: Vec<String>,
     uses: Vec<Option<Used>>,
     hello: Json,
     start: Ran,
@@ -158,6 +176,7 @@ impl Runner {
         let mut uses = Vec::new();
         let mut hello = Vec::new();
         let mut serves = None;
+        let mut used: BTreeSet<usize> = BTreeSet::new();
         for i in code.as_array().into_iter().flatten() {
             let lines = i["uses"].as_array().map_or(&[][..], Vec::as_slice);
             if i["adapter"] != adapter {
@@ -173,6 +192,7 @@ impl Runner {
                     .position(|file| *file == place(at))
                     .ok_or_else(|| format!("the runner has no module `{at}`"))?;
                 found.insert(module.clone(), index);
+                used.insert(index);
             }
             let export = |(module, name): (String, String)| {
                 let index = *found
@@ -223,12 +243,19 @@ impl Runner {
                 }));
             }
         }
+        let sources: Vec<&str> = used.iter().map(|i| modules[*i].source.as_str()).collect();
+        let registered = STATES.lock().map_err(|e| e.to_string())?;
+        let mine: Vec<&Registered> = registered
+            .iter()
+            .filter(|s| sources.contains(&s.source))
+            .collect();
         Ok(Runner {
             hello: json!({
                 "uses": hello,
                 "serves": serves,
-                "states": STATES.lock().map_err(|e| e.to_string())?.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+                "states": mine.iter().map(|s| (s.key.clone(), s.schema.clone())).collect::<serde_json::Map<_, _>>(),
             }),
+            states: mine.iter().map(|s| s.key.clone()).collect(),
             files,
             uses,
             start: Ran::new(),
@@ -285,7 +312,7 @@ impl Runner {
             Some(START) => self.start.extend(ran),
             Some(verb) => self.actions.entry(verb.into()).or_default().extend(ran),
         }
-        Ok(match states() {
+        Ok(match states(&self.states) {
             Ok(states) => json!({ "states": states, "added": added }),
             Err(e) => json!({ "thrown": e }),
         })

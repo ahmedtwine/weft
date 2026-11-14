@@ -10,7 +10,7 @@ run = "bun install"
 
 [tasks.build]
 description = "Build weft and every runner of the examples"
-depends = ["//:build", ":install", "//examples/runners/...:build", "//examples/apps/...:build"]
+depends = ["//:build", ":install", "//examples/runners/...:build"]
 
 [tasks.test]
 description = "Run every weft diagram of the examples"

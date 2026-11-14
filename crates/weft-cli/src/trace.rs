@@ -1,7 +1,7 @@
 use std::{cmp::Reverse, collections::BTreeSet, ffi::OsStr, fs, iter, path::Path};
 
 use serde_json::{Value as Json, json};
-use weft_draw::{Call, Card, Code};
+use weft_draw::{Call, Card, Code, Row, guessed, summary};
 use weft_parse::{Diagram, Ran, Span, State};
 use weft_simulator::{Hop, Outcome};
 
@@ -165,31 +165,6 @@ fn card(spans: &[Span], ran: &Ran, path: &str) -> Result<Option<Card>, String> {
         })
 }
 
-fn summary(value: &Json) -> String {
-    let many = |n: usize, one: &str| match n {
-        1 => format!("1 {one}"),
-        n => format!("{n} {one}s"),
-    };
-    match value {
-        Json::Array(all) => many(all.len(), "item"),
-        Json::Object(all) => many(all.len(), "key"),
-        Json::String(s) if s.is_empty() => "\"\"".to_string(),
-        Json::String(s) => {
-            let first = s
-                .lines()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or_default()
-                .trim();
-            match (first.chars().count() > SUMMARY, s.lines().count() > 1) {
-                (true, _) => first.chars().take(SUMMARY - 1).chain(['…']).collect(),
-                (false, true) => format!("{first} …"),
-                (false, false) => first.to_string(),
-            }
-        }
-        other => other.to_string(),
-    }
-}
-
 pub fn code(d: &Diagram, o: &Outcome, path: &str) -> Result<Code, String> {
     let ran = &o.ran;
     let mut action_calls: Vec<(String, Vec<Call>)> = Vec::new();
@@ -216,11 +191,20 @@ pub fn code(d: &Diagram, o: &Outcome, path: &str) -> Result<Code, String> {
                 .iter()
                 .filter_map(|object| {
                     let keys = l.state.get(&object.name)?;
-                    let text: Vec<String> = keys
+                    let rows: Vec<Row> = keys
                         .iter()
-                        .map(|(k, v)| format!("{k} = {}", summary(v)))
+                        .map(|(k, v)| {
+                            [
+                                o.types
+                                    .get(&format!("{}.{k}", object.name))
+                                    .cloned()
+                                    .unwrap_or_else(|| guessed(v).to_string()),
+                                k.clone(),
+                                summary(v),
+                            ]
+                        })
                         .collect();
-                    (!text.is_empty()).then(|| (object.name.clone(), text.join("\n")))
+                    (!rows.is_empty()).then(|| (object.name.clone(), rows))
                 })
                 .collect()
         })
@@ -412,7 +396,6 @@ pub fn sorted(hops: &[Hop]) -> Vec<&Hop> {
 }
 
 const LABEL: usize = 160;
-const SUMMARY: usize = 22;
 
 fn short(text: String) -> String {
     match text.chars().count() > LABEL {

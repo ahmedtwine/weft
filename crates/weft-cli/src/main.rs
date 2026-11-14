@@ -227,19 +227,13 @@ fn tables(d: &Diagram, o: &Outcome) -> Vec<Table> {
         .collect()
 }
 
-fn rules(d: &Diagram) -> Vec<String> {
+fn invariants(d: &Diagram) -> Vec<String> {
     d.objects
         .iter()
         .flat_map(|o| {
-            o.rules
+            o.invariants
                 .iter()
-                .filter(|rule| rule.checks(&o.name))
-                .map(|rule| format!("{} · {}", o.name, rule.source()))
-                .chain(
-                    o.invariants
-                        .iter()
-                        .map(|invariant| format!("{} · {}", o.name, invariant.source())),
-                )
+                .map(|invariant| format!("{} · {}", o.name, invariant.source()))
         })
         .collect()
 }
@@ -258,22 +252,22 @@ fn summary(path: &str, d: &Diagram, config: &Config, o: &Outcome, took: Duration
     );
     [head, format!("  {}", headline(config, o, took))]
         .into_iter()
-        .chain(rules(d).into_iter().map(|rule| format!("  {rule}")))
+        .chain(invariants(d).into_iter().map(|rule| format!("  {rule}")))
         .chain(tables(d, o).iter().flat_map(Table::text))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 fn section(path: &str, src: &str, d: &Diagram, o: &Outcome) -> Result<String, String> {
-    let rules: String = rules(d)
+    let rules: String = invariants(d)
         .iter()
         .map(|rule| format!("<li><code>{}</code></li>", escape(rule)))
         .collect();
     Ok(format!(
-        r#"<section><h2>{}</h2><ul class="unstyled">{rules}</ul>{}<div class="d">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
+        r#"<section><h2>{}</h2><ul class="unstyled">{rules}</ul><div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true">Diagram</button><button type="button" role="tab" aria-selected="false">Run</button></div><div class="d" role="tabpanel">{}</div><div role="tabpanel" hidden>{}<details><summary>{}</summary><pre>{}</pre></details></div></section>"#,
         escape(path),
-        trace::panel(d, o)?,
         weft_draw::svg(d, None, &trace::code(d, o, path)?)?,
+        trace::panel(d, o)?,
         escape(path),
         escape(src)
     ))
@@ -390,6 +384,9 @@ ul.unstyled code{{font-family:var(--pele-font-mono);font-size:12px;background:va
 .d{{overflow-x:auto}}
 .d svg{{display:block;margin:var(--space-4) auto}}
 ul.unstyled{{margin:0}}
+.tabs{{display:flex;gap:var(--space-4);margin:var(--space-4) 0 0;border-bottom:1px solid var(--rule)}}
+.tabs button{{all:unset;cursor:pointer;padding:var(--space-2) 0;margin-bottom:-1px;border-bottom:2px solid transparent;color:var(--pele-muted);font-size:var(--text-7);font-weight:500}}
+.tabs button[aria-selected=true]{{color:var(--pele-fg);border-bottom-color:var(--pele-fg)}}
 .t{{max-height:26rem;overflow:auto;margin:var(--space-4) 0;border:1px solid var(--rule);border-radius:10px}}
 .t table{{font-size:var(--text-7);margin:0}}
 .t th{{position:sticky;top:0;background:var(--pele-surface);white-space:nowrap;font-family:var(--pele-font-mono);font-weight:500}}
@@ -410,6 +407,16 @@ figure pre{{flex:1;margin:0;padding:5px 0;border:0;border-radius:0;background-co
 pre code{{counter-reset:n calc(var(--from) - 1);background:none;padding:0}}
 pre .line::before{{counter-increment:n;content:counter(n);display:inline-block;min-width:4ch;margin-right:2ch;text-align:right;color:var(--pele-muted);opacity:.6}}
 </style></head><body><main><header><div><h1>Weft Report</h1><p>{} · {wrong} wrong</p></div><button id="theme" type="button" aria-label="Theme: system, light or dark" title="Theme: system, light or dark"><svg class="auto" viewBox="0 0 24 24">{}</svg><svg class="sun" viewBox="0 0 24 24">{}</svg><svg class="moon" viewBox="0 0 24 24">{}</svg></button></header>{errors}{}</main><script>
+document.addEventListener("click", (event) => {{
+  const tab = event.target.closest("[role=tab]");
+  if (!tab) return;
+  const tabs = [...tab.parentElement.children];
+  const panels = [...tab.closest("section").querySelectorAll(":scope > [role=tabpanel]")];
+  tabs.forEach((t, i) => {{
+    t.setAttribute("aria-selected", t === tab);
+    panels[i].hidden = t !== tab;
+  }});
+}});
 document.getElementById("theme").addEventListener("click", () => {{
   const root = document.documentElement;
   const next = {{ light: "dark", dark: "" }}[root.dataset.theme ?? ""] ?? "light";

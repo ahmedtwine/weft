@@ -4,7 +4,6 @@ monorepo_root = true
 config_roots = [
   "examples",
   "examples/runners/*",
-  "examples/apps/*",
 ]
 
 [tools]

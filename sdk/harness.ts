@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import inspector from "node:inspector";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { keys, states } from "./state";
+import { schemas, states } from "./state";
 import { type Call, done, join, type Name, type Report, type Turn, turn, type Use } from "./weft";
 
 type Schema = {
@@ -219,7 +219,7 @@ const loaded = async () => {
   }
   const hello = {
     serves,
-    states: keys(),
+    states: schemas((type) => json(type as Schema, "output")),
     uses: uses.map((use) => use && { input: json(use.input, "input") }),
   };
   return { uses, hello };

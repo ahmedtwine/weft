@@ -3,6 +3,7 @@ mod proxy;
 mod transport;
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value as Json, json};
@@ -91,6 +92,12 @@ pub fn run(
         })
         .collect();
     let session = HUB.open(&name, code(d, file), impls, uses, draws, pools);
+    let routes: proxy::Routes = Arc::new(
+        d.impls
+            .iter()
+            .map(|i| (i.app().to_string(), i.adapter.clone()))
+            .collect(),
+    );
     let mut started = Vec::new();
     let mut proxies = Vec::new();
     for i in &d.impls {
@@ -105,28 +112,24 @@ pub fn run(
         let Some(line) = line else {
             continue;
         };
-        let proxy = match proxy::open(&i.adapter, session.clone()) {
+        let proxy = match proxy::open(i.app(), session.clone(), routes.clone()) {
             Ok(proxy) => proxy,
             Err(e) => {
                 HUB.close(&name);
                 return Err(e);
             }
         };
-        let env: Vec<(String, String)> = session
-            .adapters()
+        let env: Vec<(String, String)> = routes
             .iter()
-            .map(|adapter| {
-                let key: String = adapter
+            .map(|(app, _)| {
+                let key: String = app
                     .chars()
                     .map(|c| match c.is_ascii_alphanumeric() {
                         true => c.to_ascii_uppercase(),
                         false => '_',
                     })
                     .collect();
-                (
-                    format!("WEFT_{key}_URL"),
-                    format!("{}/{adapter}", proxy.url),
-                )
+                (format!("WEFT_{key}_URL"), format!("{}/{app}", proxy.url))
             })
             .chain([("WEFT_PROXY".to_string(), proxy.url.clone())])
             .collect();
@@ -150,13 +153,17 @@ pub fn run(
             }
         }
     }
-    let outcome = session.members(&verbs(d), WAIT).and_then(|remotes| {
-        let mut members: Vec<Box<dyn Member>> = remotes
-            .into_iter()
-            .map(|remote| Box::new(remote) as Box<dyn Member>)
-            .collect();
-        simulate(d, &mut members, config.cases, key)
-    });
+    let joined = session.members(&verbs(d), WAIT);
+    let outcome = match joined {
+        Ok(remotes) => {
+            let mut members: Vec<Box<dyn Member>> = remotes
+                .into_iter()
+                .map(|remote| Box::new(remote) as Box<dyn Member>)
+                .collect();
+            Ok(simulate(d, &mut members, config.cases, key))
+        }
+        Err(e) => Err(e),
+    };
     HUB.close(&name);
     drop(proxies);
     let logs: Vec<String> = started
@@ -164,8 +171,9 @@ pub fn run(
         .filter_map(|runner| runner.join().ok())
         .collect();
     match outcome {
+        Ok(outcome) => outcome,
         Err(e) if !logs.is_empty() => Err(format!("{e}: {}", logs.join("; "))),
-        outcome => outcome,
+        Err(e) => Err(e),
     }
 }
 
@@ -390,7 +398,7 @@ impl "bun" {
         .map_err(|e| e.to_string())?;
         let d = weft_parse::parse(POOL, &config).map_err(|e| e.to_string())?;
         let at = listen(config.transport.as_ref())?;
-        let hello = json!({ "uses": [input(None, NONE), input(Some("open"), NUMBER), {}], "states": ["page.count"] });
+        let hello = json!({ "uses": [input(None, NONE), input(Some("open"), NUMBER), {}], "states": { "page.count": { "type": "integer" } } });
         let name = file();
         let joined = name.clone();
         let opener = thread::spawn(move || {
@@ -437,7 +445,7 @@ impl "bun" {
     }
 
     fn sends() -> Json {
-        json!({ "uses": [input(None, NONE), input(Some("send"), NUMBER), null], "states": ["page.count"] })
+        json!({ "uses": [input(None, NONE), input(Some("send"), NUMBER), null], "states": { "page.count": { "type": "integer" } } })
     }
 
     fn reloads() -> Json {
@@ -589,7 +597,7 @@ impl "bun" {
 
     #[test]
     fn weft_refuses_a_run_schema_with_no_verb() {
-        let hello = json!({ "uses": [input(None, NONE), input(None, NUMBER), null], "states": ["page.count"] });
+        let hello = json!({ "uses": [input(None, NONE), input(None, NUMBER), null], "states": { "page.count": { "type": "integer" } } });
         let error = two(&socket("refuse"), "", hello, reloader)
             .err()
             .unwrap_or_default();

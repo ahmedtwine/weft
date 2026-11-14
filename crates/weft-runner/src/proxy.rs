@@ -90,7 +90,7 @@ fn forward(r: &Request, url: &str) -> Result<(u16, String, Vec<u8>), String> {
     Ok((response.status().as_u16(), kind, body))
 }
 
-fn serve(stream: TcpStream, from: &str, session: &Session) {
+fn serve(stream: TcpStream, from: &str, session: &Session, routes: &[(String, String)]) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
@@ -101,8 +101,12 @@ fn serve(stream: TcpStream, from: &str, session: &Session) {
             Some((to, rest)) => (to.to_string(), format!("/{rest}")),
             None => (r.path.trim_start_matches('/').to_string(), "/".to_string()),
         };
+        let adapter = routes
+            .iter()
+            .find(|(app, _)| *app == to)
+            .map_or(to.as_str(), |(_, adapter)| adapter.as_str());
         let (status, kind, body) = session
-            .serves(&to, WAIT)
+            .serves(adapter, WAIT)
             .and_then(|base| forward(&r, &format!("{}{rest}", base.trim_end_matches('/'))))
             .unwrap_or_else(|e| (502, "text/plain".into(), e.into_bytes()));
         session.record(Hop {
@@ -130,7 +134,9 @@ fn serve(stream: TcpStream, from: &str, session: &Session) {
     }
 }
 
-pub fn open(from: &str, session: Arc<Session>) -> Result<Proxy, String> {
+pub type Routes = Arc<Vec<(String, String)>>;
+
+pub fn open(from: &str, session: Arc<Session>, routes: Routes) -> Result<Proxy, String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let url = format!(
@@ -144,8 +150,8 @@ pub fn open(from: &str, session: Arc<Session>) -> Result<Proxy, String> {
             match listener.accept() {
                 Ok((stream, _)) => {
                     let _ = stream.set_nonblocking(false);
-                    let (from, session) = (from.clone(), session.clone());
-                    thread::spawn(move || serve(stream, &from, &session));
+                    let (from, session, routes) = (from.clone(), session.clone(), routes.clone());
+                    thread::spawn(move || serve(stream, &from, &session, &routes));
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => thread::sleep(IDLE),
                 Err(_) => break,

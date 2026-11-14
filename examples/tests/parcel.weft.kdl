@@ -19,23 +19,23 @@ action {
   choose_address from="ana" to="shop"
   ship from="dispatcher" to="courier"
 }
-impl "orders" {
-  module "orders" "../../apps/orders/orders/orders.go"
+impl "go" {
+  module "orders" "../runners/go/parcel/orders.go"
   serve "orders.url"
   start "orders.reset"
 }
-impl "addresses" {
-  module "addresses" "../../apps/addresses/src/addresses.rs"
+impl "rust" {
+  module "addresses" "../runners/rust/parcel/addresses.rs"
   serve "addresses.url"
   start "addresses.reset"
 }
-impl "shop" {
-  module "shop" "../../apps/shop/shop.py"
+impl "python" {
+  module "shop" "../runners/python/parcel/shop.py"
   start "shop.open_shop"
   run "shop.choose_address" input="shop.chooseAddressSchema"
 }
-impl "courier" {
-  module "courier" "../../apps/courier/courier.ts"
+impl "bun" {
+  module "courier" "../runners/bun/parcel/courier.ts"
   start "courier.reset"
   run "courier.ship" input="courier.shipSchema"
 }

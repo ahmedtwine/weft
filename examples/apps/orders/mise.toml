@@ -1,3 +1,0 @@
-[tasks.build]
-description = "Build the orders app, which keeps each order in Redis in a testcontainer"
-run = "go build -o bin/orders ."

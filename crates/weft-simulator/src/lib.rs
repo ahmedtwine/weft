@@ -1,11 +1,14 @@
 mod hub;
 mod schema;
+mod shape;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value as Json, json};
 use weft_hegel::{Case, Engine, Halt, INTERESTING, INVALID, OVERRUN, VALID};
 use weft_parse::{Diagram, Ran, Seen, Span, State, shown};
+
+use crate::shape::{Field, field, item, kind};
 
 pub use hub::{Hub, Peer, Remote, Session};
 
@@ -44,7 +47,7 @@ pub struct Action {
 
 #[derive(Default)]
 pub struct Hello {
-    pub reads: Vec<String>,
+    pub schemas: Vec<(String, Json)>,
     pub start: Vec<Start>,
     pub actions: Vec<Action>,
     pub sized: bool,
@@ -124,6 +127,7 @@ pub struct Outcome {
     pub caveat: Option<String>,
     pub output: Vec<String>,
     pub ran: Ran,
+    pub types: BTreeMap<String, String>,
 }
 
 struct Step {
@@ -587,25 +591,72 @@ pub fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
     })
 }
 
-fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
-    if let Some((o, k)) = d.keys().into_iter().find(|(o, k)| {
-        let tag = format!("{o}.{k}");
+fn registered<'a>(members: &'a Members, o: &str, k: &str) -> Result<Option<&'a Json>, String> {
+    let tag = format!("{o}.{k}");
+    let all = || members.iter().flat_map(|m| &m.hello().schemas);
+    if let Some((_, s)) = all().find(|(key, _)| *key == tag) {
+        return Ok(Some(s));
+    }
+    match all().find(|(key, _)| key == o) {
+        Some((_, s)) => match field(s, k) {
+            Field::Found(s) => Ok(Some(s)),
+            Field::Open => Ok(None),
+            Field::Missing(fields) => Err(format!(
+                "the diagram names `{tag}`, and `weft.state(\"{o}\", …)` has the fields {}",
+                fields.join(", ")
+            )),
+        },
+        None => Err(format!(
+            "the diagram names `{tag}`, and no runner calls `weft.state(\"{tag}\", …)`"
+        )),
+    }
+}
+
+fn shaped(d: &Diagram, members: &Members) -> Result<(), String> {
+    for (o, k) in d.keys() {
         let counted = d
             .objects
             .iter()
             .any(|x| x.name == **o && x.pools.contains(k));
-        !counted
-            && !members.iter().any(|m| {
-                m.hello()
-                    .reads
-                    .iter()
-                    .any(|read| *read == tag || read == *o)
-            })
-    }) {
-        return Err(format!(
-            "the diagram names `{o}.{k}`, and no runner calls `weft.state(\"{o}.{k}\", …)`"
-        ));
+        if !counted {
+            registered(members, o, k)?;
+        }
     }
+    for (o, k, path) in d.fields() {
+        let Some(mut at) = registered(members, o, k)?.and_then(item) else {
+            continue;
+        };
+        for (n, part) in path.iter().enumerate() {
+            match field(at, part) {
+                Field::Found(s) => at = s,
+                Field::Open => break,
+                Field::Missing(fields) => {
+                    return Err(format!(
+                        "the invariant reads `{}` of each item of `{o}.{k}`, and an item has the fields {}",
+                        path[..=n].join("."),
+                        fields.join(", ")
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn types(members: &Members, first: &State) -> BTreeMap<String, String> {
+    first
+        .iter()
+        .flat_map(|(o, keys)| {
+            keys.keys().filter_map(move |k| {
+                let found = registered(members, o, k).ok().flatten()?;
+                Some((format!("{o}.{k}"), kind(found)))
+            })
+        })
+        .collect()
+}
+
+fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
+    shaped(d, members)?;
     if members.iter().all(|m| m.hello().start.is_empty()) {
         return Err("no runner has a `start`".into());
     }
@@ -711,6 +762,10 @@ pub fn simulate(
         (true, None) => return Err("Hegel fails the run with no failing case".into()),
         (false, _) => run.longest,
     };
+    let types = types(
+        members,
+        &trace.first().map(|l| l.state.clone()).unwrap_or_default(),
+    );
     Ok(Outcome {
         cases,
         runs: run.runs,
@@ -720,5 +775,6 @@ pub fn simulate(
         caveat: ended.caveat,
         output: ended.output,
         ran,
+        types,
     })
 }

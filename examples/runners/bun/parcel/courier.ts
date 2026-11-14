@@ -1,10 +1,12 @@
 import { state } from "weft";
 import { z } from "zod";
 
-type Parcel = { order: string; customer: string; recipient: string; street: string };
+const Parcel = z
+  .object({ order: z.string(), customer: z.string(), recipient: z.string(), street: z.string() })
+  .meta({ title: "Parcel" });
 
-const parcels: Parcel[] = [];
-state("courier.parcels", () => parcels);
+const parcels: z.infer<typeof Parcel>[] = [];
+state("courier.parcels", () => parcels, z.array(Parcel));
 
 export const shipSchema = z
   .strictObject({ order: z.literal("o-ana") })

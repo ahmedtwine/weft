@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use weft_simulator::Session;
 
@@ -44,9 +45,12 @@ pub struct Runner<'a> {
 fn spawn(
     mut command: Command,
     label: String,
+    shown: &str,
     dir: PathBuf,
     r: Runner,
 ) -> Result<JoinHandle<String>, String> {
+    let begun = Instant::now();
+    let tag = format!("{} · {}", r.name, r.adapter);
     let log = File::create(dir.join("runner.log")).map_err(|e| e.to_string())?;
     let session = r.session;
     let mut child = command
@@ -60,8 +64,16 @@ fn spawn(
         .stderr(log)
         .spawn()
         .map_err(|e| format!("{label}: {e}"))?;
+    eprintln!("▸ {tag} · {shown} · pid {}", child.id());
     Ok(thread::spawn(move || {
         let status = child.wait();
+        eprintln!(
+            "■ {tag} · {} · {:.2}s",
+            status
+                .as_ref()
+                .map_or("no status".to_string(), |s| s.to_string()),
+            begun.elapsed().as_secs_f64()
+        );
         let log = fs::read_to_string(dir.join("runner.log")).unwrap_or_default();
         let _ = fs::remove_dir_all(&dir);
         let said = format!(
@@ -87,12 +99,12 @@ pub fn bun(r: Runner) -> Result<JoinHandle<String>, String> {
         .arg("--timeout")
         .arg("86400000")
         .arg(&harness);
-    spawn(command, "bun test".into(), dir, r)
+    spawn(command, "bun test".into(), "bun test", dir, r)
 }
 
 pub fn command(line: &str, r: Runner) -> Result<JoinHandle<String>, String> {
     let mut command = Command::new("sh");
     command.arg("-c").arg(line);
     let label = format!("runner \"{}\"", r.adapter);
-    spawn(command, label, scratch()?, r)
+    spawn(command, label, line, scratch()?, r)
 }

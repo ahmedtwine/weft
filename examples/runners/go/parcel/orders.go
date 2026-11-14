@@ -1,4 +1,4 @@
-package orders
+package parcel
 
 import (
 	"context"
@@ -24,6 +24,7 @@ type Order struct {
 var (
 	mu       sync.Mutex
 	db       *redis.Client
+	redisCtr testcontainers.Container
 	listener net.Listener
 )
 
@@ -35,6 +36,7 @@ func started(ctx context.Context) error {
 		testcontainers.WithExposedPorts("6379/tcp"),
 		testcontainers.WithWaitStrategy(wait.ForListeningPort("6379/tcp")),
 	)
+	redisCtr = ctr
 	if err != nil {
 		return err
 	}
@@ -118,6 +120,12 @@ func Reset() error {
 		return err
 	}
 	return db.FlushAll(ctx).Err()
+}
+
+func Stop() {
+	if redisCtr != nil {
+		_ = testcontainers.TerminateContainer(redisCtr)
+	}
 }
 
 func Module() *weft.Module {

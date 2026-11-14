@@ -8,6 +8,7 @@ use weft_parse::{Draw, Ran, Role, Span, State, Use};
 use weft_wire::{DONE, JOIN, Reader, Short, TURN, Writer};
 
 use crate::schema::{Branch, branches, live, narrowed, whole};
+use crate::shape::resolved;
 use crate::{Action, Hello, Hop, Member, Report, Start, Turn};
 
 const REFUSED: i32 = 1;
@@ -97,20 +98,25 @@ fn hello(session: &Session, said: &Json) -> Result<Seat, String> {
         sized: true,
         ..Hello::default()
     };
-    let states: Vec<String> = said
-        .get("states")
-        .and_then(Json::as_array)
-        .map_or(&[][..], Vec::as_slice)
-        .iter()
-        .map(|key| {
-            key.as_str()
-                .filter(|k| k.split('.').count() <= 2 && k.split('.').all(|part| !part.is_empty()))
-                .map(String::from)
-                .ok_or_else(|| {
-                    format!("`weft.state({key})` names `\"<object>\"` or `\"<object>.<key>\"`")
-                })
-        })
-        .collect::<Result<_, _>>()?;
+    let given = match said.get("states") {
+        Some(Json::Object(all)) => all.clone(),
+        None => serde_json::Map::new(),
+        Some(other) => {
+            return Err(format!(
+                "the runner sends the states `{other}`, and weft reads a map of each key to its JSON Schema"
+            ));
+        }
+    };
+    let mut states = Vec::new();
+    for (key, schema) in given {
+        if key.split('.').count() > 2 || key.split('.').any(str::is_empty) {
+            return Err(format!(
+                "`weft.state(\"{key}\")` names `\"<object>\"` or `\"<object>.<key>\"`"
+            ));
+        }
+        hello.schemas.push((key.clone(), resolved(&schema)));
+        states.push(key);
+    }
     let mut found = vec![0; draws.len()];
     let mut drawn = |generator: Generator, line: &str| {
         let mut generator = live(generator)
@@ -205,7 +211,6 @@ fn hello(session: &Session, said: &Json) -> Result<Seat, String> {
             }
         }
     }
-    hello.reads = states.clone();
     Ok(Seat {
         hello,
         adapter,
@@ -324,13 +329,6 @@ impl Seat {
 }
 
 impl Session {
-    pub fn adapters(&self) -> Vec<String> {
-        self.impls
-            .iter()
-            .map(|(adapter, _)| adapter.clone())
-            .collect()
-    }
-
     pub fn serves(&self, adapter: &str, wait: Duration) -> Result<String, String> {
         let until = Instant::now() + wait;
         let mut joined = held(&self.joined);

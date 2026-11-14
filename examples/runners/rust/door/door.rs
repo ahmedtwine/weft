@@ -1,9 +1,10 @@
 use std::sync::Mutex;
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use weft_sdk::{self as weft, Json, Module, json};
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, JsonSchema)]
 struct Door {
     state: &'static str,
     error: &'static str,

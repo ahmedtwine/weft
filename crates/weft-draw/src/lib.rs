@@ -6,7 +6,7 @@ use merman::ascii::AsciiRenderOptions;
 use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest};
 use serde_json::Value;
 use vendor::lucide::ICONS;
-use weft_parse::Diagram;
+use weft_parse::{Diagram, Next, State};
 
 const WRAP: usize = 24;
 const PAD: f64 = 10.0;
@@ -17,6 +17,7 @@ const NOTE_LINE: f64 = 19.0;
 const NOTE_MARGIN: f64 = 20.0;
 const MONO: f64 = 0.6;
 const LABEL: usize = 46;
+const SUMMARY: usize = 22;
 const STYLE: &str = "<style>.pele{--w-bg:var(--pele-bg,#ffffff);--w-fg:var(--pele-fg,#1f1f1f);--w-muted:var(--pele-muted,#6e6e6e);--w-line:var(--pele-line,#1f1f1f);--w-surface:var(--pele-surface,#f3f3f3);--w-border:var(--pele-border,#8a8a8a);--w-critical:var(--pele-critical,#e45756);--w-s1:var(--pele-series-1,#4c78a8);--w-s2:var(--pele-series-2,#f58518);--w-s3:var(--pele-series-3,#54a24b);--w-s4:var(--pele-series-4,#e45756);--w-s5:var(--pele-series-5,#72b7b2);--w-s6:var(--pele-series-6,#eeca3b);--w-s7:var(--pele-series-7,#b279a2);--w-s8:var(--pele-series-8,#9d755d);font-family:var(--pele-font,Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif)}.pele .m{font-family:var(--pele-font-mono,'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace)}</style>";
 const DIRECTIVE: &str =
     "%%{init: {\"sequence\": {\"mirrorActors\": false, \"actorMargin\": 16, \"width\": 96}}}%%\n";
@@ -39,7 +40,6 @@ const DARK: &str = "--pele-bg:#161616;--pele-fg:#e6e6e6;--pele-muted:#9a9a9a;--p
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Initial,
-    Rule,
     Failed,
 }
 
@@ -63,8 +63,10 @@ pub struct Code {
     pub start_calls: Vec<Call>,
     pub action_calls: Vec<(String, Vec<Call>)>,
     pub failed: Option<(String, Vec<String>)>,
-    pub initial: Vec<(String, String)>,
+    pub initial: Vec<(String, Vec<Row>)>,
 }
+
+pub type Row = [String; 3];
 
 enum Message<'a> {
     Step(usize),
@@ -86,9 +88,9 @@ fn colors(d: &Diagram) -> Vec<Option<&'static str>> {
     let mut next = 0;
     d.objects
         .iter()
-        .map(|o| match o.kind {
-            weft_parse::Kind::Person => None,
-            _ => {
+        .map(|o| match o.kind.is_person() {
+            true => None,
+            false => {
                 next += 1;
                 Some(SERIES[(next - 1) % SERIES.len()])
             }
@@ -99,6 +101,7 @@ fn colors(d: &Diagram) -> Vec<Option<&'static str>> {
 enum Note<'a> {
     Text(String, Kind),
     Card(&'a Card),
+    Changed(usize, Vec<Row>),
 }
 
 struct Plan<'a> {
@@ -106,7 +109,7 @@ struct Plan<'a> {
     messages: Vec<Message<'a>>,
     heads: Vec<Vec<String>>,
     notes: Vec<Note<'a>>,
-    initial: Vec<(usize, String)>,
+    initial: Vec<(usize, Vec<Row>)>,
     svg: bool,
 }
 
@@ -177,7 +180,6 @@ fn order(d: &Diagram) -> Vec<usize> {
 fn stereotype(kind: Kind) -> &'static str {
     match kind {
         Kind::Initial => "«initial»",
-        Kind::Rule => "«on»",
         Kind::Failed => "«fails»",
     }
 }
@@ -264,49 +266,39 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
     let order = order(d);
     for &i in &order {
         let head = &p.heads[i];
-        let lines = match svg {
-            true => {
+        let name = &d.objects[i].name;
+        let rows = code
+            .and_then(|c| c.initial.iter().find(|(o, _)| o == name))
+            .map(|(_, rows)| rows.clone())
+            .or_else(|| started(d, i))
+            .filter(|_| svg);
+        let lines = match &rows {
+            Some(rows) => {
                 let mut reserve = vec![String::new(); RESERVE];
-                let name = &d.objects[i].name;
-                reserve[0] = code
-                    .and_then(|c| c.initial.iter().find(|(o, _)| o == name))
-                    .map(|(_, s)| s.lines().map(String::from).max_by_key(|l| count(l)))
-                    .unwrap_or_else(|| d.initial(name))
-                    .map_or(String::new(), |s| format!("«initial» {s}"));
+                reserve[0] = "x".repeat((table(name, rows).0 / CHAR).ceil() as usize);
                 [reserve, head.clone()].concat()
             }
-            false => head.clone(),
+            None => head.clone(),
         };
         let _ = writeln!(p.source, "  participant o{i} as {}", mermaid_text(&lines));
-        let name = &d.objects[i].name;
-        let real = code
-            .and_then(|c| c.initial.iter().find(|(o, _)| o == name))
-            .map(|(_, s)| s.clone());
-        p.initial
-            .extend(real.or_else(|| d.initial(name)).map(|s| (i, s)));
+        p.initial.extend(rows.map(|rows| (i, rows)));
     }
     if let (true, Some(first), Some(last)) =
         (svg && !p.initial.is_empty(), order.first(), order.last())
     {
-        let over = format!("o{first},o{last}");
-        let widest = p
-            .initial
-            .iter()
-            .flat_map(|(_, s)| lines(s))
-            .max_by_key(|l| count(l))
-            .unwrap_or_default();
         let tallest = p
             .initial
             .iter()
-            .map(|(_, s)| lines(s).len())
-            .max()
-            .unwrap_or(1);
-        note(
-            &mut p,
-            over,
-            vec![widest; tallest].join("\n"),
-            Kind::Initial,
+            .map(|(i, rows)| table(&d.objects[*i].name, rows).1)
+            .fold(0.0, f64::max);
+        let lines = ((tallest - NOTE_MARGIN) / NOTE_LINE).ceil() as usize;
+        let reserved = vec!["x".to_string(); lines];
+        let _ = writeln!(
+            p.source,
+            "  Note over o{first},o{last}: {}",
+            mermaid_text(&reserved)
         );
+        p.notes.push(Note::Text(String::new(), Kind::Initial));
     }
     if let (Some(start), Some(first), Some(last)) = (
         code.and_then(|c| c.start.as_ref()),
@@ -332,6 +324,11 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
     let mut placed: Vec<&str> = Vec::new();
     let mut called: Vec<&str> = Vec::new();
     let mut failed_drawn = false;
+    let mut model: State = d
+        .objects
+        .iter()
+        .map(|o| (o.name.clone(), o.start.clone()))
+        .collect();
     for (k, s) in d.path.iter().enumerate() {
         p.messages.push(Message::Step(k));
         let _ = writeln!(
@@ -374,19 +371,23 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
                 Kind::Failed,
             );
         }
-        let rules: Vec<String> = d
-            .rules(&s.to, &s.verb)
-            .into_iter()
-            .filter(|rule| rule.checks(&s.to))
-            .map(|rule| rule.source())
-            .collect();
-        if !rules.is_empty() {
-            note(
-                &mut p,
-                format!("o{}", col(d, &s.to)),
-                rules.join("\n"),
-                Kind::Rule,
-            );
+        let rows = changed(d, &mut model, &s.to, &s.verb);
+        if !rows.is_empty() {
+            let i = col(d, &s.to);
+            match p.svg {
+                true => {
+                    let (w, h) = table(&s.to, &rows);
+                    let lines = ((h - NOTE_MARGIN) / NOTE_LINE).ceil() as usize;
+                    let reserved = vec!["x".repeat((w / CHAR).ceil() as usize); lines];
+                    let _ = writeln!(p.source, "  Note over o{i}: {}", mermaid_text(&reserved));
+                    p.notes.push(Note::Changed(i, rows));
+                }
+                false => {
+                    let text: Vec<String> =
+                        rows.iter().map(|[_, k, v]| format!("{k} = {v}")).collect();
+                    let _ = writeln!(p.source, "  Note over o{i}: {}", mermaid_text(&text));
+                }
+            }
         }
     }
     p
@@ -519,30 +520,159 @@ fn failure(out: &mut String, (x, y): (f64, f64), text: &str) {
     }
 }
 
-fn node(out: &mut String, (x, y): (f64, f64), kind: Kind, state: &str) {
-    let top = stereotype(kind);
-    let lines = lines(state);
-    let wide = lines
-        .iter()
-        .map(|l| width(l, 13.0) * 1.06)
-        .fold(0.0, f64::max);
-    let w = width(top, 11.5).max(wide) + 24.0;
-    let h = 26.0 + lines.len() as f64 * 16.0;
-    let dash = match kind {
-        Kind::Initial => r#" stroke-dasharray="4 3""#,
-        _ => "",
+const HEAD: f64 = 34.0;
+const CELL: f64 = 26.0;
+const GAP: f64 = 16.0;
+const EDGE: f64 = 14.0;
+
+pub fn summary(value: &Value) -> String {
+    let many = |n: usize, one: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {one}s"),
     };
+    match value {
+        Value::Array(all) => many(all.len(), "item"),
+        Value::Object(all) => many(all.len(), "entry").replace("entrys", "entries"),
+        Value::String(s) if s.is_empty() => "\"\"".to_string(),
+        Value::String(s) => {
+            let first = s
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or_default()
+                .trim();
+            match (count(first) > SUMMARY, s.lines().count() > 1) {
+                (true, _) => first.chars().take(SUMMARY - 1).chain(['…']).collect(),
+                (false, true) => format!("{first} …"),
+                (false, false) => first.to_string(),
+            }
+        }
+        other => other.to_string(),
+    }
+}
+
+pub fn guessed(value: &Value) -> &'static str {
+    match value {
+        Value::String(_) => "string",
+        Value::Bool(_) => "bool",
+        Value::Number(n) if n.is_f64() => "float",
+        Value::Number(_) => "int",
+        Value::Array(_) => "list",
+        Value::Object(_) => "map",
+        Value::Null => "null",
+    }
+}
+
+fn started(d: &Diagram, i: usize) -> Option<Vec<Row>> {
+    let start = &d.objects.get(i)?.start;
+    (!start.is_empty()).then(|| {
+        start
+            .iter()
+            .map(|(k, v)| [guessed(v).to_string(), k.clone(), summary(v)])
+            .collect()
+    })
+}
+
+fn changed(d: &Diagram, model: &mut State, object: &str, verb: &str) -> Vec<Row> {
+    let now = model.get(object).cloned().unwrap_or_default();
+    let matching: Vec<_> = d
+        .rules(object, verb)
+        .into_iter()
+        .filter(|r| r.when.iter().all(|(k, v)| now.get(k) == Some(v)))
+        .collect();
+    let Some(rule) = matching
+        .iter()
+        .find(|r| !r.when.is_empty())
+        .or(matching.first())
+    else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for (k, next) in &rule.next {
+        let value = match next {
+            Next::Value(v) => v.clone(),
+            Next::Before(o, key) | Next::Start(o, key) | Next::After(o, key) => {
+                match model.get(o).and_then(|p| p.get(key)) {
+                    Some(v) => v.clone(),
+                    None => continue,
+                }
+            }
+            Next::Input(path) => {
+                rows.push([
+                    "input".to_string(),
+                    k.clone(),
+                    format!("input.{}", path.join(".")),
+                ]);
+                continue;
+            }
+        };
+        if now.get(k) != Some(&value) {
+            rows.push([guessed(&value).to_string(), k.clone(), summary(&value)]);
+            model
+                .entry(object.to_string())
+                .or_default()
+                .insert(k.clone(), value);
+        }
+    }
+    rows
+}
+
+fn columns(rows: &[Row]) -> [f64; 3] {
+    let widest = |n: usize, size: f64| rows.iter().map(|r| width(&r[n], size)).fold(0.0, f64::max);
+    let value = rows
+        .iter()
+        .map(|r| count(&r[2]) as f64 * 12.0 * MONO)
+        .fold(0.0, f64::max);
+    [widest(0, 12.0), widest(1, 13.0), value]
+}
+
+fn table(name: &str, rows: &[Row]) -> (f64, f64) {
+    let [t, k, v] = columns(rows);
+    let w = (EDGE * 2.0 + t + k + v + GAP * 2.0)
+        .max(width(&name.to_uppercase(), 12.5) * 1.12 + EDGE * 2.0);
+    (w, HEAD + rows.len() as f64 * CELL)
+}
+
+fn entity(out: &mut String, (cx, top): (f64, f64), name: &str, rows: &[Row]) {
+    let (w, h) = table(name, rows);
+    let [t, k, _] = columns(rows);
+    let left = cx - w / 2.0;
     let _ = write!(
         out,
-        r#"<rect x="{:.1}" y="{:.1}" width="{w:.1}" height="{h:.1}" rx="6" style="fill:{SURFACE};stroke:{BORDER}"{dash}/>"#,
-        x - w / 2.0,
-        y - h / 2.0
+        r#"<g><rect x="{left:.1}" y="{top:.1}" width="{w:.1}" height="{h:.1}" rx="8" style="fill:{BG};stroke:{BORDER}"/><path d="M{:.1} {:.1}v-{:.1}a8 8 0 0 1 8 -8h{:.1}a8 8 0 0 1 8 8v{:.1}z" style="fill:{SURFACE}"/><line x1="{left:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" style="stroke:{BORDER}"/><text x="{cx:.1}" y="{:.1}" text-anchor="middle" font-size="12.5" font-weight="500" letter-spacing="0.06em" style="fill:{FG}">{}</text>"#,
+        left + 0.5,
+        top + HEAD,
+        HEAD - 8.5,
+        w - 17.0,
+        HEAD - 8.5,
+        top + HEAD,
+        left + w,
+        top + HEAD,
+        top + HEAD / 2.0 + 4.5,
+        escape(&name.to_uppercase())
     );
-    let top_y = y - h / 2.0;
-    write_text(out, x, top_y + 17.0, top, MUTED, 400, 11.5);
-    for (i, line) in lines.iter().enumerate() {
-        write_text(out, x, top_y + 34.0 + i as f64 * 16.0, line, FG, 600, 13.0);
+    for (n, [kind, key, value]) in rows.iter().enumerate() {
+        let y = top + HEAD + n as f64 * CELL;
+        if n > 0 {
+            let _ = write!(
+                out,
+                r#"<line x1="{:.1}" y1="{y:.1}" x2="{:.1}" y2="{y:.1}" style="stroke:{BORDER};stroke-opacity:0.45"/>"#,
+                left + 1.0,
+                left + w - 1.0
+            );
+        }
+        let base = y + CELL / 2.0 + 4.3;
+        let _ = write!(
+            out,
+            r#"<text x="{:.1}" y="{base:.1}" font-size="12" style="fill:{MUTED}">{}</text><text x="{:.1}" y="{base:.1}" font-size="13" font-weight="500" style="fill:{FG}">{}</text><text class="m" x="{:.1}" y="{base:.1}" font-size="12" style="fill:{FG}">{}</text>"#,
+            left + EDGE,
+            escape(kind),
+            left + EDGE + t + GAP,
+            escape(key),
+            left + EDGE + t + GAP + k + GAP,
+            escape(value)
+        );
     }
+    out.push_str("</g>");
 }
 
 fn arrow(out: &mut String, (px, py): (f64, f64), (zx, zy): (f64, f64), color: &str) {
@@ -727,13 +857,26 @@ pub fn svg(d: &Diagram, theme: Option<Theme>, code: &Code) -> Result<String, Str
                     card.html
                 );
             }
+            Note::Changed(i, rows) => {
+                let name = &d.objects[*i].name;
+                entity(&mut out, (x, y - table(name, rows).1 / 2.0), name, rows);
+            }
             Note::Text(_, Kind::Initial) => {
-                for (i, state) in &plan.initial {
-                    node(&mut out, (column[*i], y), Kind::Initial, state);
+                let tallest = plan
+                    .initial
+                    .iter()
+                    .map(|(i, rows)| table(&d.objects[*i].name, rows).1)
+                    .fold(0.0, f64::max);
+                for (i, rows) in &plan.initial {
+                    entity(
+                        &mut out,
+                        (column[*i], y - tallest / 2.0),
+                        &d.objects[*i].name,
+                        rows,
+                    );
                 }
             }
             Note::Text(text, Kind::Failed) => failure(&mut out, (x, y), text),
-            Note::Text(text, kind) => node(&mut out, (x, y), *kind, text),
         }
     }
     for n in &nodes {

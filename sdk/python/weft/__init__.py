@@ -5,6 +5,8 @@ import json
 import os
 import sys
 import traceback
+import types
+import typing
 from pathlib import Path
 
 ADAPTER = "python"
@@ -55,7 +57,55 @@ _STATES = {}
 
 
 def state(key, read):
-    _STATES[key] = read if callable(read) else (lambda: read)
+    try:
+        hint = typing.get_type_hints(read).get("return") if callable(read) else None
+    except Exception:
+        hint = None
+    _STATES[key] = (read if callable(read) else (lambda: read), hint)
+
+
+def _shape(kind):
+    origin, args = typing.get_origin(kind), typing.get_args(kind)
+    if origin in (typing.Union, types.UnionType):
+        return next((_shape(a) for a in args if a is not type(None)), {})
+    if kind is bool:
+        return {"type": "boolean"}
+    if kind is int:
+        return {"type": "integer"}
+    if kind is float:
+        return {"type": "number"}
+    if kind is str:
+        return {"type": "string"}
+    if hasattr(kind, "model_json_schema"):
+        return kind.model_json_schema()
+    if dataclasses.is_dataclass(kind) or typing.is_typeddict(kind):
+        hints = typing.get_type_hints(kind)
+        return {"type": "object", "title": kind.__name__, "properties": {k: _shape(v) for k, v in hints.items()}}
+    if kind in (list, set, frozenset, tuple) or origin in (list, set, frozenset, tuple):
+        return {"type": "array", "items": _shape(args[0]) if args else {}}
+    if kind is dict or origin is dict:
+        return {"type": "object", "additionalProperties": _shape(args[1]) if len(args) > 1 else {}}
+    return {}
+
+
+def _guessed(value):
+    if dataclasses.is_dataclass(value) or hasattr(value, "model_json_schema"):
+        return _shape(type(value))
+    if isinstance(value, dict):
+        return {"type": "object", "properties": {k: _guessed(v) for k, v in value.items()}}
+    if isinstance(value, (list, set, frozenset, tuple)):
+        return {"type": "array", "items": _guessed(next(iter(value))) if value else {}}
+    return _shape(type(value))
+
+
+def _schemas():
+    out = {}
+    for key, (read, hint) in _STATES.items():
+        try:
+            out[key] = _shape(hint) if hint is not None else _guessed(read())
+        except Exception:
+            out[key] = {}
+    return out
 
 
 def _native(value):
@@ -69,7 +119,7 @@ def _native(value):
 
 
 def _states():
-    return {key: json.loads(json.dumps(read(), default=_native)) for key, read in _STATES.items()}
+    return {key: json.loads(json.dumps(read(), default=_native)) for key, (read, _) in _STATES.items()}
 
 
 def _schema(value):
@@ -258,7 +308,7 @@ def run():
             os.environ.get("WEFT_ADAPTER", ADAPTER),
             _Lines(),
         )
-        report = {"uses": runner.hello, "serves": runner.serves, "states": list(_STATES)}
+        report = {"uses": runner.hello, "serves": runner.serves, "states": _schemas()}
         while not (turn := weft.turn(report)).get("done"):
             report = runner.play(turn)
         said = {"ran": runner.ran()}

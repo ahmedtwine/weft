@@ -59,36 +59,83 @@ type used struct {
 }
 
 type read struct {
-	key  string
-	read func() any
+	key    string
+	file   string
+	schema map[string]any
+	read   func() any
 }
 
 var states []read
 
 func State[T any](key string, get func() T) {
-	for i, known := range states {
-		if known.key == key {
-			states = append(states[:i], states[i+1:]...)
-			break
-		}
+	_, file, _, _ := runtime.Caller(1)
+	if found, err := filepath.EvalSymlinks(file); err == nil {
+		file = found
 	}
-	states = append(states, read{key: key, read: func() any { return get() }})
+	states = slices.DeleteFunc(states, func(r read) bool { return r.key == key })
+	states = append(states, read{key: key, file: file, schema: schemaOf(reflect.TypeFor[T](), map[reflect.Type]bool{}), read: func() any { return get() }})
 }
 
-func observed() (result map[string]any, fault string) {
+func schemaOf(t reflect.Type, seen map[reflect.Type]bool) map[string]any {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return map[string]any{"type": "string"}
+	case reflect.Bool:
+		return map[string]any{"type": "boolean"}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return map[string]any{"type": "integer"}
+	case reflect.Float32, reflect.Float64:
+		return map[string]any{"type": "number"}
+	case reflect.Slice, reflect.Array:
+		if t.Elem().Kind() == reflect.Uint8 {
+			return map[string]any{"type": "string"}
+		}
+		return map[string]any{"type": "array", "items": schemaOf(t.Elem(), seen)}
+	case reflect.Map:
+		return map[string]any{"type": "object", "additionalProperties": schemaOf(t.Elem(), seen)}
+	case reflect.Struct:
+		out := map[string]any{"type": "object", "title": t.Name()}
+		if seen[t] {
+			return out
+		}
+		seen[t] = true
+		properties := map[string]any{}
+		for i := range t.NumField() {
+			f := t.Field(i)
+			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+			if !f.IsExported() || name == "-" {
+				continue
+			}
+			if name == "" {
+				name = f.Name
+			}
+			properties[name] = schemaOf(f.Type, seen)
+		}
+		out["properties"] = properties
+		return out
+	}
+	return map[string]any{}
+}
+
+func (r *runner) observed() (result map[string]any, fault string) {
 	defer func() {
 		if recover() != nil {
 			fault = panicked()
 		}
 	}()
 	result = map[string]any{}
-	for _, s := range states {
+	for _, s := range r.states {
 		result[s.key] = s.read()
 	}
 	return result, ""
 }
 
 type runner struct {
+	states  []read
 	serves  string
 	modules []*Module
 	uses    []*used
@@ -144,6 +191,11 @@ func newRunner(code []block, name string, modules []*Module) (*runner, error) {
 				return nil, fmt.Errorf("the runner has no module `%s`", at)
 			}
 			found[module] = index
+			for _, s := range states {
+				if s.file == modules[index].file {
+					r.states = append(r.states, s)
+				}
+			}
 		}
 		exported := func(n [2]string) (int, export, error) {
 			index, ok := found[n[0]]
@@ -303,13 +355,12 @@ func (r *runner) play(t turn) (any, error) {
 			return map[string]string{"thrown": fail.message}, nil
 		}
 	}
-	found, fault := observed()
+	found, fault := r.observed()
 	if fault != "" {
 		return map[string]string{"thrown": fault}, nil
 	}
 	return map[string]any{"states": found, "added": added}, nil
 }
-
 
 type span struct {
 	File string `json:"file"`
@@ -371,9 +422,9 @@ func played(modules []*Module) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	keys := []string{}
-	for _, s := range states {
-		keys = append(keys, s.key)
+	keys := map[string]any{}
+	for _, s := range r.states {
+		keys[s.key] = s.schema
 	}
 	var report any = map[string]any{"uses": r.hello, "serves": r.serves, "states": keys}
 	for {

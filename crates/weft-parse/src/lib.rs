@@ -92,6 +92,16 @@ pub struct Impl {
     pub serve: Option<Name>,
 }
 
+impl Impl {
+    pub fn app(&self) -> &str {
+        self.serve
+            .as_ref()
+            .map(|n| n.module.as_str())
+            .or_else(|| self.modules.first().map(|(m, _)| m.as_str()))
+            .unwrap_or(&self.adapter)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {
     pub file: String,
@@ -105,52 +115,25 @@ pub struct Ran {
     pub actions: Vec<(String, Vec<Span>)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Kind {
-    Person,
-    Element,
-    Browser,
-    Db,
-    Api,
-    File,
-}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Kind(String);
 
 impl Kind {
-    const ALL: [Kind; 6] = [
-        Kind::Person,
-        Kind::Element,
-        Kind::Browser,
-        Kind::Db,
-        Kind::Api,
-        Kind::File,
-    ];
-
     fn parse(s: &str) -> Result<Kind, String> {
-        match s {
-            "person" => Ok(Kind::Person),
-            "element" => Ok(Kind::Element),
-            "browser" => Ok(Kind::Browser),
-            "db" => Ok(Kind::Db),
-            "api" => Ok(Kind::Api),
-            "file" => Ok(Kind::File),
-            other => Err(format!(
-                "`{other}` is not a kind; a kind is any of {}",
-                list(&Kind::ALL.map(|k| format!("`{k}`")), "and")
-            )),
+        match !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+            true => Ok(Kind(s.to_string())),
+            false => Err(format!("`{s}` is no kind; a kind is a lowercase word")),
         }
+    }
+
+    pub fn is_person(&self) -> bool {
+        self.0 == "person"
     }
 }
 
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(match self {
-            Kind::Person => "person",
-            Kind::Element => "element",
-            Kind::Browser => "browser",
-            Kind::Db => "db",
-            Kind::Api => "api",
-            Kind::File => "file",
-        })
+        f.write_str(&self.0)
     }
 }
 
@@ -274,13 +257,6 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-fn list(names: &[String], word: &str) -> String {
-    match names.split_last() {
-        Some((last, rest)) if !rest.is_empty() => format!("{} {word} {last}", rest.join(", ")),
-        _ => names.concat(),
-    }
-}
 
 impl Op {
     const ALL: [Op; 19] = [
@@ -682,6 +658,25 @@ impl Now {
             .collect()
     }
 
+    fn fields(&self) -> Vec<(&String, &String, &[String])> {
+        self.all()
+            .into_iter()
+            .filter_map(|e| match e {
+                Now::Each(_, v, set, body) => match set.as_ref() {
+                    Now::Key(o, k) | Now::Start(o, k) => Some((o, k, v, body)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .flat_map(|(o, k, v, body)| {
+                body.all().into_iter().filter_map(move |e| match e {
+                    Now::Var(n, path) if n == v => Some((o, k, path.as_slice())),
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+
     fn refers(&self) -> bool {
         self.all()
             .into_iter()
@@ -777,6 +772,13 @@ impl Diagram {
             }
         }
         out
+    }
+
+    pub fn fields(&self) -> Vec<(&String, &String, &[String])> {
+        self.invariants()
+            .into_iter()
+            .flat_map(|i| i.body.fields())
+            .collect()
     }
 
     pub fn enabled(&self, object: &str, verb: &str, before: &State) -> bool {
@@ -1319,14 +1321,18 @@ fn object(n: &KdlNode, config: &Config, names: &[String], src: &str) -> Result<O
         .iter()
         .find(|(k, _)| *k == kind)
         .map(|(_, i)| i.clone())
-        .ok_or_else(|| format!("`{kind}` has no `style \"{kind}\"` in the config"))?;
+        .ok_or_else(|| {
+            format!(
+                "`{kind}` is a kind once `weft.kdl` has `style \"{kind}\" icon=\"<lucide icon>\"`"
+            )
+        })?;
     let named = shape(n, 1, &keys(n), true)
         .map_err(|e| format!("{kind}: {e}"))?
         .remove(0);
     let at = |e: String| format!("{kind} {named}: {e}");
     let mut o = Object {
         name: named.clone(),
-        kind,
+        kind: kind.clone(),
         icon,
         line: line(src, n),
         start: pairs(n).map_err(at)?,

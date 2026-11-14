@@ -2,11 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
 use weft_sdk::{self as weft, Json, Module, json};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 struct Address {
     owner: String,
     street: String,

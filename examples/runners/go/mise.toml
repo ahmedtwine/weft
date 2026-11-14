@@ -1,3 +1,3 @@
 [tasks.build]
-description = "Build the Go door runner"
-run = "go build -o bin/door ."
+description = "Build the Go runner of the door and the orders app, which keeps each order in Redis in a testcontainer"
+run = "go build -o bin/runner ."
