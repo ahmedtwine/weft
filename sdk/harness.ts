@@ -3,6 +3,7 @@ import { test } from "bun:test";
 import inspector from "node:inspector";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { keys, states } from "./state";
 import { type Call, done, join, type Name, type Report, type Turn, turn, type Use } from "./weft";
 
 type Schema = {
@@ -16,11 +17,8 @@ type Used = {
   run?: Run;
   method: string;
   input?: Schema;
-  output?: Schema;
-  error?: Schema;
 };
-type Failed = [] | [Schema, string];
-type Called = { result: unknown } | { failed: [Schema, string] } | { thrown: string };
+type Called = { result: unknown } | { thrown: string };
 type Served = { file: string; counts: Int32Array; marks: [number, number][]; starts: number[] };
 type Range = { startOffset: number; endOffset: number; count: number };
 type Taken = { result: { url: string; functions: { ranges: Range[] }[] }[] };
@@ -29,7 +27,6 @@ type Code = Map<string, Set<number>>;
 const ADAPTER = Bun.env.WEFT_ADAPTER ?? "bun";
 const START = "start";
 const SAMPLES = 8;
-const FAULTS = [TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError];
 const SOURCE = new RegExp(
   `^${process.cwd().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?!.*node_modules/).*\\.[cm]?[jt]sx?$`
 );
@@ -217,21 +214,13 @@ const loaded = async () => {
         run: run as Run | undefined,
         method: line.function[1],
         input: schema(line.input),
-        output: schema(line.output),
-        error: schema(line.error),
       });
     }
   }
   const hello = {
     serves,
-    uses: uses.map(
-      (use) =>
-        use && {
-          input: json(use.input, "input"),
-          output: json(use.output, "output"),
-          error: json(use.error, "output"),
-        }
-    ),
+    states: keys(),
+    uses: uses.map((use) => use && { input: json(use.input, "input") }),
   };
   return { uses, hello };
 };
@@ -277,36 +266,22 @@ const played = async () => {
     if (thrown.length === 0) return { result };
     const [error] = thrown;
     if (!(error instanceof Error)) return { thrown: String(error) };
-    return FAULTS.some((fault) => error instanceof fault) || !use.error
-      ? { thrown: `${error.name}: ${error.message}${thrower(error)}` }
-      : { failed: [use.error, error.message] };
+    return { thrown: `${error.name}: ${error.message}${thrower(error)}` };
   };
   const reported = async (calls: Call[], inputs: unknown[][]): Promise<Report> => {
-    const outputs: Record<number, unknown> = {};
-    const errors: Record<number, unknown> = {};
     const added: number[] = [];
-    let [failed, message]: Failed = [];
     for (const [at, call] of calls.entries()) {
       const use = uses[call.use];
       if (!use) throw new Error(`the diagram has no line ${call.use} for \`impl "${ADAPTER}"\``);
       const [input] = inputs[at];
       const ended = await called(use, call, input);
       if ("thrown" in ended) return ended;
-      if ("failed" in ended) {
-        [failed, message] = ended.failed;
-        continue;
-      }
       if (call.add !== null) {
         pool.set(call.add, ended.result);
         added.push(call.add);
       }
-      if (use.output) outputs[call.use] = use.output.parse({ input, result: ended.result });
     }
-    for (const [at, use] of uses.entries()) {
-      if (use?.role === "read") outputs[at] = use.output?.parse(await use.run?.());
-      if (use?.error) errors[at] = use.error.parse(use.error === failed ? message : "");
-    }
-    return { outputs, errors, added };
+    return { states: {}, added };
   };
   const stepped = async (calls: Call[], known?: Code): Promise<Report> => {
     const inputs = calls.map(({ use, input }) => {
@@ -314,7 +289,15 @@ const played = async () => {
       return schema ? accepted(schema, input) : [undefined];
     });
     if (inputs.some((input) => input.length === 0)) return { refused: true };
-    return known ? measured(known, () => reported(calls, inputs)) : reported(calls, inputs);
+    const report = await (known
+      ? measured(known, () => reported(calls, inputs))
+      : reported(calls, inputs));
+    if (!("states" in report)) return report;
+    try {
+      return { ...report, states: states() };
+    } catch (error: unknown) {
+      return { thrown: error instanceof Error ? `${error.name}: ${error.message}${thrower(error)}` : String(error) };
+    }
   };
   const play = ({ step, calls }: Turn): Promise<Report> => {
     if (step === undefined) return stepped(calls);

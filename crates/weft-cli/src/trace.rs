@@ -71,6 +71,14 @@ fn ranked<'a>(spans: &'a [Span], ran: &Ran, path: &str) -> Vec<&'a Span> {
     out
 }
 
+fn fit(line: &str) -> String {
+    let room = WIDEST - GUTTER;
+    match line.chars().count() > room {
+        true => line.chars().take(room - 1).chain(['…']).collect(),
+        false => line.to_string(),
+    }
+}
+
 fn snippet(s: &Span) -> Result<Option<(usize, String)>, String> {
     let text = fs::read_to_string(&s.file).map_err(|e| format!("`ran` names `{}`: {e}", s.file))?;
     let lines: Vec<&str> = text.lines().skip(s.from - 1).take(size(s)).collect();
@@ -102,7 +110,7 @@ fn snippet(s: &Span) -> Result<Option<(usize, String)>, String> {
             .unwrap_or(0);
         let code: Vec<String> = shown
             .iter()
-            .map(|l| l.get(cut..).unwrap_or_default().replace('\t', "  "))
+            .map(|l| fit(&l.get(cut..).unwrap_or_default().replace('\t', "  ")))
             .collect();
         (s.from + first, code.join("\n"))
     }))
@@ -157,7 +165,32 @@ fn card(spans: &[Span], ran: &Ran, path: &str) -> Result<Option<Card>, String> {
         })
 }
 
-pub fn code(o: &Outcome, path: &str) -> Result<Code, String> {
+fn summary(value: &Json) -> String {
+    let many = |n: usize, one: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {one}s"),
+    };
+    match value {
+        Json::Array(all) => many(all.len(), "item"),
+        Json::Object(all) => many(all.len(), "key"),
+        Json::String(s) if s.is_empty() => "\"\"".to_string(),
+        Json::String(s) => {
+            let first = s
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or_default()
+                .trim();
+            match (first.chars().count() > SUMMARY, s.lines().count() > 1) {
+                (true, _) => first.chars().take(SUMMARY - 1).chain(['…']).collect(),
+                (false, true) => format!("{first} …"),
+                (false, false) => first.to_string(),
+            }
+        }
+        other => other.to_string(),
+    }
+}
+
+pub fn code(d: &Diagram, o: &Outcome, path: &str) -> Result<Code, String> {
     let ran = &o.ran;
     let mut action_calls: Vec<(String, Vec<Call>)> = Vec::new();
     for l in o.trace.iter().skip(1) {
@@ -172,10 +205,28 @@ pub fn code(o: &Outcome, path: &str) -> Result<Code, String> {
             l.action
                 .as_ref()
                 .map_or(START.to_string(), |(verb, _)| verb.clone()),
-            brief(&l.evidence),
+            brief(&l.evidence).pop().into_iter().collect(),
         )
     });
+    let initial = o
+        .trace
+        .first()
+        .map(|l| {
+            d.objects
+                .iter()
+                .filter_map(|object| {
+                    let keys = l.state.get(&object.name)?;
+                    let text: Vec<String> = keys
+                        .iter()
+                        .map(|(k, v)| format!("{k} = {}", summary(v)))
+                        .collect();
+                    (!text.is_empty()).then(|| (object.name.clone(), text.join("\n")))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Code {
+        initial,
         failed,
         start_calls: o.trace.first().map_or(Vec::new(), |l| calls(&l.hops)),
         action_calls,
@@ -360,7 +411,8 @@ pub fn sorted(hops: &[Hop]) -> Vec<&Hop> {
     all
 }
 
-const LABEL: usize = 56;
+const LABEL: usize = 160;
+const SUMMARY: usize = 22;
 
 fn short(text: String) -> String {
     match text.chars().count() > LABEL {

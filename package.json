@@ -7,6 +7,7 @@
     "weft": "./sdk/bin.ts"
   },
   "exports": {
+    ".": "./sdk/state.ts",
     "./harness": "./sdk/harness.ts",
     "./annotation": "./sdk/annotation.ts",
     "./annotation.schema.json": "./sdk/annotation.schema.json"

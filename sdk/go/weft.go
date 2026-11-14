@@ -53,12 +53,39 @@ func (m *Module) Function(name string, function any) *Module {
 }
 
 type used struct {
-	role     string
 	function reflect.Value
 	module   int
 	input    bool
-	output   bool
-	errName  string
+}
+
+type read struct {
+	key  string
+	read func() any
+}
+
+var states []read
+
+func State[T any](key string, get func() T) {
+	for i, known := range states {
+		if known.key == key {
+			states = append(states[:i], states[i+1:]...)
+			break
+		}
+	}
+	states = append(states, read{key: key, read: func() any { return get() }})
+}
+
+func observed() (result map[string]any, fault string) {
+	defer func() {
+		if recover() != nil {
+			fault = panicked()
+		}
+	}()
+	result = map[string]any{}
+	for _, s := range states {
+		result[s.key] = s.read()
+	}
+	return result, ""
 }
 
 type runner struct {
@@ -74,8 +101,6 @@ type line struct {
 	Role     string     `json:"role"`
 	Function [2]string  `json:"function"`
 	Input    *[2]string `json:"input"`
-	Output   *[2]string `json:"output"`
-	Error    *[2]string `json:"error"`
 	From     bool       `json:"from"`
 }
 
@@ -163,17 +188,12 @@ func newRunner(code []block, name string, modules []*Module) (*runner, error) {
 			if !e.function.IsValid() {
 				return nil, fmt.Errorf("`%s.%s` is no function", l.Function[0], l.Function[1])
 			}
-			_, input, err1 := schema(l.Input)
-			_, output, err2 := schema(l.Output)
-			errName, errSchema, err3 := schema(l.Error)
-			if err := errors.Join(err1, err2, err3); err != nil {
+			_, input, err := schema(l.Input)
+			if err != nil {
 				return nil, err
 			}
-			r.hello = append(r.hello, map[string]json.RawMessage{"input": input, "output": output, "error": errSchema})
-			r.uses = append(r.uses, &used{
-				role: l.Role, function: e.function, module: index,
-				input: input != nil, output: output != nil, errName: errName,
-			})
+			r.hello = append(r.hello, map[string]json.RawMessage{"input": input})
+			r.uses = append(r.uses, &used{function: e.function, module: index, input: input != nil})
 		}
 	}
 	return r, nil
@@ -260,10 +280,7 @@ func (r *runner) play(t turn) (any, error) {
 		}
 		ran = r.actions[*t.Step]
 	}
-	outputs := map[string]any{}
-	errs := map[string]string{}
 	added := []uint64{}
-	failedName, failedMessage := "", ""
 	for _, c := range t.Calls {
 		if c.Use >= len(r.uses) || r.uses[c.Use] == nil {
 			return nil, fmt.Errorf("the diagram has no line %d for this runner", c.Use)
@@ -274,51 +291,25 @@ func (r *runner) play(t turn) (any, error) {
 		if !u.input {
 			input = nil
 		}
-		result, fail := called(u.function, input)
+		_, fail := called(u.function, input)
 		switch {
 		case fail == nil:
 			if c.Add != nil {
 				added = append(added, *c.Add)
 			}
-			if u.output {
-				outputs[fmt.Sprint(c.Use)] = map[string]any{"input": json.RawMessage(orNull(input)), "result": result}
-			}
 		case fail.refused:
 			return map[string]bool{"refused": true}, nil
-		case !fail.fault && u.errName != "":
-			failedName, failedMessage = u.errName, fail.message
 		default:
 			return map[string]string{"thrown": fail.message}, nil
 		}
 	}
-	for at, u := range r.uses {
-		if u == nil {
-			continue
-		}
-		if u.role == "read" {
-			r.note(ran, u)
-			result, fail := called(u.function, nil)
-			if fail != nil {
-				return map[string]string{"thrown": fail.message}, nil
-			}
-			outputs[fmt.Sprint(at)] = result
-		}
-		if u.errName != "" {
-			errs[fmt.Sprint(at)] = ""
-			if u.errName == failedName {
-				errs[fmt.Sprint(at)] = failedMessage
-			}
-		}
+	found, fault := observed()
+	if fault != "" {
+		return map[string]string{"thrown": fault}, nil
 	}
-	return map[string]any{"outputs": outputs, "errors": errs, "added": added}, nil
+	return map[string]any{"states": found, "added": added}, nil
 }
 
-func orNull(raw json.RawMessage) json.RawMessage {
-	if len(raw) == 0 {
-		return json.RawMessage("null")
-	}
-	return raw
-}
 
 type span struct {
 	File string `json:"file"`
@@ -380,7 +371,11 @@ func played(modules []*Module) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var report any = map[string]any{"uses": r.hello, "serves": r.serves}
+	keys := []string{}
+	for _, s := range states {
+		keys = append(keys, s.key)
+	}
+	var report any = map[string]any{"uses": r.hello, "serves": r.serves, "states": keys}
 	for {
 		message, err := json.Marshal(report)
 		if err != nil {

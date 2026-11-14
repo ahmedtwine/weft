@@ -42,7 +42,6 @@ fn code(d: &Diagram, file: &Path) -> String {
     let dir = file.parent().unwrap_or(Path::new(""));
     let role = |role: Role| match role {
         Role::Start => "start",
-        Role::Read => "read",
         Role::Run => "run",
     };
     let place = |place: &str| match place.starts_with('.') {
@@ -59,8 +58,6 @@ fn code(d: &Diagram, file: &Path) -> String {
                 "role": role(u.role),
                 "function": name(&u.function),
                 "input": u.input.as_ref().map(name),
-                "output": u.output.as_ref().map(name),
-                "error": u.error.as_ref().map(name),
                 "from": u.from.is_some(),
             }))),
         })
@@ -194,7 +191,7 @@ mod tests {
             FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         )
     }
-    const CONFIG: &str = "include \"**/*.weft.kdl\"\ntheme \"light\"\nstyle \"person\" icon=\"user\"\nstyle \"browser\" icon=\"app-window\"\n";
+    const CONFIG: &str = "include \"**/*.weft.kdl\"\nstyle \"person\" icon=\"user\"\nstyle \"browser\" icon=\"app-window\"\n";
     const PAGE: &str = r#"
 setup {
   person "user"
@@ -210,14 +207,12 @@ action {
 impl "bun" {
   module "page" "../src/page.ts"
   start "page.clear" input="page.clearSchema"
-  read "page.page" output="page.pageSchema"
   run "page.send" input="page.sendSchema"
   run "page.reload" input="page.reloadSchema"
 }
 "#;
     const NONE: &str = r#"{"type":"object","properties":{},"additionalProperties":false}"#;
     const NUMBER: &str = r#"{"type":"object","properties":{"n":{"type":"integer","minimum":0,"maximum":1000}},"required":["n"],"additionalProperties":false}"#;
-    const COUNT: &str = r#"{"type":"object","properties":{"count":{"type":"integer","weft":{"read":"page.count"}}}}"#;
 
     const POOL: &str = r#"
 setup {
@@ -241,7 +236,6 @@ action {
 impl "bun" {
   module "page" "../src/page.ts"
   start "page.clear" input="page.clearSchema"
-  read "page.page" output="page.pageSchema"
   run "page.open" input="page.openSchema" pool="opened"
   run "opened" consume="opened" verb="close"
 }
@@ -314,7 +308,7 @@ impl "bun" {
         let (count, added) = app.lock().map_or((0, Vec::new()), |page| {
             (page.count, page.added.keys().copied().collect())
         });
-        json!({ "outputs": { "1": { "count": count } }, "errors": {}, "added": added })
+        json!({ "states": { "page.count": count }, "added": added })
     }
 
     fn runner(
@@ -396,7 +390,7 @@ impl "bun" {
         .map_err(|e| e.to_string())?;
         let d = weft_parse::parse(POOL, &config).map_err(|e| e.to_string())?;
         let at = listen(config.transport.as_ref())?;
-        let hello = json!({ "uses": [input(None, NONE), { "output": schema(COUNT) }, input(Some("open"), NUMBER), {}] });
+        let hello = json!({ "uses": [input(None, NONE), input(Some("open"), NUMBER), {}], "states": ["page.count"] });
         let name = file();
         let joined = name.clone();
         let opener = thread::spawn(move || {
@@ -423,11 +417,11 @@ impl "bun" {
         if turn["step"] == "reload" {
             set(app, |n| if n > 5 { 0 } else { n });
         }
-        json!({ "outputs": {}, "errors": {} })
+        json!({ "states": {}, "added": [] })
     }
 
     fn reloader_with_no_change(_: &App, _: &Json) -> Json {
-        json!({ "outputs": {}, "errors": {} })
+        json!({ "states": {}, "added": [] })
     }
 
     fn schema(text: &str) -> Json {
@@ -443,11 +437,11 @@ impl "bun" {
     }
 
     fn sends() -> Json {
-        json!({ "uses": [input(None, NONE), { "output": schema(COUNT) }, input(Some("send"), NUMBER), null] })
+        json!({ "uses": [input(None, NONE), input(Some("send"), NUMBER), null], "states": ["page.count"] })
     }
 
     fn reloads() -> Json {
-        json!({ "uses": [null, null, null, input(Some("reload"), NONE)] })
+        json!({ "uses": [null, null, input(Some("reload"), NONE)] })
     }
 
     fn two(transport: &str, draw: &str, sends: Json, reload: Play) -> Result<Outcome, String> {
@@ -595,7 +589,7 @@ impl "bun" {
 
     #[test]
     fn weft_refuses_a_run_schema_with_no_verb() {
-        let hello = json!({ "uses": [input(None, NONE), { "output": schema(COUNT) }, input(None, NUMBER), null] });
+        let hello = json!({ "uses": [input(None, NONE), input(None, NUMBER), null], "states": ["page.count"] });
         let error = two(&socket("refuse"), "", hello, reloader)
             .err()
             .unwrap_or_default();

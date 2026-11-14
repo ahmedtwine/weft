@@ -7,12 +7,11 @@ use weft_hegel::Generator;
 use weft_parse::{Draw, Ran, Role, Span, State, Use};
 use weft_wire::{DONE, JOIN, Reader, Short, TURN, Writer};
 
-use crate::schema::{Branch, Tag, branches, live, narrowed, tags, whole};
+use crate::schema::{Branch, branches, live, narrowed, whole};
 use crate::{Action, Hello, Hop, Member, Report, Start, Turn};
 
 const REFUSED: i32 = 1;
 const CUT: &str = "the message of the runner is too short";
-const SOURCES: [&str; 2] = ["outputs", "errors"];
 
 #[derive(Default)]
 struct Desk {
@@ -22,17 +21,11 @@ struct Desk {
     lost: Option<String>,
 }
 
-struct Read {
-    line: usize,
-    source: &'static str,
-    tag: Tag,
-}
-
 pub struct Seat {
     hello: Hello,
     adapter: String,
     serves: Option<String>,
-    reads: Vec<Read>,
+    states: Vec<String>,
     found: Vec<usize>,
     desk: Mutex<Desk>,
     changed: Condvar,
@@ -104,7 +97,20 @@ fn hello(session: &Session, said: &Json) -> Result<Seat, String> {
         sized: true,
         ..Hello::default()
     };
-    let mut reads: Vec<Read> = Vec::new();
+    let states: Vec<String> = said
+        .get("states")
+        .and_then(Json::as_array)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .map(|key| {
+            key.as_str()
+                .filter(|k| k.split('.').count() <= 2 && k.split('.').all(|part| !part.is_empty()))
+                .map(String::from)
+                .ok_or_else(|| {
+                    format!("`weft.state({key})` names `\"<object>\"` or `\"<object>.<key>\"`")
+                })
+        })
+        .collect::<Result<_, _>>()?;
     let mut found = vec![0; draws.len()];
     let mut drawn = |generator: Generator, line: &str| {
         let mut generator = live(generator)
@@ -127,32 +133,12 @@ fn hello(session: &Session, said: &Json) -> Result<Seat, String> {
             node.get(key)
                 .ok_or_else(|| format!("the runner sends no `{key}` schema for {line}"))
         };
-        let before = reads.len();
-        for (source, name) in SOURCES.into_iter().zip([&u.output, &u.error]) {
-            if name.is_some() {
-                reads.extend(
-                    tags(schema(&source[..source.len() - 1])?)?
-                        .into_iter()
-                        .map(|tag| Read {
-                            line: at,
-                            source,
-                            tag,
-                        }),
-                );
-            }
-        }
         let input = u
             .input
             .as_ref()
             .map(|name| Ok::<_, String>((name.to_string(), schema("input")?)))
             .transpose()?;
         match (u.role, input, &u.tag, &u.verb) {
-            (Role::Read, ..) if reads.len() > before => {}
-            (Role::Read, ..) => {
-                return Err(format!(
-                    "{line} is a `read`, and its schema has no `read` annotation"
-                ));
-            }
             (Role::Start, None, ..) => hello.start.push(Start {
                 line: at,
                 input: None,
@@ -219,49 +205,54 @@ fn hello(session: &Session, said: &Json) -> Result<Seat, String> {
             }
         }
     }
-    hello.reads = reads
-        .iter()
-        .map(|r| format!("{}.{}", r.tag.object, r.tag.key))
-        .collect();
-    hello.errors = reads
-        .iter()
-        .filter(|r| r.source == SOURCES[1])
-        .map(|r| (r.tag.object.clone(), r.tag.key.clone()))
-        .collect();
+    hello.reads = states.clone();
     Ok(Seat {
         hello,
         adapter,
         serves,
-        reads,
+        states,
         found,
         desk: Mutex::default(),
         changed: Condvar::new(),
     })
 }
 
-fn state(reads: &[Read], said: &Json) -> Result<State, String> {
+fn state(states: &[String], said: &Json) -> Result<State, String> {
+    let given = said
+        .get("states")
+        .and_then(Json::as_object)
+        .ok_or_else(|| format!("the runner reports `{said}` with no `states`"))?;
     let mut state = State::new();
-    for Read { line, source, tag } in reads {
-        let Some(whole) = said.get(source).and_then(|all| all.get(line.to_string())) else {
-            continue;
-        };
-        let (object, key) = (&tag.object, &tag.key);
-        let value = tag
-            .path
-            .iter()
-            .try_fold(whole, |node, part| node.get(part))
-            .ok_or_else(|| format!("the value `{whole}` has no `{object}.{key}`"))?;
-        state
-            .entry(object.clone())
-            .or_default()
-            .insert(key.clone(), value.clone());
+    for name in states {
+        let value = given
+            .get(name)
+            .ok_or_else(|| format!("the runner reports no `{name}`"))?;
+        match name.split_once('.') {
+            Some((object, key)) => {
+                state
+                    .entry(object.to_string())
+                    .or_default()
+                    .insert(key.to_string(), value.clone());
+            }
+            None => {
+                let fields = value.as_object().ok_or_else(|| {
+                    format!(
+                        "`weft.state(\"{name}\")` reads `{value}`, and an object state is a record"
+                    )
+                })?;
+                let entry = state.entry(name.clone()).or_default();
+                for (key, field) in fields {
+                    entry.insert(key.clone(), field.clone());
+                }
+            }
+        }
     }
     Ok(state)
 }
 
-fn report(reads: &[Read], said: &Json) -> Result<Report, String> {
+fn report(states: &[String], said: &Json) -> Result<Report, String> {
     match (
-        SOURCES.iter().all(|source| said.get(source).is_some()),
+        said.get("states").is_some(),
         said.get("thrown").and_then(Json::as_str),
         said.get("refused"),
     ) {
@@ -272,7 +263,7 @@ fn report(reads: &[Read], said: &Json) -> Result<Report, String> {
                 .map_or(Vec::new(), |all| {
                     all.iter().filter_map(Json::as_u64).collect()
                 });
-            Ok(Report::State(state(reads, said)?, added))
+            Ok(Report::State(state(states, said)?, added))
         }
         (false, Some(error), None) => Ok(Report::Thrown(error.to_string())),
         (false, None, Some(_)) => Ok(Report::Refused),
@@ -503,7 +494,7 @@ impl Peer {
     fn turn(&mut self, said: &Json) -> Result<String, String> {
         let seat = match &self.seat {
             Some(seat) => {
-                let report = report(&seat.reads, said)?;
+                let report = report(&seat.states, said)?;
                 seat.set(|d| d.report = Some(report));
                 seat.clone()
             }

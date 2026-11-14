@@ -3,11 +3,9 @@ import koffi from "koffi";
 type Owned = { data: unknown; len: number };
 export type Name = [module: string, name: string];
 export type Use = {
-  role: "start" | "read" | "run";
+  role: "start" | "run";
   function: Name;
   input: Name | null;
-  output: Name | null;
-  error: Name | null;
   from: boolean;
 };
 export type Code = {
@@ -19,7 +17,7 @@ export type Code = {
 export type Call = { use: number; input: unknown; from: number | null; add: number | null };
 export type Turn = { step?: string; calls: Call[]; done?: true };
 export type Report =
-  | { outputs: Record<number, unknown>; errors: Record<number, unknown>; added: number[] }
+  | { states: Record<string, unknown>; added: number[] }
   | { thrown: string }
   | { refused: true };
 

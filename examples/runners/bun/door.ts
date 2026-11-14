@@ -1,30 +1,18 @@
+import { state } from "weft";
 import { z } from "zod";
 
-let state = "closed";
+const door = { state: "closed", error: "" };
+state("door", () => door);
 
-export const doorSchema = z.strictObject({
-  state: z.string().meta({ weft: { read: "door.state" } }),
-});
-export const errorSchema = z.string().meta({ weft: { read: "door.error" } });
 export const openSchema = z.strictObject({}).meta({ weft: { verb: "open" } });
 export const closeSchema = z.strictObject({}).meta({ weft: { verb: "close" } });
 export const lockSchema = z.strictObject({}).meta({ weft: { verb: "lock" } });
 export const unlockSchema = z.strictObject({}).meta({ weft: { verb: "unlock" } });
 
-export const door = () => ({ state });
-export const reset = () => {
-  state = "closed";
-};
-export const open = () => {
-  if (state === "locked") throw new Error("the door is locked");
-  state = "open";
-};
-export const close = () => {
-  state = "closed";
-};
-export const lock = () => {
-  state = "locked";
-};
-export const unlock = () => {
-  state = "closed";
-};
+const set = (to: string, error = "") => Object.assign(door, { state: to, error });
+
+export const reset = () => set("closed");
+export const open = () => (door.state === "locked" ? set("locked", "the door is locked") : set("open"));
+export const close = () => set("closed");
+export const lock = () => set("locked");
+export const unlock = () => set("closed");

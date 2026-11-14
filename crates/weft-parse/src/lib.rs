@@ -20,7 +20,6 @@ pub struct Diagram {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Start,
-    Read,
     Run,
 }
 
@@ -51,8 +50,6 @@ pub struct Use {
     pub role: Role,
     pub function: Name,
     pub input: Option<Name>,
-    pub output: Option<Name>,
-    pub error: Option<Name>,
     pub tag: Option<String>,
     pub verb: Option<String>,
     pub pool: Option<String>,
@@ -63,7 +60,6 @@ impl Use {
     pub fn line(&self) -> String {
         let role = match self.role {
             Role::Start => "start",
-            Role::Read => "read",
             Role::Run => "run",
         };
         let named =
@@ -72,8 +68,6 @@ impl Use {
             |key: &str, text: &Option<String>| text.as_ref().map(|t| format!(" {key}=\"{t}\""));
         let parts = [
             named("input", &self.input),
-            named("output", &self.output),
-            named("error", &self.error),
             text("tag", &self.tag),
             text("verb", &self.verb),
             text("pool", &self.pool),
@@ -202,7 +196,34 @@ pub enum Now {
     Key(String, String),
     Start(String, String),
     Value(Json),
+    Var(String, Vec<String>),
     App(Op, Vec<Now>),
+    Each(Quant, String, Box<Now>, Box<Now>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quant {
+    Forall,
+    Exists,
+}
+
+impl Quant {
+    fn name(self) -> &'static str {
+        match self {
+            Quant::Forall => "forall",
+            Quant::Exists => "exists",
+        }
+    }
+}
+
+type Env = Vec<(String, String, Json)>;
+
+fn items(v: Json) -> Option<Vec<Json>> {
+    match v {
+        Json::Array(all) => Some(all),
+        Json::Object(all) => Some(all.into_iter().map(|(_, v)| v).collect()),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -473,12 +494,9 @@ impl Rule {
         self.verb == verb && self.when.iter().all(|(k, v)| read(before, o, k) == Some(v))
     }
 
-    fn differs(&self, o: &str, error: Option<&str>, c: &Seen) -> Option<String> {
-        let keys: BTreeSet<&String> = c
-            .after
-            .get(o)
-            .into_iter()
-            .flat_map(Pairs::keys)
+    fn differs(&self, o: &str, framed: &Pairs, error: Option<&str>, c: &Seen) -> Option<String> {
+        let keys: BTreeSet<&String> = framed
+            .keys()
             .chain(self.next.iter().map(|(k, _)| k))
             .collect();
         keys.into_iter().find_map(|k| {
@@ -495,12 +513,20 @@ impl Rule {
 }
 
 impl Now {
-    fn leaf(&self) -> Option<String> {
+    fn leaf(&self, env: &Env) -> Option<String> {
         match self {
             Now::Key(o, k) => Some(format!("{o}.{k}")),
             Now::Start(o, k) => Some(format!("start({o}.{k})")),
             Now::Value(v) => Some(v.to_string()),
-            Now::App(..) => None,
+            Now::Var(v, path) => {
+                let head = env
+                    .iter()
+                    .rev()
+                    .find(|(n, _, _)| n == v)
+                    .map_or(v.clone(), |(_, label, _)| label.clone());
+                Some([vec![head], path.clone()].concat().join("."))
+            }
+            Now::App(..) | Now::Each(..) => None,
         }
     }
 
@@ -517,25 +543,54 @@ impl Now {
                 format!("in({}, Set({}))", args[0].show(part), each(&args[1..]))
             }
             (None, Now::App(op, args)) => format!("{}({})", op.name(), each(args)),
+            (None, Now::Each(q, v, set, body)) => format!(
+                "{}.{}({v} => {})",
+                set.show(part),
+                q.name(),
+                body.show(part)
+            ),
             (None, _) => String::new(),
         }
     }
 
     pub fn quint(&self) -> String {
-        self.show(&Now::leaf)
+        self.named(&Vec::new())
     }
 
-    fn valued(&self, start: &State, now: &State) -> String {
+    fn named(&self, env: &Env) -> String {
+        self.show(&|e| e.leaf(env))
+    }
+
+    fn valued(&self, start: &State, now: &State, env: &Env) -> String {
         self.show(&|e| match e {
             Now::App(op, _) if op.boolean() => None,
-            e => Some(found(e.eval(start, now).as_ref())),
+            Now::Each(..) => None,
+            e => Some(found(e.eval(start, now, env).as_ref())),
         })
     }
 
-    fn eval(&self, start: &State, now: &State) -> Option<Json> {
+    fn bound(&self, start: &State, now: &State, env: &Env) -> Option<Vec<Env>> {
+        let Now::Each(_, v, set, _) = self else {
+            return None;
+        };
+        let label = set.named(env);
+        Some(
+            items(set.eval(start, now, env)?)?
+                .into_iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    let mut inner = env.clone();
+                    inner.push((v.clone(), format!("{label}[{i}]"), item));
+                    inner
+                })
+                .collect(),
+        )
+    }
+
+    fn eval(&self, start: &State, now: &State, env: &Env) -> Option<Json> {
         let first = |all: &[Now], stop: bool| {
             all.iter()
-                .map(|e| e.eval(start, now))
+                .map(|e| e.eval(start, now, env))
                 .find(|t| *t != Some(json!(!stop)))
                 .unwrap_or(Some(json!(!stop)))
                 .filter(Json::is_boolean)
@@ -544,43 +599,75 @@ impl Now {
             Now::Key(o, k) => read(now, o, k).cloned(),
             Now::Start(o, k) => read(start, o, k).cloned(),
             Now::Value(v) => Some(v.clone()),
+            Now::Var(v, path) => env
+                .iter()
+                .rev()
+                .find(|(n, _, _)| n == v)
+                .and_then(|(_, _, item)| path.iter().try_fold(item, |node, part| node.get(part)))
+                .cloned(),
             Now::App(Op::And, all) => first(all, false),
             Now::App(Op::Or, all) => first(all, true),
-            Now::App(Op::Implies, all) => match all[0].eval(start, now)? {
+            Now::App(Op::Implies, all) => match all[0].eval(start, now, env)? {
                 Json::Bool(false) => Some(json!(true)),
-                Json::Bool(true) => all[1].eval(start, now).filter(Json::is_boolean),
+                Json::Bool(true) => all[1].eval(start, now, env).filter(Json::is_boolean),
                 _ => None,
             },
             Now::App(op, all) => op.apply(
                 &all.iter()
-                    .map(|e| e.eval(start, now))
+                    .map(|e| e.eval(start, now, env))
                     .collect::<Option<Vec<_>>>()?,
             ),
+            Now::Each(q, _, _, body) => {
+                let seen = self
+                    .bound(start, now, env)?
+                    .iter()
+                    .map(|inner| body.eval(start, now, inner)?.as_bool())
+                    .collect::<Option<Vec<bool>>>()?;
+                Some(json!(match q {
+                    Quant::Forall => seen.iter().all(|b| *b),
+                    Quant::Exists => seen.iter().any(|b| *b),
+                }))
+            }
         }
     }
 
-    fn passes(&self, start: &State, now: &State) -> bool {
-        self.eval(start, now) == Some(json!(true))
+    fn passes(&self, start: &State, now: &State, env: &Env) -> bool {
+        self.eval(start, now, env) == Some(json!(true))
     }
 
-    fn evidence(&self, start: &State, now: &State) -> Vec<String> {
-        match self {
-            Now::App(Op::And, all) => all
+    fn evidence(&self, start: &State, now: &State, env: &Env) -> Vec<String> {
+        let witness = match self {
+            Now::Each(Quant::Forall, _, _, body) => self
+                .bound(start, now, env)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|inner| !body.passes(start, now, inner))
+                .map(|inner| body.evidence(start, now, &inner)),
+            _ => None,
+        };
+        match (witness, self) {
+            (Some(found), _) => found,
+            (None, Now::App(Op::And, all)) => all
                 .iter()
-                .find(|e| !e.passes(start, now))
-                .map_or_else(Vec::new, |e| e.evidence(start, now)),
-            Now::App(Op::Implies, all) => [
-                vec![format!("{} = true", all[0].valued(start, now))],
-                all[1].evidence(start, now),
+                .find(|e| !e.passes(start, now, env))
+                .map_or_else(Vec::new, |e| e.evidence(start, now, env)),
+            (None, Now::App(Op::Implies, all)) => [
+                vec![format!("{} = true", all[0].valued(start, now, env))],
+                all[1].evidence(start, now, env),
             ]
             .concat(),
-            e => vec![format!("{} = {} = false", e.quint(), e.valued(start, now))],
+            (None, e) => vec![format!(
+                "{} = {} = false",
+                e.named(env),
+                e.valued(start, now, env)
+            )],
         }
     }
 
     fn all(&self) -> Vec<&Now> {
         match self {
             Now::App(_, args) => [vec![self], args.iter().flat_map(Now::all).collect()].concat(),
+            Now::Each(_, _, set, body) => [vec![self], set.all(), body.all()].concat(),
             e => vec![e],
         }
     }
@@ -594,6 +681,12 @@ impl Now {
             })
             .collect()
     }
+
+    fn refers(&self) -> bool {
+        self.all()
+            .into_iter()
+            .any(|e| matches!(e, Now::Key(..) | Now::Start(..) | Now::Var(..)))
+    }
 }
 
 impl Invariant {
@@ -602,8 +695,9 @@ impl Invariant {
     }
 
     pub fn judge(&self, start: &State, now: &State) -> Option<Vec<String>> {
-        (!self.body.passes(start, now))
-            .then(|| [vec![self.source()], self.body.evidence(start, now)].concat())
+        let env = Vec::new();
+        (!self.body.passes(start, now, &env))
+            .then(|| [vec![self.source()], self.body.evidence(start, now, &env)].concat())
     }
 }
 
@@ -711,7 +805,8 @@ impl Diagram {
         error: Option<&str>,
         c: &Seen,
     ) -> Option<Vec<String>> {
-        let rules = self.object(object)?.rules(verb, c.before);
+        let found = self.object(object)?;
+        let rules = found.rules(verb, c.before);
         let names = |r: &Rule| r.next.iter().any(|(k, _)| error == Some(k.as_str()));
         let thrown = error
             .filter(|k| read(c.after, object, k).is_some_and(|v| v != ""))
@@ -730,7 +825,7 @@ impl Diagram {
             None => rules,
         }
         .into_iter()
-        .map(|r| (r, r.differs(object, error, c)))
+        .map(|r| (r, r.differs(object, &found.start, error, c)))
         .collect();
         match differs.iter().any(|(_, d)| d.is_none()) {
             true => None,
@@ -910,17 +1005,11 @@ fn named(n: &KdlNode, text: &str) -> Result<Name, String> {
 
 fn used(n: &KdlNode) -> Result<Use, String> {
     let (role, allowed): (Role, &[&str]) = match name(n) {
-        "start" => (Role::Start, &["input", "tag", "error", "pool"]),
-        "read" => (Role::Read, &["output"]),
-        "run" => (
-            Role::Run,
-            &[
-                "input", "output", "error", "verb", "pool", "from", "consume",
-            ],
-        ),
+        "start" => (Role::Start, &["input", "tag", "pool"]),
+        "run" => (Role::Run, &["input", "verb", "pool", "from", "consume"]),
         other => {
             return Err(format!(
-                "`impl` has `module`, `start`, `read` and `run`, not `{other}`"
+                "`impl` has `module`, `serve`, `start` and `run`, not `{other}`; a runner gives its state with `weft.state`"
             ));
         }
     };
@@ -933,16 +1022,9 @@ fn used(n: &KdlNode) -> Result<Use, String> {
         (None, Some(pool)) => Ok(Some((pool, true))),
         (None, None) => Ok(None),
     };
-    let wrong = match (
-        role,
-        given("input"),
-        given("output"),
-        given("tag"),
-        given("verb"),
-    ) {
-        (_, None, _, Some(_), _) => Err("has a `tag` and no `input`"),
-        (Role::Read, _, None, ..) => Err("needs `output`"),
-        (Role::Run, None, _, _, None) => Err("needs `input` or `verb`"),
+    let wrong = match (role, given("input"), given("tag"), given("verb")) {
+        (_, None, Some(_), _) => Err("has a `tag` and no `input`"),
+        (Role::Run, None, _, None) => Err("needs `input` or `verb`"),
         _ => from,
     };
     let from = wrong.map_err(|wrong| format!("`{}` {wrong}", name(n)))?;
@@ -965,8 +1047,6 @@ fn used(n: &KdlNode) -> Result<Use, String> {
         role,
         function,
         input: schema("input")?,
-        output: schema("output")?,
-        error: schema("error")?,
         tag: given("tag"),
         verb: given("verb"),
         pool: given("pool"),
@@ -1009,14 +1089,7 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
     let names: Vec<&Name> = found
         .uses
         .iter()
-        .flat_map(|u| {
-            [
-                u.from.is_none().then_some(&u.function),
-                u.input.as_ref(),
-                u.output.as_ref(),
-                u.error.as_ref(),
-            ]
-        })
+        .flat_map(|u| [u.from.is_none().then_some(&u.function), u.input.as_ref()])
         .flatten()
         .chain(found.serve.as_ref())
         .collect();
@@ -1039,18 +1112,15 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
             found.adapter
         ));
     }
-    match found.uses.iter().any(|u| u.role != Role::Start) {
+    match !found.modules.is_empty() {
         true => Ok(found),
-        false => Err(format!(
-            "`impl \"{}\"` has no `read` line and no `run` line",
-            found.adapter
-        )),
+        false => Err(format!("`impl \"{}\"` has no `module` line", found.adapter)),
     }
 }
 
-const ON: &str = "`on \"<verb>\" <key>=<term>…` has the value of each key after the step; a term is a value, `(input)\"<path>\"`, `\"<object>.<key>\"`, `(next)\"<object>.<key>\"` or `(start)\"<object>.<key>\"`, and a key with no term has its value from before the step";
+const ON: &str = "`on \"<verb>\" <key>=<term>…` has the value of each key after the step; a term is a value, `(input)\"<path>\"`, `\"<object>.<key>\"`, `(next)\"<object>.<key>\"` or `(start)\"<object>.<key>\"`, a key of the setup with no term has its value from before the step, and each other key is free";
 
-const INVARIANT: &str = "`invariant \"<name>\" { <condition> }` has one condition on one state; a condition is a Quint builtin `<op> <term>… { <op line>… }`: `and`, `or`, `not`, `implies`, `iff`, `eq`, `neq`, `in`, `ilt`, `ilte`, `igt`, `igte`, `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` or `iuminus`; a term is `\"<object>.<key>\"`, `(start)\"<object>.<key>\"` or a value, and each comparison names at least one `\"<object>.<key>\"`";
+const INVARIANT: &str = "`invariant \"<name>\" { <condition> }` has one condition on one state; a condition is a Quint builtin `<op> <term>… { <op line>… }`: `and`, `or`, `not`, `implies`, `iff`, `eq`, `neq`, `in`, `ilt`, `ilte`, `igt`, `igte`, `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` or `iuminus`, or `forall` and `exists` as `forall \"<name>\" in=\"<object>.<key>\" { <condition> }` over each item of a list or a map; a term is `\"<name>.<field>\"` inside it, `\"<object>.<key>\"`, `(start)\"<object>.<key>\"` or a value, and each comparison names at least one `\"<object>.<key>\"`";
 
 fn refer(names: &[String], s: &str) -> Option<(String, String)> {
     let (o, k) = s.split_once('.')?;
@@ -1132,8 +1202,16 @@ fn state(n: &KdlNode, o: &mut Object, names: &[String], src: &str) -> Result<(),
     Ok(())
 }
 
-fn term(e: &KdlEntry, names: &[String]) -> Result<Now, String> {
+fn term(e: &KdlEntry, names: &[String], bound: &[String]) -> Result<Now, String> {
     match (e.name(), e.ty().map(|t| t.value()), e.value()) {
+        (None, None, KdlValue::String(s))
+            if bound
+                .iter()
+                .any(|v| s.split('.').next() == Some(v.as_str())) =>
+        {
+            let mut path = s.split('.').map(String::from);
+            Ok(Now::Var(path.next().unwrap_or_default(), path.collect()))
+        }
         (None, None, KdlValue::String(s)) => {
             Ok(refer(names, s).map_or_else(|| Now::Value(json!(s)), |(o, k)| Now::Key(o, k)))
         }
@@ -1148,14 +1226,53 @@ fn term(e: &KdlEntry, names: &[String]) -> Result<Now, String> {
     }
 }
 
-fn condition(n: &KdlNode, names: &[String]) -> Result<Now, String> {
+fn each(n: &KdlNode, q: Quant, names: &[String], bound: &[String]) -> Result<Now, String> {
+    let wrong = || {
+        format!(
+            "`{}` is `{} \"<name>\" in=\"<object>.<key>\" {{ <condition> }}`: {INVARIANT}",
+            n.to_string().trim(),
+            q.name()
+        )
+    };
+    let named: Vec<String> = n
+        .entries()
+        .iter()
+        .filter(|e| e.name().is_none())
+        .filter_map(|e| e.value().as_string().map(String::from))
+        .collect();
+    let set = n
+        .get("in")
+        .and_then(KdlValue::as_string)
+        .and_then(|s| refer(names, s))
+        .map(|(o, k)| Now::Key(o, k));
+    match (named.as_slice(), set, lines(n), n.entries().len()) {
+        ([v], Some(set), [one], 2) if !names.contains(v) && !bound.contains(v) => {
+            let inner = [bound, std::slice::from_ref(v)].concat();
+            let body = condition(one, names, &inner)?;
+            match &body {
+                Now::App(op, _) if op.boolean() => {}
+                Now::Each(..) => {}
+                _ => return Err(wrong()),
+            }
+            Ok(Now::Each(q, v.clone(), Box::new(set), Box::new(body)))
+        }
+        _ => Err(wrong()),
+    }
+}
+
+fn condition(n: &KdlNode, names: &[String], bound: &[String]) -> Result<Now, String> {
+    match name(n) {
+        "forall" => return each(n, Quant::Forall, names, bound),
+        "exists" => return each(n, Quant::Exists, names, bound),
+        _ => {}
+    }
     let op =
         Op::parse(name(n)).ok_or_else(|| format!("`{}` is not a builtin: {INVARIANT}", name(n)))?;
     let args = n
         .entries()
         .iter()
-        .map(|e| term(e, names))
-        .chain(lines(n).iter().map(|c| condition(c, names)))
+        .map(|e| term(e, names, bound))
+        .chain(lines(n).iter().map(|c| condition(c, names, bound)))
         .collect::<Result<Vec<_>, _>>()?;
     let (min, max) = op.arity();
     let app = Now::App(op, args);
@@ -1163,7 +1280,7 @@ fn condition(n: &KdlNode, names: &[String]) -> Result<Now, String> {
         Now::App(_, args) if args.len() < min || args.len() > max => {
             Err(format!("`{}` takes {}: {INVARIANT}", op.name(), op.takes()))
         }
-        _ if op.compares() && app.keys().is_empty() => Err(format!(
+        _ if op.compares() && !app.refers() => Err(format!(
             "`{}` names at least one `\"<object>.<key>\"`: {INVARIANT}",
             app.quint()
         )),
@@ -1174,11 +1291,16 @@ fn condition(n: &KdlNode, names: &[String]) -> Result<Now, String> {
 fn invariant(n: &KdlNode, names: &[String], src: &str) -> Result<Invariant, String> {
     let named = shape(n, 1, &[], true)?.remove(0);
     let body = match lines(n) {
-        [one] => condition(one, names)?,
+        [one] => condition(one, names, &[])?,
         _ => return Err(INVARIANT.into()),
     };
     match &body {
         Now::App(op, _) if op.boolean() => Ok(Invariant {
+            name: named,
+            body,
+            line: line(src, n),
+        }),
+        Now::Each(..) => Ok(Invariant {
             name: named,
             body,
             line: line(src, n),
@@ -1457,7 +1579,6 @@ impl fmt::Display for Transport {
 
 pub struct Config {
     pub include: Vec<String>,
-    pub theme: String,
     pub styles: Vec<(Kind, String)>,
     pub adapter: Adapter,
     pub transport: Option<Transport>,
@@ -1475,7 +1596,6 @@ pub fn config(src: &str) -> Result<Config, Error> {
     let doc = document(src)?;
     let mut c = Config {
         include: Vec::new(),
-        theme: String::new(),
         styles: Vec::new(),
         adapter: Adapter::Default,
         transport: None,
@@ -1486,7 +1606,6 @@ pub fn config(src: &str) -> Result<Config, Error> {
     for n in doc.nodes() {
         match name(n) {
             "include" => c.include.extend(shape(n, 1, &[], false).map_err(Error)?),
-            "theme" => c.theme = shape(n, 1, &[], false).map_err(Error)?.remove(0),
             "style" => {
                 let named = shape(n, 1, &["icon"], false).map_err(Error)?.remove(0);
                 let kind = Kind::parse(&named).map_err(|e| Error(format!("`style`: {e}")))?;
@@ -1557,15 +1676,14 @@ pub fn config(src: &str) -> Result<Config, Error> {
             }
             other => {
                 return Err(Error(format!(
-                    "`{other}` is not include, theme, style, adapter, transport or runner"
+                    "`{other}` is not include, style, adapter, transport or runner"
                 )));
             }
         }
     }
-    match (c.include.is_empty(), c.theme.is_empty()) {
-        (true, _) => Err(Error("needs `include \"<glob>\"`".into())),
-        (_, true) => Err(Error("needs `theme \"light\"` or `theme \"dark\"`".into())),
-        _ => Ok(c),
+    match c.include.is_empty() {
+        true => Err(Error("needs `include \"<glob>\"`".into())),
+        false => Ok(c),
     }
 }
 
@@ -1578,7 +1696,6 @@ mod tests {
     use super::*;
 
     const CONFIG: &str = r#"include "**/*.weft.kdl"
-theme "light"
 style "person" icon="user"
 style "browser" icon="app-window"
 style "element" icon="square-dashed-mouse-pointer""#;
@@ -1628,7 +1745,6 @@ action {
 impl "bun" {
   module "page" "../src/page.ts"
   start "page.clear"
-  read "page.page" output="page.pageSchema"
   run "page.open" input="page.openSchema" pool="opened"
   run "opened" consume="opened" verb="close"
 }
@@ -1657,7 +1773,7 @@ impl "bun" {
         assert_eq!(d.verbs(), [("page", "open"), ("page", "close")]);
         assert_eq!(d.initial("page").unwrap(), "count = 0, opened = 0");
         assert_eq!(d.path.len(), 2);
-        assert_eq!(d.impls[0].uses.len(), 4);
+        assert_eq!(d.impls[0].uses.len(), 3);
         let cases = [
             (
                 "action {",
@@ -1991,9 +2107,9 @@ impl "bun" {
         };
         for (src, start, now, passes) in cases {
             let doc = document(src).unwrap();
-            let body = condition(&doc.nodes()[0], &["page".to_string()]).unwrap();
+            let body = condition(&doc.nodes()[0], &["page".to_string()], &[]).unwrap();
             assert_eq!(
-                body.passes(&page(start), &page(now)),
+                body.passes(&page(start), &page(now), &Vec::new()),
                 passes,
                 "{src} from {start} to {now}"
             );
@@ -2009,7 +2125,6 @@ impl "bun" {
             lines,
             [
                 r#"`start "page.clear"`"#,
-                r#"`read "page.page" output="page.pageSchema"`"#,
                 r#"`run "page.open" input="page.openSchema" pool="opened"`"#,
                 r#"`run "opened" verb="close" consume="opened"`"#,
             ]

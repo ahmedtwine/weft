@@ -1,48 +1,41 @@
 package door
 
-import (
-	"errors"
-
-	"github.com/ahmedtwine/weft/sdk/go"
-)
+import "github.com/ahmedtwine/weft/sdk/go"
 
 type Door struct {
 	State string `json:"state"`
+	Error string `json:"error"`
 }
 
-var state = "closed"
+var door = Door{State: "closed"}
 
-func Get() Door { return Door{State: state} }
+func Reset() { door = Door{State: "closed"} }
 
-func Reset() { state = "closed" }
-
-func Open() error {
-	if state == "locked" {
-		return errors.New("the door is locked")
+func Open() {
+	if door.State == "locked" {
+		door.Error = "the door is locked"
+		return
 	}
-	state = "open"
-	return nil
+	door = Door{State: "open"}
 }
 
-func Close() { state = "closed" }
+func Close() { door = Door{State: "closed"} }
 
-func Lock() { state = "locked" }
+func Lock() { door = Door{State: "locked"} }
 
-func Unlock() { state = "closed" }
+func Unlock() { door = Door{State: "closed"} }
 
 func verb(name string) string {
 	return `{"type":"object","properties":{},"additionalProperties":false,"weft":{"verb":"` + name + `"}}`
 }
 
 func Module() *weft.Module {
+	weft.State("door", func() Door { return door })
 	return weft.NewModule().
-		Schema("doorSchema", `{"type":"object","properties":{"state":{"type":"string","weft":{"read":"door.state"}}},"required":["state"],"additionalProperties":false}`).
-		Schema("errorSchema", `{"type":"string","weft":{"read":"door.error"}}`).
 		Schema("openSchema", verb("open")).
 		Schema("closeSchema", verb("close")).
 		Schema("lockSchema", verb("lock")).
 		Schema("unlockSchema", verb("unlock")).
-		Function("door", Get).
 		Function("reset", Reset).
 		Function("open", Open).
 		Function("close", Close).

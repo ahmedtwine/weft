@@ -8,10 +8,6 @@
       "type": "string",
       "description": "The branch of an input that is one action of this verb."
     },
-    "read": {
-      "type": "string",
-      "description": "The value of `<object>.<key>` in the state."
-    },
     "pool": {
       "type": "string",
       "description": "Each drawn value of this part goes to this Hegel pool."

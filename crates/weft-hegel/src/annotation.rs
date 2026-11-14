@@ -9,16 +9,11 @@ enum Type {
     Count,
 }
 
-const KEYS: [(&str, Type, &str); 9] = [
+const KEYS: [(&str, Type, &str); 8] = [
     (
         "verb",
         Type::Text,
         "The branch of an input that is one action of this verb.",
-    ),
-    (
-        "read",
-        Type::Text,
-        "The value of `<object>.<key>` in the state.",
     ),
     (
         "pool",
@@ -56,7 +51,6 @@ const KEYS: [(&str, Type, &str); 9] = [
 #[derive(Clone, Default, PartialEq)]
 pub struct Annotation {
     pub verb: Option<String>,
-    pub read: Option<String>,
     pub pool: Option<String>,
     pub from: Option<String>,
     pub consume: bool,
@@ -91,7 +85,6 @@ impl Annotation {
         let count = |key: &str| fields.get(key).and_then(Json::as_u64);
         Ok(Annotation {
             verb: text("verb"),
-            read: text("read"),
             pool: text("pool"),
             from: text("from"),
             consume: fields.get("consume").and_then(Json::as_bool) == Some(true),

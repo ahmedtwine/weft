@@ -143,10 +143,10 @@ pub unsafe extern "C" fn weft_render(
     };
     let drawn = match format {
         f if f == weft_format_t::WEFT_FORMAT_SVG_LIGHT as u32 => {
-            weft_draw::svg(&d, Theme::Light, &Code::default())
+            weft_draw::svg(&d, Some(Theme::Light), &Code::default())
         }
         f if f == weft_format_t::WEFT_FORMAT_SVG_DARK as u32 => {
-            weft_draw::svg(&d, Theme::Dark, &Code::default())
+            weft_draw::svg(&d, Some(Theme::Dark), &Code::default())
         }
         f if f == weft_format_t::WEFT_FORMAT_ASCII as u32 => weft_draw::ascii(&d),
         _ => {

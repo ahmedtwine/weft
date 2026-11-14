@@ -1,53 +1,48 @@
-state = "closed"
+from dataclasses import dataclass
+
+import weft
+
+
+@dataclass
+class Door:
+    state: str = "closed"
+    error: str = ""
+
+
+door = Door()
+weft.state("door", lambda: door)
 
 
 def verb(name):
     return {"type": "object", "properties": {}, "additionalProperties": False, "weft": {"verb": name}}
 
 
-doorSchema = {
-    "type": "object",
-    "properties": {"state": {"type": "string", "weft": {"read": "door.state"}}},
-    "required": ["state"],
-    "additionalProperties": False,
-}
-errorSchema = {"type": "string", "weft": {"read": "door.error"}}
 openSchema = verb("open")
 closeSchema = verb("close")
 lockSchema = verb("lock")
 unlockSchema = verb("unlock")
 
 
-class Locked(Exception):
-    pass
-
-
-def door():
-    return {"state": state}
-
-
 def reset():
-    global state
-    state = "closed"
+    global door
+    door = Door()
 
 
 def open(_):
-    global state
-    if state == "locked":
-        raise Locked("the door is locked")
-    state = "open"
+    global door
+    door = Door("locked", "the door is locked") if door.state == "locked" else Door("open")
 
 
 def close(_):
-    global state
-    state = "closed"
+    global door
+    door = Door("closed")
 
 
 def lock(_):
-    global state
-    state = "locked"
+    global door
+    door = Door("locked")
 
 
 def unlock(_):
-    global state
-    state = "closed"
+    global door
+    door = Door("closed")

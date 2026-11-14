@@ -1,3 +1,0 @@
-[tasks.build]
-description = "Build the vault app"
-run = "cargo build --release --locked"

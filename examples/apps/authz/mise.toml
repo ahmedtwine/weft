@@ -1,3 +1,0 @@
-[tasks.build]
-description = "Build the authz app, which runs SpiceDB in a testcontainer"
-run = "go build -o bin/authz ."

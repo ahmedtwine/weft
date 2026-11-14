@@ -103,12 +103,29 @@ impl Module {
 }
 
 struct Used {
-    role: String,
     run: Option<Call>,
     function: (usize, String),
     input: bool,
-    output: bool,
-    error: Option<String>,
+}
+
+type Read = Box<dyn Fn() -> Result<Json, String> + Send>;
+
+static STATES: Mutex<Vec<(String, Read)>> = Mutex::new(Vec::new());
+
+pub fn state<T: Serialize>(key: &str, read: impl Fn() -> T + Send + 'static) {
+    let read: Read = Box::new(move || serde_json::to_value(read()).map_err(|e| e.to_string()));
+    if let Ok(mut all) = STATES.lock() {
+        all.retain(|(known, _)| known != key);
+        all.push((key.to_string(), read));
+    }
+}
+
+fn states() -> Result<Json, String> {
+    let all = STATES.lock().map_err(|e| e.to_string())?;
+    all.iter()
+        .map(|(key, read)| Ok((key.clone(), read()?)))
+        .collect::<Result<serde_json::Map<_, _>, String>>()
+        .map(Json::Object)
 }
 
 type Ran = BTreeSet<(usize, String)>;
@@ -197,26 +214,21 @@ impl Runner {
                     (index, function, Export::Function(call)) => (index, function, call.clone()),
                     _ => return Err(format!("`{}.{}` is no function", n.0, n.1)),
                 };
-                let [input, output, error] =
-                    [&line["input"], &line["output"], &line["error"]].map(schema);
-                let (input, output, error) = (input?, output?, error?);
-                hello.push(json!({
-                    "input": input.as_ref().map(|(_, j)| j),
-                    "output": output.as_ref().map(|(_, j)| j),
-                    "error": error.as_ref().map(|(_, j)| j),
-                }));
+                let input = schema(&line["input"])?;
+                hello.push(json!({ "input": input.as_ref().map(|(_, j)| j) }));
                 uses.push(Some(Used {
-                    role: line["role"].as_str().unwrap_or_default().to_string(),
                     run: Some(run),
                     function: (index, function),
                     input: input.is_some(),
-                    output: output.is_some(),
-                    error: error.map(|(n, _)| n),
                 }));
             }
         }
         Ok(Runner {
-            hello: json!({ "uses": hello, "serves": serves }),
+            hello: json!({
+                "uses": hello,
+                "serves": serves,
+                "states": STATES.lock().map_err(|e| e.to_string())?.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+            }),
             files,
             uses,
             start: Ran::new(),
@@ -242,10 +254,7 @@ impl Runner {
     fn play(&mut self, turn: &Json) -> Result<Json, String> {
         let step = turn["step"].as_str();
         let mut ran = Ran::new();
-        let mut outputs = serde_json::Map::new();
-        let mut errors = serde_json::Map::new();
         let mut added = Vec::new();
-        let mut failed: Option<(String, String)> = None;
         for call in turn["calls"].as_array().into_iter().flatten() {
             let at = call["use"].as_u64().unwrap_or(u64::MAX) as usize;
             let used = self
@@ -259,43 +268,16 @@ impl Runner {
             };
             ran.insert(used.function.clone());
             let run = used.run.as_ref().ok_or("a line with no function")?;
-            match (Self::called(run, input.clone()), &used.error) {
-                (Ok(result), _) => {
+            match Self::called(run, input) {
+                Ok(_) => {
                     if let Some(add) = call["add"].as_u64() {
                         added.push(add);
                     }
-                    if used.output {
-                        outputs.insert(at.to_string(), json!({ "input": input, "result": result }));
-                    }
                 }
-                (Err(Failure::Refused), _) => return Ok(json!({ "refused": true })),
-                (Err(Failure::Error(message)), Some(error)) => {
-                    failed = Some((error.clone(), message));
-                }
-                (Err(Failure::Error(message) | Failure::Fault(message)), _) => {
+                Err(Failure::Refused) => return Ok(json!({ "refused": true })),
+                Err(Failure::Error(message) | Failure::Fault(message)) => {
                     return Ok(json!({ "thrown": message }));
                 }
-            }
-        }
-        for (at, used) in self.uses.iter().enumerate() {
-            let Some(used) = used else { continue };
-            if used.role == "read" {
-                ran.insert(used.function.clone());
-                let run = used.run.as_ref().ok_or("a line with no function")?;
-                match Self::called(run, Json::Null) {
-                    Ok(value) => outputs.insert(at.to_string(), value),
-                    Err(Failure::Error(m) | Failure::Fault(m)) => {
-                        return Ok(json!({ "thrown": m }));
-                    }
-                    Err(Failure::Refused) => return Ok(json!({ "refused": true })),
-                };
-            }
-            if let Some(error) = &used.error {
-                let message = match &failed {
-                    Some((name, message)) if name == error => message.clone(),
-                    _ => String::new(),
-                };
-                errors.insert(at.to_string(), Json::String(message));
             }
         }
         match step {
@@ -303,7 +285,10 @@ impl Runner {
             Some(START) => self.start.extend(ran),
             Some(verb) => self.actions.entry(verb.into()).or_default().extend(ran),
         }
-        Ok(json!({ "outputs": outputs, "errors": errors, "added": added }))
+        Ok(match states() {
+            Ok(states) => json!({ "states": states, "added": added }),
+            Err(e) => json!({ "thrown": e }),
+        })
     }
 
     fn spans(&self, ran: &Ran) -> Json {

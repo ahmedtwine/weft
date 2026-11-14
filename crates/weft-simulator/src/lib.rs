@@ -45,7 +45,6 @@ pub struct Action {
 #[derive(Default)]
 pub struct Hello {
     pub reads: Vec<String>,
-    pub errors: Vec<(String, String)>,
     pub start: Vec<Start>,
     pub actions: Vec<Action>,
     pub sized: bool,
@@ -441,15 +440,10 @@ impl Run<'_> {
         let next = self.sized(case, next);
         self.tally[rule].steps += 1;
         self.tally[rule].checks += 1;
-        let error = members
-            .iter()
-            .flat_map(|m| &m.hello().errors)
-            .find(|(o, _)| *o == object)
-            .map(|(_, key)| key.clone());
         let judged = self.d.stepped(
             &object,
             &verb,
-            error.as_deref(),
+            None,
             &Seen {
                 start: &self.first,
                 before: real,
@@ -600,10 +594,16 @@ fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
             .objects
             .iter()
             .any(|x| x.name == **o && x.pools.contains(k));
-        !counted && !members.iter().any(|m| m.hello().reads.contains(&tag))
+        !counted
+            && !members.iter().any(|m| {
+                m.hello()
+                    .reads
+                    .iter()
+                    .any(|read| *read == tag || read == *o)
+            })
     }) {
         return Err(format!(
-            "the diagram names `{o}.{k}`, and no schema has the annotation `read: {o}.{k}`"
+            "the diagram names `{o}.{k}`, and no runner calls `weft.state(\"{o}.{k}\", …)`"
         ));
     }
     if members.iter().all(|m| m.hello().start.is_empty()) {

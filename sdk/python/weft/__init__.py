@@ -1,4 +1,5 @@
 import ctypes
+import dataclasses
 import importlib.util
 import json
 import os
@@ -8,17 +9,6 @@ from pathlib import Path
 
 ADAPTER = "python"
 START = "start"
-FAULTS = (
-    TypeError,
-    AttributeError,
-    NameError,
-    KeyError,
-    IndexError,
-    ZeroDivisionError,
-    AssertionError,
-    RecursionError,
-    ImportError,
-)
 
 
 class _Text(ctypes.Structure):
@@ -59,6 +49,27 @@ class _Weft:
     def done(self, said):
         data = json.dumps(said).encode()
         self._checked(self.lib.weft_diagram_done(self.ctx, _Text(ctypes.cast(data, ctypes.c_void_p), len(data))))
+
+
+_STATES = {}
+
+
+def state(key, read):
+    _STATES[key] = read if callable(read) else (lambda: read)
+
+
+def _native(value):
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, (set, frozenset, tuple)):
+        return list(value)
+    raise TypeError(f"weft.state reads a {type(value).__name__}, and JSON has no such value")
+
+
+def _states():
+    return {key: json.loads(json.dumps(read(), default=_native)) for key, read in _STATES.items()}
 
 
 def _schema(value):
@@ -175,18 +186,9 @@ class _Runner:
                 run = None if line["from"] else exported(line["function"])
                 if run is not None and not callable(run):
                     raise RuntimeError(f"`{'.'.join(line['function'])}` is no function")
-                inputs, outputs, errors = (schema(line[k]) for k in ("input", "output", "error"))
-                self.hello.append({"input": inputs[1], "output": outputs[1], "error": errors[1]})
-                self.uses.append(
-                    {
-                        "role": line["role"],
-                        "run": run,
-                        "method": line["function"][1],
-                        "input": inputs[0],
-                        "output": outputs[0],
-                        "error": errors[0],
-                    }
-                )
+                inputs = schema(line["input"])
+                self.hello.append({"input": inputs[1]})
+                self.uses.append({"run": run, "method": line["function"][1], "input": inputs[0]})
         self.pool = {}
         self.start = {}
         self.actions = {}
@@ -203,16 +205,11 @@ class _Runner:
             if use["input"] is None:
                 return {"result": target()}
             return {"result": target(call["input"])}
-        except FAULTS as error:
-            return {"thrown": _fault(error)}
         except Exception as error:
-            if use["error"] is None:
-                return {"thrown": _fault(error)}
-            return {"failed": (use["error"], str(error))}
+            return {"thrown": _fault(error)}
 
     def _reported(self, calls):
-        outputs, errors, added = {}, {}, []
-        failed = (None, "")
+        added = []
         for call in calls:
             use = self.uses[call["use"]]
             if use is None:
@@ -220,25 +217,10 @@ class _Runner:
             ended = self._called(use, call)
             if "thrown" in ended:
                 return {"thrown": ended["thrown"]}
-            if "failed" in ended:
-                failed = ended["failed"]
-                continue
             if call["add"] is not None:
                 self.pool[call["add"]] = ended["result"]
                 added.append(call["add"])
-            if use["output"]:
-                outputs[str(call["use"])] = {"input": call["input"], "result": ended["result"]}
-        for at, use in enumerate(self.uses):
-            if use is None:
-                continue
-            if use["role"] == "read":
-                try:
-                    outputs[str(at)] = use["run"]()
-                except Exception as error:
-                    return {"thrown": _fault(error)}
-            if use["error"]:
-                errors[str(at)] = failed[1] if use["error"] == failed[0] else ""
-        return {"outputs": outputs, "errors": errors, "added": added}
+        return {"added": added}
 
     def play(self, turn):
         step = turn.get("step")
@@ -249,11 +231,17 @@ class _Runner:
             known = self.start if step == START else self.actions.setdefault(step, {})
         self.lines.now = {} if known is not None else None
         try:
-            return self._reported(turn["calls"])
+            report = self._reported(turn["calls"])
         finally:
             for file, hit in (self.lines.now or {}).items():
                 known.setdefault(file, set()).update(hit)
             self.lines.now = None
+        if "added" not in report:
+            return report
+        try:
+            return {"states": _states(), **report}
+        except Exception as error:
+            return {"thrown": _fault(error)}
 
     def ran(self):
         return {
@@ -270,7 +258,7 @@ def run():
             os.environ.get("WEFT_ADAPTER", ADAPTER),
             _Lines(),
         )
-        report = {"uses": runner.hello, "serves": runner.serves}
+        report = {"uses": runner.hello, "serves": runner.serves, "states": list(_STATES)}
         while not (turn := weft.turn(report)).get("done"):
             report = runner.play(turn)
         said = {"ran": runner.ran()}

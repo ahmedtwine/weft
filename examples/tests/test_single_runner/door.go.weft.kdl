@@ -10,7 +10,7 @@ setup {
     }
     state state="locked" {
       on "open" error="the door is locked"
-      on "unlock" state="closed"
+      on "unlock" state="closed" error=""
     }
     invariant "an error only when locked" {
       implies {
@@ -30,8 +30,7 @@ action {
 impl "go" {
   module "door" "../../runners/go/door/door.go"
   start "door.reset"
-  read "door.door" output="door.doorSchema"
-  run "door.open" input="door.openSchema" error="door.errorSchema"
+  run "door.open" input="door.openSchema"
   run "door.close" input="door.closeSchema"
   run "door.lock" input="door.lockSchema"
   run "door.unlock" input="door.unlockSchema"

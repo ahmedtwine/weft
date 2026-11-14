@@ -24,12 +24,6 @@ pub struct Branch {
     pub generator: Generator,
 }
 
-pub struct Tag {
-    pub path: Vec<String>,
-    pub object: String,
-    pub key: String,
-}
-
 fn any() -> Generator {
     let subtree = || Box::new(Generator::Subtree(ANY.into()));
     Generator::Recursive(
@@ -549,33 +543,6 @@ pub fn branches(name: &str, node: &Json, pools: &[String]) -> Result<Vec<Branch>
         .collect()
 }
 
-pub fn tags(node: &Json) -> Result<Vec<Tag>, String> {
-    fn walk(node: &Json, at: &mut Vec<String>, out: &mut Vec<Tag>) -> Result<(), String> {
-        if let Some(read) = Annotation::of(node)?.read {
-            let (object, key) = read
-                .split_once('.')
-                .filter(|(object, key)| !object.is_empty() && !key.is_empty())
-                .ok_or_else(|| format!("`read: {read}` is not `<object>.<key>`"))?;
-            out.push(Tag {
-                path: at.clone(),
-                object: object.to_string(),
-                key: key.to_string(),
-            });
-        }
-        if let Some(Json::Object(fields)) = node.get("properties") {
-            for (key, field) in fields {
-                at.push(key.clone());
-                walk(field, at, out)?;
-                at.pop();
-            }
-        }
-        Ok(())
-    }
-    let mut out = Vec::new();
-    walk(node, &mut Vec::new(), &mut out)?;
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn each_branch_with_a_verb_is_one_input_and_each_read_has_its_path() {
+    fn each_branch_with_a_verb_is_one_input() {
         let schema = json!({
             "oneOf": [
                 { "type": "object", "properties": {}, "weft": { "verb": "send" } },
@@ -746,34 +713,5 @@ mod tests {
                 (None, Generator::Record(Vec::new())),
             ]
         );
-        let output = json!({
-            "type": "object",
-            "properties": {
-                "page": { "type": "object", "properties": { "text": { "not": {}, "weft": { "read": "page.text" } } } },
-                "count": { "type": "integer", "weft": { "read": "page.count" } }
-            }
-        });
-        let mut found: Vec<(Vec<String>, String, String)> = tags(&output)
-            .unwrap()
-            .into_iter()
-            .map(|t| (t.path, t.object, t.key))
-            .collect();
-        found.sort();
-        assert_eq!(
-            found,
-            [
-                (
-                    vec!["count".to_string()],
-                    "page".to_string(),
-                    "count".to_string()
-                ),
-                (
-                    vec!["page".to_string(), "text".to_string()],
-                    "page".to_string(),
-                    "text".to_string()
-                ),
-            ]
-        );
-        assert!(tags(&json!({ "weft": { "read": "count" } })).is_err());
     }
 }

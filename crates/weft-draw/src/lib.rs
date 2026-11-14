@@ -15,7 +15,9 @@ const CHAR: f64 = 6.7;
 const ROW: f64 = 16.0;
 const NOTE_LINE: f64 = 19.0;
 const NOTE_MARGIN: f64 = 20.0;
-const FONT: &str = "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif";
+const MONO: f64 = 0.6;
+const LABEL: usize = 46;
+const STYLE: &str = "<style>.pele{--w-bg:var(--pele-bg,#ffffff);--w-fg:var(--pele-fg,#1f1f1f);--w-muted:var(--pele-muted,#6e6e6e);--w-line:var(--pele-line,#1f1f1f);--w-surface:var(--pele-surface,#f3f3f3);--w-border:var(--pele-border,#8a8a8a);--w-critical:var(--pele-critical,#e45756);--w-s1:var(--pele-series-1,#4c78a8);--w-s2:var(--pele-series-2,#f58518);--w-s3:var(--pele-series-3,#54a24b);--w-s4:var(--pele-series-4,#e45756);--w-s5:var(--pele-series-5,#72b7b2);--w-s6:var(--pele-series-6,#eeca3b);--w-s7:var(--pele-series-7,#b279a2);--w-s8:var(--pele-series-8,#9d755d);font-family:var(--pele-font,Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif)}.pele .m{font-family:var(--pele-font-mono,'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace)}</style>";
 const DIRECTIVE: &str =
     "%%{init: {\"sequence\": {\"mirrorActors\": false, \"actorMargin\": 16, \"width\": 96}}}%%\n";
 
@@ -25,29 +27,14 @@ pub enum Theme {
     Dark,
 }
 
-pub struct Palette {
-    pub bg: &'static str,
-    pub fg: &'static str,
-    pub muted: &'static str,
-    pub surface: &'static str,
-    pub border: &'static str,
-}
-
-const LIGHT: Palette = Palette {
-    bg: "#ffffff",
-    fg: "#1f1f1f",
-    muted: "#6e6e6e",
-    surface: "#f6f6f6",
-    border: "#c4c4c4",
-};
-
-const DARK: Palette = Palette {
-    bg: "#161616",
-    fg: "#e6e6e6",
-    muted: "#9a9a9a",
-    surface: "#202020",
-    border: "#4a4a4a",
-};
+const BG: &str = "var(--w-bg)";
+const FG: &str = "var(--w-fg)";
+const MUTED: &str = "var(--w-muted)";
+const LINE: &str = "var(--w-line)";
+const SURFACE: &str = "var(--w-surface)";
+const BORDER: &str = "var(--w-border)";
+const CRITICAL: &str = "var(--w-critical)";
+const DARK: &str = "--pele-bg:#161616;--pele-fg:#e6e6e6;--pele-muted:#9a9a9a;--pele-line:#e6e6e6;--pele-surface:#222222;--pele-border:#4a4a4a;--pele-critical:#f07574;color-scheme:dark";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -76,6 +63,7 @@ pub struct Code {
     pub start_calls: Vec<Call>,
     pub action_calls: Vec<(String, Vec<Call>)>,
     pub failed: Option<(String, Vec<String>)>,
+    pub initial: Vec<(String, String)>,
 }
 
 enum Message<'a> {
@@ -84,7 +72,14 @@ enum Message<'a> {
 }
 
 const SERIES: [&str; 8] = [
-    "#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2", "#eeca3b", "#b279a2", "#9d755d",
+    "var(--w-s1)",
+    "var(--w-s2)",
+    "var(--w-s3)",
+    "var(--w-s4)",
+    "var(--w-s5)",
+    "var(--w-s6)",
+    "var(--w-s7)",
+    "var(--w-s8)",
 ];
 
 fn colors(d: &Diagram) -> Vec<Option<&'static str>> {
@@ -191,10 +186,33 @@ fn lines(text: &str) -> Vec<String> {
     text.lines().flat_map(|l| wrap(l, WRAP)).collect()
 }
 
+fn condition(text: &str) -> Vec<String> {
+    match text.split_once(" ≠ ") {
+        Some((left, right)) => vec![left.to_string(), format!("≠ {right}")],
+        None => lines(text),
+    }
+}
+
+fn cut(text: &str) -> String {
+    match count(text) > LABEL {
+        true => text.chars().take(LABEL - 1).chain(['…']).collect(),
+        false => text.to_string(),
+    }
+}
+
+fn label(text: &str) -> Vec<String> {
+    let body = text.find(['{', '[']).filter(|_| count(text) > LABEL);
+    match body {
+        Some(at) => vec![cut(text[..at].trim()), cut(&text[at..])],
+        None => vec![cut(text)],
+    }
+}
+
 fn note(p: &mut Plan, over: String, text: String, kind: Kind) {
-    let shown = match p.svg {
-        true => [vec![stereotype(kind).to_string()], lines(&text)].concat(),
-        false => text.lines().map(String::from).collect(),
+    let shown = match (p.svg, kind) {
+        (true, Kind::Failed) => condition(&text),
+        (true, _) => [vec![stereotype(kind).to_string()], lines(&text)].concat(),
+        (false, _) => text.lines().map(String::from).collect(),
     };
     let _ = writeln!(p.source, "  Note over {over}: {}", mermaid_text(&shown));
     p.notes.push(Note::Text(text, kind));
@@ -222,7 +240,7 @@ fn calls<'a>(p: &mut Plan<'a>, d: &Diagram, all: &'a [Call]) {
                 false => "->>",
             },
             col(d, &c.to),
-            mermaid_text(std::slice::from_ref(&c.text))
+            mermaid_text(&label(&c.text))
         );
         p.messages.push(Message::Call(c));
     }
@@ -249,16 +267,23 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
         let lines = match svg {
             true => {
                 let mut reserve = vec![String::new(); RESERVE];
-                reserve[0] = d
-                    .initial(&d.objects[i].name)
+                let name = &d.objects[i].name;
+                reserve[0] = code
+                    .and_then(|c| c.initial.iter().find(|(o, _)| o == name))
+                    .map(|(_, s)| s.lines().map(String::from).max_by_key(|l| count(l)))
+                    .unwrap_or_else(|| d.initial(name))
                     .map_or(String::new(), |s| format!("«initial» {s}"));
                 [reserve, head.clone()].concat()
             }
             false => head.clone(),
         };
         let _ = writeln!(p.source, "  participant o{i} as {}", mermaid_text(&lines));
+        let name = &d.objects[i].name;
+        let real = code
+            .and_then(|c| c.initial.iter().find(|(o, _)| o == name))
+            .map(|(_, s)| s.clone());
         p.initial
-            .extend(d.initial(&d.objects[i].name).map(|s| (i, s.to_string())));
+            .extend(real.or_else(|| d.initial(name)).map(|s| (i, s)));
     }
     if let (true, Some(first), Some(last)) =
         (svg && !p.initial.is_empty(), order.first(), order.last())
@@ -267,9 +292,21 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
         let widest = p
             .initial
             .iter()
-            .map(|(_, s)| s.clone())
-            .max_by_key(|s| count(s));
-        note(&mut p, over, widest.unwrap_or_default(), Kind::Initial);
+            .flat_map(|(_, s)| lines(s))
+            .max_by_key(|l| count(l))
+            .unwrap_or_default();
+        let tallest = p
+            .initial
+            .iter()
+            .map(|(_, s)| lines(s).len())
+            .max()
+            .unwrap_or(1);
+        note(
+            &mut p,
+            over,
+            vec![widest; tallest].join("\n"),
+            Kind::Initial,
+        );
     }
     if let (Some(start), Some(first), Some(last)) = (
         code.and_then(|c| c.start.as_ref()),
@@ -400,30 +437,89 @@ pub fn styled(styles: &[(weft_parse::Kind, String)]) -> Result<(), String> {
 fn write_text(out: &mut String, x: f64, y: f64, text: &str, color: &str, weight: u16, size: f64) {
     let _ = write!(
         out,
-        r#"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="{size}" font-weight="{weight}" fill="{color}">{}</text>"#,
+        r#"<text x="{x:.1}" y="{y:.1}" text-anchor="middle" font-size="{size}" font-weight="{weight}" style="fill:{color}">{}</text>"#,
         escape(text)
     );
 }
 
-fn tag(out: &mut String, (x, y): (f64, f64), text: &str, ink: &str, bg: &str) {
-    let w = width(text, 12.0) + 10.0;
+fn tag(out: &mut String, (x, y): (f64, f64), text: &str) {
+    let w = width(text, 12.0) + 14.0;
     let _ = write!(
         out,
-        r#"<rect x="{:.1}" y="{:.1}" width="{w:.1}" height="19" rx="3" fill="{bg}"/>"#,
+        r#"<rect x="{:.1}" y="{:.1}" width="{w:.1}" height="20" rx="10" style="fill:{BG};stroke:{BORDER};stroke-width:0.75"/>"#,
         x - w / 2.0,
-        y - 9.5
+        y - 10.0
     );
-    write_text(out, x, y + 4.3, text, ink, 400, 12.0);
+    write_text(out, x, y + 4.3, text, FG, 500, 12.0);
 }
 
-fn node(
-    out: &mut String,
-    (x, y): (f64, f64),
-    kind: Kind,
-    state: &str,
-    (stroke, ink): (&str, &str),
-    p: &Palette,
-) {
+fn mono(out: &mut String, (x, y): (f64, f64), text: &str, size: f64, first: bool) {
+    let (head, tail) = match (first, text.split_once(' ')) {
+        (true, Some((head, tail))) => (head, format!(" {tail}")),
+        (true, None) => (text, String::new()),
+        (false, _) => ("", text.to_string()),
+    };
+    let _ = write!(
+        out,
+        r#"<text class="m" x="{x:.1}" y="{y:.1}" font-size="{size}" font-weight="400" style="fill:{FG}"><tspan font-weight="600">{}</tspan>{}</text>"#,
+        escape(head),
+        escape(&tail)
+    );
+}
+
+fn bubble(out: &mut String, (cx, bottom): (f64, f64), text: &str, color: &str) {
+    let lines = label(text);
+    let wide = lines.iter().map(|l| count(l)).max().unwrap_or(0) as f64 * 11.0 * MONO;
+    let (w, h) = (wide + 24.0, lines.len() as f64 * 15.0 + 10.0);
+    let (x, y) = (cx - w / 2.0, bottom - h);
+    let _ = write!(
+        out,
+        r#"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="6" style="fill:{SURFACE};stroke:{BORDER};stroke-width:0.6"/><rect x="{:.1}" y="{:.1}" width="3" height="{:.1}" rx="1.5" style="fill:{color}"/>"#,
+        x + 5.0,
+        y + 5.0,
+        h - 10.0
+    );
+    for (i, line) in lines.iter().enumerate() {
+        mono(
+            out,
+            (x + 15.0, y + 18.5 + i as f64 * 15.0),
+            line,
+            11.0,
+            i == 0,
+        );
+    }
+}
+
+fn failure(out: &mut String, (x, y): (f64, f64), text: &str) {
+    let lines = condition(text);
+    let wide = lines.iter().map(|l| count(l)).max().unwrap_or(0) as f64 * 12.0 * MONO;
+    let (w, h) = (wide + 52.0, lines.len() as f64 * 18.0 + 18.0);
+    let (left, top) = (x - w / 2.0, y - h / 2.0);
+    let (cx, cy) = (left + 18.0, y);
+    let _ = write!(
+        out,
+        r#"<rect x="{left:.1}" y="{top:.1}" width="{w:.1}" height="{h:.1}" rx="8" style="fill:{BG};stroke:{CRITICAL};stroke-width:1.25"/><circle cx="{cx:.1}" cy="{cy:.1}" r="8" style="fill:{CRITICAL}"/><path d="M {:.1},{:.1} L {:.1},{:.1} M {:.1},{:.1} L {:.1},{:.1}" style="stroke:{BG};stroke-width:1.6;stroke-linecap:round"/>"#,
+        cx - 3.0,
+        cy - 3.0,
+        cx + 3.0,
+        cy + 3.0,
+        cx + 3.0,
+        cy - 3.0,
+        cx - 3.0,
+        cy + 3.0
+    );
+    for (i, line) in lines.iter().enumerate() {
+        let _ = write!(
+            out,
+            r#"<text class="m" x="{:.1}" y="{:.1}" font-size="12" font-weight="500" style="fill:{FG}">{}</text>"#,
+            left + 34.0,
+            top + 22.5 + i as f64 * 18.0,
+            escape(line)
+        );
+    }
+}
+
+fn node(out: &mut String, (x, y): (f64, f64), kind: Kind, state: &str) {
     let top = stereotype(kind);
     let lines = lines(state);
     let wide = lines
@@ -438,15 +534,14 @@ fn node(
     };
     let _ = write!(
         out,
-        r#"<rect x="{:.1}" y="{:.1}" width="{w:.1}" height="{h:.1}" rx="4" fill="{}" stroke="{stroke}"{dash}/>"#,
+        r#"<rect x="{:.1}" y="{:.1}" width="{w:.1}" height="{h:.1}" rx="6" style="fill:{SURFACE};stroke:{BORDER}"{dash}/>"#,
         x - w / 2.0,
-        y - h / 2.0,
-        p.surface
+        y - h / 2.0
     );
     let top_y = y - h / 2.0;
-    write_text(out, x, top_y + 17.0, top, p.muted, 400, 11.5);
+    write_text(out, x, top_y + 17.0, top, MUTED, 400, 11.5);
     for (i, line) in lines.iter().enumerate() {
-        write_text(out, x, top_y + 34.0 + i as f64 * 16.0, line, ink, 700, 13.0);
+        write_text(out, x, top_y + 34.0 + i as f64 * 16.0, line, FG, 600, 13.0);
     }
 }
 
@@ -456,7 +551,7 @@ fn arrow(out: &mut String, (px, py): (f64, f64), (zx, zy): (f64, f64), color: &s
     let (bx, by) = (zx - ux * 8.0, zy - uy * 8.0);
     let _ = write!(
         out,
-        r#"<polygon points="{zx:.1},{zy:.1} {:.1},{:.1} {:.1},{:.1}" fill="{color}"/>"#,
+        r#"<polygon points="{zx:.1},{zy:.1} {:.1},{:.1} {:.1},{:.1}" style="fill:{color}"/>"#,
         bx - uy * 4.0,
         by + ux * 4.0,
         bx + uy * 4.0,
@@ -480,8 +575,7 @@ fn points(e: &Value) -> Vec<(f64, f64)> {
         .unwrap_or_default()
 }
 
-pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
-    let p = theme.palette();
+pub fn svg(d: &Diagram, theme: Option<Theme>, code: &Code) -> Result<String, String> {
     let icons = d
         .objects
         .iter()
@@ -508,9 +602,13 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
         - 16.0 * (rows - 1.0);
     let (x0, y0) = (num(b, "min_x"), num(b, "min_y").max(heads - PAD));
     let (w, h) = (num(b, "max_x") - x0, num(b, "max_y") - y0);
+    let fixed = match theme {
+        Some(Theme::Dark) => DARK,
+        Some(Theme::Light) => "color-scheme:light",
+        None => "",
+    };
     let mut out = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x0:.1} {y0:.1} {w:.1} {h:.1}" width="{w:.0}" height="{h:.0}" style="max-width:100%;height:auto" font-family="{FONT}" font-size="13"><rect x="{x0:.1}" y="{y0:.1}" width="{w:.1}" height="{h:.1}" fill="{}"/>"#,
-        p.bg
+        r#"<svg xmlns="http://www.w3.org/2000/svg" class="pele weft" viewBox="{x0:.1} {y0:.1} {w:.1} {h:.1}" width="{w:.0}" height="{h:.0}" style="max-width:100%;height:auto;{fixed}" font-size="13">{STYLE}<rect x="{x0:.1}" y="{y0:.1}" width="{w:.1}" height="{h:.1}" style="fill:{BG}"/>"#
     );
     let tint = colors(d);
     for e in edges.iter().filter(|e| {
@@ -527,11 +625,11 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
                     .ok()
             })
             .and_then(|i| tint.get(i).copied().flatten())
-            .unwrap_or(p.border);
+            .unwrap_or(BORDER);
         if let [(ax, ay), .., (zx, zy)] = points(e).as_slice() {
             let _ = write!(
                 out,
-                r#"<line x1="{ax:.1}" y1="{ay:.1}" x2="{zx:.1}" y2="{zy:.1}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.25"/>"#
+                r#"<line x1="{ax:.1}" y1="{ay:.1}" x2="{zx:.1}" y2="{zy:.1}" style="stroke:{color};stroke-opacity:0.5;stroke-width:1.25"/>"#
             );
         }
     }
@@ -549,9 +647,9 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
             Message::Step(k) => *k,
             Message::Call(c) => {
                 if let ([(ax, ay), ..], [.., prev, last]) = (pts.as_slice(), pts.as_slice()) {
-                    let color = tint.get(col(d, &c.from)).copied().flatten().unwrap_or(p.fg);
+                    let color = tint.get(col(d, &c.from)).copied().flatten().unwrap_or(LINE);
                     let dash = match c.reply {
-                        true => r#" stroke-dasharray="5 4""#,
+                        true => ";stroke-dasharray:5 4",
                         false => "",
                     };
                     let line = pts
@@ -561,16 +659,10 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
                         .join(" L ");
                     let _ = write!(
                         out,
-                        r#"<path d="M {line}" fill="none" stroke="{color}" stroke-width="1.25"{dash}/>"#
+                        r#"<path d="M {line}" style="fill:none;stroke:{color};stroke-width:1.25{dash}"/>"#
                     );
                     arrow(&mut out, *prev, *last, color);
-                    let _ = write!(
-                        out,
-                        r#"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="{color}">{}</text>"#,
-                        (ax + last.0) / 2.0,
-                        ay - 6.0,
-                        escape(&c.text)
-                    );
+                    bubble(&mut out, ((ax + last.0) / 2.0, ay - 6.0), &c.text, color);
                 }
                 continue;
             }
@@ -609,18 +701,16 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
             ),
             (false, _) => continue,
         };
-        let ink = p.fg;
         let _ = write!(
             out,
-            r#"<path d="{path}" fill="none" stroke="{ink}" stroke-width="1.25"/>"#
+            r#"<path d="{path}" style="fill:none;stroke:{LINE};stroke-width:1.25"/>"#
         );
-        arrow(&mut out, prev, end, ink);
-        tag(&mut out, mid, &format!("«{}»", s.verb), p.muted, p.bg);
+        arrow(&mut out, prev, end, LINE);
+        tag(&mut out, mid, &s.verb);
         let _ = write!(
             out,
-            r#"<circle cx="{ax:.1}" cy="{ay:.1}" r="8.5" fill="{ink}"/><text x="{ax:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="700" fill="{}">{}</text>"#,
+            r#"<circle cx="{ax:.1}" cy="{ay:.1}" r="8.5" style="fill:{LINE}"/><text x="{ax:.1}" y="{:.1}" text-anchor="middle" font-size="10.5" font-weight="700" style="fill:{BG}">{}</text>"#,
             ay + 3.8,
-            p.bg,
             k + 1
         );
     }
@@ -639,25 +729,11 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
             }
             Note::Text(_, Kind::Initial) => {
                 for (i, state) in &plan.initial {
-                    node(
-                        &mut out,
-                        (column[*i], y),
-                        Kind::Initial,
-                        state,
-                        (p.muted, p.fg),
-                        p,
-                    );
+                    node(&mut out, (column[*i], y), Kind::Initial, state);
                 }
             }
-            Note::Text(text, Kind::Failed) => node(
-                &mut out,
-                (x, y),
-                Kind::Failed,
-                text,
-                (SERIES[3], SERIES[3]),
-                p,
-            ),
-            Note::Text(text, kind) => node(&mut out, (x, y), *kind, text, (p.border, p.fg), p),
+            Note::Text(text, Kind::Failed) => failure(&mut out, (x, y), text),
+            Note::Text(text, kind) => node(&mut out, (x, y), *kind, text),
         }
     }
     for n in &nodes {
@@ -679,20 +755,19 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
             x,
             top + 12.0,
             &format!("«{}»", o.kind),
-            p.muted,
+            MUTED,
             400,
             11.5,
         );
         let _ = write!(
             out,
-            r#"<rect x="{:.1}" y="{:.1}" width="40" height="40" rx="8" fill="{}" stroke="{}"/><g transform="translate({:.1} {:.1})" fill="none" stroke="{}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{drawn}</g>"#,
+            r#"<rect x="{:.1}" y="{:.1}" width="40" height="40" rx="10" style="fill:{SURFACE};stroke:{}"/><g transform="translate({:.1} {:.1})" style="fill:none;stroke:{};stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round">{drawn}</g>"#,
             x - 20.0,
             top + 20.0,
-            p.surface,
-            tint.get(i).copied().flatten().unwrap_or(p.border),
+            tint.get(i).copied().flatten().unwrap_or(BORDER),
             x - 12.0,
             top + 28.0,
-            tint.get(i).copied().flatten().unwrap_or(p.fg)
+            tint.get(i).copied().flatten().unwrap_or(FG)
         );
         for (k, line) in head.iter().enumerate() {
             write_text(
@@ -700,7 +775,7 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
                 x,
                 top + 76.0 + k as f64 * 16.0,
                 line,
-                p.fg,
+                FG,
                 600,
                 13.0,
             );
@@ -723,23 +798,6 @@ pub fn ascii(d: &Diagram) -> Result<String, String> {
     ))? {
         RenderOutput::Ascii(Some(report)) => Ok(report.text),
         _ => Err("merman drew no diagram".into()),
-    }
-}
-
-impl Theme {
-    pub fn parse(s: &str) -> Result<Theme, String> {
-        match s {
-            "light" => Ok(Theme::Light),
-            "dark" => Ok(Theme::Dark),
-            other => Err(format!("`{other}` is not light or dark")),
-        }
-    }
-
-    pub fn palette(self) -> &'static Palette {
-        match self {
-            Theme::Light => &LIGHT,
-            Theme::Dark => &DARK,
-        }
     }
 }
 
@@ -800,7 +858,6 @@ action {
     }
 
     const CONFIG: &str = r#"include "**/*.weft.kdl"
-theme "light"
 style "person" icon="user"
 style "browser" icon="app-window"
 style "element" icon="square-dashed-mouse-pointer""#;
@@ -810,7 +867,7 @@ style "element" icon="square-dashed-mouse-pointer""#;
     }
 
     fn drawn() -> String {
-        svg(&diagram(), Theme::Light, &Code::default()).unwrap()
+        svg(&diagram(), None, &Code::default()).unwrap()
     }
 
     #[test]
@@ -856,9 +913,9 @@ style "element" icon="square-dashed-mouse-pointer""#;
     fn each_text_is_inside_the_diagram() {
         let d = diagram();
         let code = Code::default();
-        let out = svg(&d, Theme::Light, &code).unwrap();
+        let out = svg(&d, None, &code).unwrap();
         let head = &out[..out.find('>').unwrap()];
-        assert!(head.contains(r#"style="max-width:100%;height:auto""#));
+        assert!(head.contains(r#"style="max-width:100%;height:auto"#));
         let view: Vec<f64> = attr(head, "viewBox")
             .unwrap()
             .split(' ')

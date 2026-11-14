@@ -1,20 +1,38 @@
 # weft
 
-A distributed runner for property tests, built on [Hegel](https://hegel.dev) and [KDL](https://kdl.dev).
+A distributed runner for property tests, built on [Hegel](https://hegel.dev) and [KDL](https://kdl.dev). A diagram names objects, their state, the steps between them and the invariants that hold across them. Hegel draws the steps, runs them on each runner and shrinks a failing case to the fewest steps.
 
+## Run the examples
 
-Runners:
+```sh
+mise trust && mise install
+mise //examples:test      # build weft and each runner, then run each diagram
+mise //examples:report    # serve the report at http://127.0.0.1:7357
+```
 
-| Language   | SDK          | Start                                              |
-| ---------- | ------------ | -------------------------------------------------- |
-| TypeScript | `sdk/`       | `adapter "bun"`, or `runner "<name>" harness="bun"` |
-| Rust       | `sdk/rust`   | `runner "<name>" command="<binary>"`               |
-| Go         | `sdk/go`     | `runner "<name>" command="<binary>"`               |
-| Python     | `sdk/python` | `runner "<name>" command="python -m weft"`         |
+| Path                                              | Shows                                                        |
+| ------------------------------------------------- | ------------------------------------------------------------ |
+| `examples/runners/{bun,rust,go,python}`           | One door in each language                                    |
+| `examples/tests/test_single_runner`               | One diagram for each door runner                             |
+| `examples/apps/{orders,addresses,shop,courier}`   | A shop of four apps in Go, Rust, Python and TypeScript       |
+| `examples/tests/test_multiple_runner/parcel.weft.kdl` | One invariant over the four apps                         |
 
-## Diagram
+## State
 
-A door that can be closed, open or locked. Opening a locked door should fail.
+A runner gives its state to weft with one call. The call takes a native value, or a function that reads it, under `"<object>"` for a record of keys or `"<object>.<key>"` for one key:
+
+| Language   | SDK          | Call                                              | Start in `weft.kdl`                          |
+| ---------- | ------------ | ------------------------------------------------- | -------------------------------------------- |
+| TypeScript | `sdk/`       | `state("door", () => door)` from `"weft"`         | `runner "<name>" harness="bun"`              |
+| Rust       | `sdk/rust`   | `weft_sdk::state("door", now)` with `Serialize`   | `runner "<name>" command="<binary>"`         |
+| Go         | `sdk/go`     | `weft.State("door", func() Door { return door })` | `runner "<name>" command="<binary>"`         |
+| Python     | `sdk/python` | `weft.state("door", lambda: door)`, a dataclass   | `runner "<name>" command="python -m weft"`   |
+
+Weft reads each registered state after `start` and after each step. The diagram draws the state after `start` as the `«initial»` card of each object.
+
+## A door
+
+`examples/tests/test_single_runner/door.bun.weft.kdl`:
 
 ```kdl
 setup {
@@ -29,7 +47,7 @@ setup {
     }
     state state="locked" {
       on "open" error="the door is locked"
-      on "unlock" state="closed"
+      on "unlock" state="closed" error=""
     }
     invariant "an error only when locked" {
       implies {
@@ -46,126 +64,77 @@ action {
   open from="user" to="door"
   unlock from="user" to="door"
 }
-```
-
-
-
-```sh
-bun add github:ahmedtwine/weft#v0.3.0 zod
-```
-
-`weft.kdl`:
-
-```kdl
-include "**/*.weft.kdl"
-theme "light"
-style "person" icon="user"
-style "element" icon="door-closed"
-adapter "bun" cases=100
-```
-
-`src/door.ts`:
-
-```ts
-import { z } from "zod";
-
-let state = "closed";
-
-export const doorSchema = z.strictObject({
-  state: z.string().meta({ weft: { read: "door.state" } }),
-});
-export const errorSchema = z.string().meta({ weft: { read: "door.error" } });
-export const openSchema = z.strictObject({}).meta({ weft: { verb: "open" } });
-export const closeSchema = z.strictObject({}).meta({ weft: { verb: "close" } });
-export const lockSchema = z.strictObject({}).meta({ weft: { verb: "lock" } });
-export const unlockSchema = z.strictObject({}).meta({ weft: { verb: "unlock" } });
-
-export const door = () => ({ state });
-export const reset = () => {
-  state = "closed";
-};
-export const open = () => {
-  if (state === "locked") throw new Error("the door is locked");
-  state = "open";
-};
-export const close = () => {
-  state = "closed";
-};
-export const lock = () => {
-  state = "locked";
-};
-export const unlock = () => {
-  state = "closed";
-};
-```
-
-Register your runner `invariants/door.weft.kdl`:
-
-```kdl
 impl "bun" {
-  module "door" "../src/door.ts"
+  module "door" "../../runners/bun/door.ts"
   start "door.reset"
-  read "door.door" output="door.doorSchema"
-  run "door.open" input="door.openSchema" error="door.errorSchema"
+  run "door.open" input="door.openSchema"
   run "door.close" input="door.closeSchema"
   run "door.lock" input="door.lockSchema"
   run "door.unlock" input="door.unlockSchema"
 }
 ```
 
-```sh
-bunx weft            
-bunx weft --ui       # browse the diagrams at http://127.0.0.1:7357
+`examples/runners/bun/door.ts`:
+
+```ts
+import { state } from "weft";
+import { z } from "zod";
+
+const door = { state: "closed", error: "" };
+state("door", () => door);
+
+export const openSchema = z.strictObject({}).meta({ weft: { verb: "open" } });
+export const closeSchema = z.strictObject({}).meta({ weft: { verb: "close" } });
+export const lockSchema = z.strictObject({}).meta({ weft: { verb: "lock" } });
+export const unlockSchema = z.strictObject({}).meta({ weft: { verb: "unlock" } });
+
+const set = (to: string, error = "") => Object.assign(door, { state: to, error });
+
+export const reset = () => set("closed");
+export const open = () => (door.state === "locked" ? set("locked", "the door is locked") : set("open"));
+export const close = () => set("closed");
+export const lock = () => set("locked");
+export const unlock = () => set("closed");
 ```
 
-## Runners and apps
+An `on` line gives the value of a key after the step. A key of the setup with no term keeps its value from before the step.
 
-`weft.kdl` names one `runner` line for each `impl` block. Weft starts the command of each line for each diagram, with these variables:
+## A shop of four apps
 
-| Variable              | Value                                          |
-| --------------------- | ---------------------------------------------- |
-| `WEFT_DIAGRAM`        | The path of the diagram                        |
-| `WEFT_ADAPTER`        | The name of the `impl` block                   |
-| `WEFT_TRANSPORT`      | The socket or url of weft                      |
-| `WEFT_LIB`            | The path of libweft                            |
-| `WEFT_<NAME>_URL`     | The url of the app of `impl "<name>"`, through weft |
+`orders` keeps each order in Redis in a testcontainer. `addresses` keeps the address book. `shop` lets a customer choose the address of an order. `courier` ships an order to its address. Each app serves HTTP and names its url with a `serve` line; weft forwards each request between apps and draws it in the color of the app that sends it.
 
-An app that serves HTTP names its url with a `serve` line. Weft forwards each request between apps, records it as a step of the trace, and draws it in the diagram in the color of the app that sends it. The `start` lines run in the order of the `impl` blocks.
+The orders app checks that the customer owns the order, and the address book trusts the courier, so the customer can choose an address of another customer:
 
 ```kdl
-impl "authz" {
-  module "authz" "../../apps/authz/authz/authz.go"
-  serve "authz.url"
-  start "authz.reset"
-  read "authz.authz" output="authz.authzSchema"
-}
-```
-
-## Examples
-
-`examples/` is a mise monorepo project. `mise //examples:test` builds weft and each runner, then runs each diagram. `mise //examples:report` serves the report.
-
-| Path                                                 | Shows                                                                 |
-| ---------------------------------------------------- | --------------------------------------------------------------------- |
-| `examples/runners/{bun,rust,go,python}`              | The door of this README in each language                              |
-| `examples/tests/test_single_runner`                  | One diagram for each door runner                                      |
-| `examples/apps/{authz,vault,admin,tool}`             | Four apps in Go, Rust, Python and TypeScript; authz runs SpiceDB in a testcontainer |
-| `examples/tests/test_multiple_runner`                | One invariant over the four apps; weft finds the cross-tenant read    |
-
-The multiple runner test fails by design. The admin of `acme` points the store of `acme` at the credential of `globex`, and the tool reads that credential for an analyst of `acme`:
-
-```kdl
-invariant "a credential is read only for its own tenant" {
-  implies {
-    neq "vault.read_owner" ""
-    eq "vault.read_owner" "tool.tenant"
+api "courier" {
+  on "ship"
+  invariant "a parcel goes only to the address of its own customer" {
+    forall "p" in="courier.parcels" {
+      eq "p.customer" "p.recipient"
+    }
   }
 }
 ```
 
 ```text
-✕ tests/test_multiple_runner/credential.weft.kdl · "a credential is read only for its own tenant" · vault.read_owner = "globex" ≠ tool.tenant = "acme"
+✕ tests/test_multiple_runner/parcel.weft.kdl · "a parcel goes only to the address of its own customer" · courier.parcels[0].customer = "ana" ≠ courier.parcels[0].recipient = "ben"
 ```
+
+The test fails by design: Hegel finds `choose_address(addr-ben)` and then `ship(o-ana)`.
+
+## Runners
+
+`weft.kdl` names one `runner` line for each `impl` block. Weft starts each command with these variables:
+
+| Variable          | Value                                              |
+| ----------------- | -------------------------------------------------- |
+| `WEFT_DIAGRAM`    | The path of the diagram                            |
+| `WEFT_ADAPTER`    | The name of the `impl` block                       |
+| `WEFT_TRANSPORT`  | The socket or url of weft                          |
+| `WEFT_LIB`        | The path of libweft, the C ABI over Hegel          |
+| `WEFT_<NAME>_URL` | The url of the app of `impl "<name>"`, through weft |
+
+An `impl` block has `module`, `serve`, `start` and `run` lines. The `start` lines run in the order of the `impl` blocks.
 
 ## License
 

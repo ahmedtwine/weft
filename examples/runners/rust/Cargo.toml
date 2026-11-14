@@ -7,4 +7,5 @@ publish = false
 [workspace]
 
 [dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
 weft-sdk = { path = "../../../sdk/rust" }
