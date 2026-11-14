@@ -4,22 +4,6 @@
   "description": "The `weft` annotation of a part of a schema.",
   "type": "object",
   "properties": {
-    "verb": {
-      "type": "string",
-      "description": "The branch of an input that is one action of this verb."
-    },
-    "pool": {
-      "type": "string",
-      "description": "Each drawn value of this part goes to this Hegel pool."
-    },
-    "from": {
-      "type": "string",
-      "description": "This part is a value of this Hegel pool."
-    },
-    "consume": {
-      "type": "boolean",
-      "description": "A `from` draw removes the value from the pool."
-    },
     "maxLeaves": {
       "type": "integer",
       "minimum": 0,

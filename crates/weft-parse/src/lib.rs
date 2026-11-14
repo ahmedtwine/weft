@@ -16,12 +16,6 @@ pub struct Diagram {
     pub impls: Vec<Impl>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    Start,
-    Run,
-}
-
 #[derive(Debug, Clone)]
 pub struct Draw {
     pub path: Vec<String>,
@@ -29,80 +23,10 @@ pub struct Draw {
     pub keys: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Name {
-    pub module: String,
-    pub export: String,
-}
-
-impl fmt::Display for Name {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.export.is_empty() {
-            true => f.write_str(&self.module),
-            false => write!(f, "{}.{}", self.module, self.export),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Use {
-    pub role: Role,
-    pub function: Name,
-    pub input: Option<Name>,
-    pub tag: Option<String>,
-    pub verb: Option<String>,
-    pub by: Option<String>,
-    pub pool: Option<String>,
-    pub from: Option<(String, bool)>,
-}
-
-impl Use {
-    pub fn line(&self) -> String {
-        let role = match self.role {
-            Role::Start => "start",
-            Role::Run => "run",
-        };
-        let named =
-            |key: &str, name: &Option<Name>| name.as_ref().map(|n| format!(" {key}=\"{n}\""));
-        let text =
-            |key: &str, text: &Option<String>| text.as_ref().map(|t| format!(" {key}=\"{t}\""));
-        let parts = [
-            named("input", &self.input),
-            text("tag", &self.tag),
-            text(
-                "verb",
-                &self.verb.clone().filter(|v| *v != self.function.export),
-            ),
-            text("pool", &self.pool),
-            self.from.as_ref().map(|(pool, consume)| match consume {
-                true => format!(" consume=\"{pool}\""),
-                false => format!(" from=\"{pool}\""),
-            }),
-        ];
-        format!(
-            "`{role} \"{}\"{}`",
-            self.function,
-            parts.into_iter().flatten().collect::<String>()
-        )
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Impl {
     pub adapter: String,
     pub modules: Vec<(String, String)>,
-    pub uses: Vec<Use>,
-    pub serve: Option<Name>,
-}
-
-impl Impl {
-    pub fn app(&self) -> &str {
-        self.serve
-            .as_ref()
-            .map(|n| n.module.as_str())
-            .or_else(|| self.modules.first().map(|(m, _)| m.as_str()))
-            .unwrap_or(&self.adapter)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +73,6 @@ pub struct Object {
     pub start: Pairs,
     pub invariants: Vec<Invariant>,
     pub draws: Vec<Draw>,
-    pub pools: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -608,39 +531,11 @@ impl Diagram {
             .map(|o| shown(&o.start))
     }
 
-    pub fn target(&self, u: &Use) -> Option<&str> {
-        let object = match &u.from {
-            Some((pool, _)) => self.objects.iter().find(|o| o.pools.contains(pool))?,
-            None => self.object(&u.function.module)?,
-        };
-        Some(&object.name)
-    }
-
-    pub fn verbs(&self) -> Vec<(&str, &str)> {
-        let mut out: Vec<(&str, &str)> = Vec::new();
-        for u in self.impls.iter().flat_map(|i| &i.uses) {
-            if let (Role::Run, Some(object), Some(verb)) = (u.role, self.target(u), &u.verb)
-                && !out.contains(&(object, verb.as_str()))
-            {
-                out.push((object, verb));
-            }
-        }
-        out
-    }
-
-    pub fn caller(&self, verb: &str) -> Option<&str> {
-        let by = self
-            .impls
+    pub fn caller(&self) -> Option<&str> {
+        self.objects
             .iter()
-            .flat_map(|i| &i.uses)
-            .find(|u| u.verb.as_deref() == Some(verb))
-            .and_then(|u| u.by.as_deref());
-        by.or_else(|| {
-            self.objects
-                .iter()
-                .find(|o| o.kind.is_person())
-                .map(|o| o.name.as_str())
-        })
+            .find(|o| o.kind.is_person())
+            .map(|o| o.name.as_str())
     }
 
     pub fn invariants(&self) -> Vec<&Invariant> {
@@ -830,140 +725,30 @@ fn draw(n: &KdlNode, path: &[String], out: &mut Vec<Draw>) -> Result<(), String>
         .try_for_each(|c| draw(c, &[path, &[name(c).to_string()]].concat(), out))
 }
 
-fn named(n: &KdlNode, text: &str) -> Result<Name, String> {
-    match text.split_once('.') {
-        Some((module, export)) if !module.is_empty() && !export.is_empty() => Ok(Name {
-            module: module.to_string(),
-            export: export.to_string(),
-        }),
-        _ => Err(format!(
-            "`{}` takes `\"<module>.<export>\"`, not `{text}`",
-            name(n)
-        )),
-    }
-}
-
-fn used(n: &KdlNode) -> Result<Use, String> {
-    let (role, allowed): (Role, &[&str]) = match name(n) {
-        "start" => (Role::Start, &["input", "tag", "pool"]),
-        "run" => (
-            Role::Run,
-            &["input", "verb", "by", "pool", "from", "consume"],
-        ),
-        other => {
-            return Err(format!(
-                "`impl` has `module`, `serve`, `start` and `run`, not `{other}`; a runner gives its state with `weft.state`"
-            ));
-        }
-    };
-    let function = shape(n, 1, allowed, false)?.remove(0);
-    let given = |key: &str| n.get(key).map(text);
-    let schema = |key: &str| given(key).map(|s| named(n, &s)).transpose();
-    let from = match (given("from"), given("consume")) {
-        (Some(_), Some(_)) => Err("has `from` and `consume`, and a line takes one of them"),
-        (Some(pool), None) => Ok(Some((pool, false))),
-        (None, Some(pool)) => Ok(Some((pool, true))),
-        (None, None) => Ok(None),
-    };
-    let wrong = match (role, given("input"), given("tag"), given("verb")) {
-        (_, None, Some(_), _) => Err("has a `tag` and no `input`"),
-        _ => from,
-    };
-    let from = wrong.map_err(|wrong| format!("`{}` {wrong}", name(n)))?;
-    let function = match &from {
-        None => named(n, &function)?,
-        Some((pool, _)) => match function.split_once('.').unwrap_or((&function, "")) {
-            (head, method) if head == pool => Name {
-                module: pool.clone(),
-                export: method.to_string(),
-            },
-            _ => {
-                return Err(format!(
-                    "`{} \"{function}\"` draws from the pool `{pool}`, and takes `\"{pool}\"` or `\"{pool}.<method>\"`",
-                    name(n)
-                ));
-            }
-        },
-    };
-    let verb = function.export.clone();
-    if role == Role::Run && verb.is_empty() && given("verb").is_none() {
-        return Err(format!(
-            "`{}` names its verb with `verb=\"<verb>\"`",
-            name(n)
-        ));
-    }
-    Ok(Use {
-        role,
-        function,
-        input: schema("input")?,
-        tag: given("tag"),
-        verb: match role {
-            Role::Run => given("verb").or(Some(verb)),
-            Role::Start => None,
-        },
-        by: given("by"),
-        pool: given("pool"),
-        from,
-    })
-}
-
 fn implemented(n: &KdlNode) -> Result<Impl, String> {
     let mut found = Impl {
         adapter: shape(n, 1, &[], true)?.remove(0),
         modules: Vec::new(),
-        uses: Vec::new(),
-        serve: None,
     };
     for c in lines(n) {
-        match name(c) {
-            "serve" if found.serve.is_some() => {
-                return Err("`serve` is set twice".into());
-            }
-            "serve" => {
-                let given = shape(c, 1, &[], false)?.remove(0);
-                found.serve = Some(named(c, &given)?);
-            }
-            "module" => {
-                let mut given = shape(c, 2, &[], false)?;
-                let (place, module) = (given.remove(1), given.remove(0));
-                if found.modules.iter().any(|(known, _)| *known == module) {
-                    return Err(format!("`module \"{module}\"` is set twice"));
-                }
-                if place.starts_with('.') && !place.starts_with("../") {
-                    return Err(format!(
-                        "`module \"{module}\"` is a file in the directory of the diagram, and a module is code of the app"
-                    ));
-                }
-                found.modules.push((module, place));
-            }
-            _ => found.uses.push(used(c)?),
+        if name(c) != "module" {
+            return Err(format!(
+                "`impl \"{}\"` has `module \"<object>\" \"<path>\"` lines, not `{}`; the module gives its `reset`, its `url` and its actions",
+                found.adapter,
+                name(c)
+            ));
         }
-    }
-    let names: Vec<&Name> = found
-        .uses
-        .iter()
-        .flat_map(|u| [u.from.is_none().then_some(&u.function), u.input.as_ref()])
-        .flatten()
-        .chain(found.serve.as_ref())
-        .collect();
-    if let Some(unknown) = names
-        .iter()
-        .find(|n| !found.modules.iter().any(|(module, _)| *module == n.module))
-    {
-        return Err(format!(
-            "`{unknown}` names `{}`, and `impl \"{}\"` has no `module \"{}\"`",
-            unknown.module, found.adapter, unknown.module
-        ));
-    }
-    if let Some((module, _)) = found
-        .modules
-        .iter()
-        .find(|(module, _)| !names.iter().any(|n| n.module == *module))
-    {
-        return Err(format!(
-            "no line of `impl \"{}\"` names `module \"{module}\"`",
-            found.adapter
-        ));
+        let mut given = shape(c, 2, &[], false)?;
+        let (place, module) = (given.remove(1), given.remove(0));
+        if found.modules.iter().any(|(known, _)| *known == module) {
+            return Err(format!("`module \"{module}\"` is set twice"));
+        }
+        if place.starts_with('.') && !place.starts_with("../") {
+            return Err(format!(
+                "`module \"{module}\"` is a file in the directory of the diagram, and a module is code of the app"
+            ));
+        }
+        found.modules.push((module, place));
     }
     match !found.modules.is_empty() {
         true => Ok(found),
@@ -1113,26 +898,15 @@ fn object(n: &KdlNode, config: &Config, names: &[String], src: &str) -> Result<O
         start: pairs(n).map_err(at)?,
         invariants: Vec::new(),
         draws: Vec::new(),
-        pools: Vec::new(),
     };
     for c in n.iter_children() {
         match name(c) {
             "invariant" => invariant(c, names, src).map(|found| o.invariants.push(found)),
             "draw" if !o.draws.is_empty() => Err("has one `draw`".into()),
             "draw" => draw(c, &[], &mut o.draws),
-            "pool" => shape(c, 1, &[], false).map(|mut given| o.pools.push(given.remove(0))),
-            other => Err(format!("has `pool`, `draw` and `invariant`, not `{other}`")),
+            other => Err(format!("has `draw` and `invariant`, not `{other}`")),
         }
         .map_err(at)?;
-    }
-    if let Some(pool) = o
-        .pools
-        .iter()
-        .find(|pool| o.start.get(*pool).is_some_and(|v| !v.is_i64()))
-    {
-        return Err(at(format!(
-            "`{pool}` is the count of the values of `pool \"{pool}\"`, and a count is an integer"
-        )));
     }
     Ok(o)
 }
@@ -1175,40 +949,9 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
     if let Some(o) = d.objects.iter().find(|o| !known.insert(o.name.as_str())) {
         return Err(format!("`{}` is declared twice", o.name));
     }
-    let pools: Vec<&String> = d.objects.iter().flat_map(|o| &o.pools).collect();
-    if let Some(pool) = pools
-        .iter()
-        .enumerate()
-        .find_map(|(at, pool)| pools[..at].contains(pool).then_some(pool))
-    {
-        return Err(format!("`pool \"{pool}\"` is set twice"));
-    }
-    if let Some((u, pool)) = d.impls.iter().flat_map(|i| &i.uses).find_map(|u| {
-        [u.pool.as_ref(), u.from.as_ref().map(|(pool, _)| pool)]
-            .into_iter()
-            .flatten()
-            .find(|pool| !pools.contains(pool))
-            .map(|pool| (u, pool))
-    }) {
-        return Err(format!(
-            "{} names the pool `{pool}`, and no object of `setup` has `pool \"{pool}\"`",
-            u.line()
-        ));
-    }
-    for u in d.impls.iter().flat_map(|i| &i.uses) {
-        if u.role == Role::Run && d.target(u).is_none() {
-            return Err(format!(
-                "{} runs on `{}`, and `setup` has no object `{}`",
-                u.line(),
-                u.function.module,
-                u.function.module
-            ));
-        }
-        if let Some(by) = u.by.as_ref().filter(|by| d.object(by).is_none()) {
-            return Err(format!(
-                "{} is `by=\"{by}\"`, and `setup` has no object `{by}`",
-                u.line()
-            ));
+    for (module, _) in d.impls.iter().flat_map(|i| &i.modules) {
+        if d.object(module).is_none() {
+            return Err(format!("`module \"{module}\"` names no object of `setup`"));
         }
     }
     let invariants = d.invariants();
@@ -1219,9 +962,6 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
             .then_some(i)
     }) {
         return Err(format!("`invariant \"{}\"` is set twice", found.name));
-    }
-    if d.verbs().is_empty() {
-        return Err("an `impl` has one `run` line or more".into());
     }
     Ok(d)
 }
@@ -1465,8 +1205,6 @@ setup {
 }
 impl "bun" {
   module "origin" "../src/origin.ts"
-  start "origin.clear"
-  run "origin.type" input="origin.typeSchema"
 }
 "#;
 
@@ -1474,7 +1212,6 @@ impl "bun" {
 setup {
   person "user"
   browser "page" count=0 opened=0 {
-    pool "opened"
     invariant "closed" {
       implies {
         eq "page.opened" 0
@@ -1485,9 +1222,6 @@ setup {
 }
 impl "bun" {
   module "page" "../src/page.ts"
-  start "page.clear"
-  run "page.open" input="page.openSchema" pool="opened"
-  run "opened" consume="opened" verb="close"
 }
 "#;
 
@@ -1511,9 +1245,8 @@ impl "bun" {
     #[test]
     fn a_diagram_has_objects_and_the_code() {
         let d = parse(POOL, &config(CONFIG).unwrap()).unwrap();
-        assert_eq!(d.verbs(), [("page", "open"), ("page", "close")]);
         assert_eq!(d.initial("page").unwrap(), "count = 0, opened = 0");
-        assert_eq!(d.impls[0].uses.len(), 3);
+        assert_eq!(d.impls[0].modules.len(), 1);
         let cases = [
             (
                 "impl \"bun\" {",
@@ -1522,13 +1255,15 @@ impl "bun" {
             ),
             (
                 "  module \"page\" \"../src/page.ts\"\n",
-                "  module \"page\" \"../src/page.ts\"\n  module \"tab\" \"../src/tab.ts\"\n  run \"tab.open\"\n",
-                Err("`run \"tab.open\"` runs on `tab`, and `setup` has no object `tab`"),
+                "  module \"page\" \"../src/page.ts\"\n  run \"page.open\"\n",
+                Err(
+                    "`impl \"bun\"` has `module \"<object>\" \"<path>\"` lines, not `run`; the module gives its `reset`, its `url` and its actions",
+                ),
             ),
             (
-                "  run \"page.open\" input=\"page.openSchema\" pool=\"opened\"\n",
-                "  run \"page.open\" by=\"admin\"\n",
-                Err("`run \"page.open\"` is `by=\"admin\"`, and `setup` has no object `admin`"),
+                "  module \"page\" \"../src/page.ts\"\n",
+                "  module \"tab\" \"../src/tab.ts\"\n",
+                Err("`module \"tab\"` names no object of `setup`"),
             ),
         ];
         for (from, to, want) in cases {
@@ -1719,40 +1454,6 @@ impl "bun" {
     }
 
     #[test]
-    fn a_pool_has_the_results_of_a_run_line_for_a_later_run_line() {
-        let d = parse(POOL, &config(CONFIG).unwrap()).unwrap();
-        assert_eq!(d.objects[1].pools, ["opened"]);
-        let lines: Vec<String> = d.impls[0].uses.iter().map(Use::line).collect();
-        assert_eq!(
-            lines,
-            [
-                r#"`start "page.clear"`"#,
-                r#"`run "page.open" input="page.openSchema" pool="opened"`"#,
-                r#"`run "opened" verb="close" consume="opened"`"#,
-            ]
-        );
-        let cases = [
-            (
-                "    pool \"opened\"\n",
-                "    pool \"closers\"\n",
-                Err(
-                    r#"`run "page.open" input="page.openSchema" pool="opened"` names the pool `opened`, and no object of `setup` has `pool "opened"`"#,
-                ),
-            ),
-            (
-                "browser \"page\" count=0 opened=0",
-                "browser \"page\" count=0 opened=\"none\"",
-                Err(
-                    "browser page: `opened` is the count of the values of `pool \"opened\"`, and a count is an integer",
-                ),
-            ),
-        ];
-        for (from, to, want) in cases {
-            assert_eq!(built(POOL, from, to), want.map_err(String::from), "{to}");
-        }
-    }
-
-    #[test]
     fn a_file_of_weft_has_one_form_for_each_name_and_each_value() {
         let value = |found: &str, line: &str| {
             format!("`{found}` of `{line}` is not a value of weft: {FORM}")
@@ -1765,9 +1466,9 @@ impl "bun" {
                 Err(value("user", "person")),
             ),
             (
-                "start \"origin.clear\"",
-                "start origin.clear",
-                Err(value("origin.clear", "start")),
+                "module \"origin\" \"../src/origin.ts\"",
+                "module origin \"../src/origin.ts\"",
+                Err(value("origin", "module")),
             ),
             (
                 "person \"user\"",
@@ -1816,8 +1517,8 @@ impl "bun" {
                 Err(line("person")),
             ),
             (
-                "run \"origin.type\" input=\"origin.typeSchema\"",
-                "run \"origin.type\" \\\n    input=\"origin.typeSchema\"",
+                "module \"origin\" \"../src/origin.ts\"",
+                "module \"origin\" \\\n    \"../src/origin.ts\"",
                 Ok(()),
             ),
         ];
@@ -1828,8 +1529,12 @@ impl "bun" {
 
     #[test]
     fn a_draw_block_has_the_values_of_each_key_of_an_input() {
-        let block = "    pool \"opened\"\n    draw {\n      id 1 2\n      attributes {\n        class \"a\" \"b\"\n        title\n      }\n    }\n";
-        let base = POOL.replacen("    pool \"opened\"\n", block, 1);
+        let block = "    draw {\n      id 1 2\n      attributes {\n        class \"a\" \"b\"\n        title\n      }\n    }\n";
+        let base = POOL.replacen(
+            "  browser \"page\" count=0 opened=0 {\n",
+            &format!("  browser \"page\" count=0 opened=0 {{\n{block}"),
+            1,
+        );
         let d = parse(&base, &config(CONFIG).unwrap()).unwrap();
         let draws: Vec<(String, Vec<Json>, bool)> = d.objects[1]
             .draws
@@ -1875,11 +1580,6 @@ impl "bun" {
                 "    draw {\n",
                 "    draw {\n      n 1\n    }\n    draw {\n",
                 at("has one `draw`"),
-            ),
-            (
-                "  module \"page\" \"../src/page.ts\"\n",
-                "  module \"page\" \"../src/page.ts\"\n  module \"other\" \"../src/other.ts\"\n",
-                Err("no line of `impl \"bun\"` names `module \"other\"`".to_string()),
             ),
         ];
         for (from, to, want) in cases {

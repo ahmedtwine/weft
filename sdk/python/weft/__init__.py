@@ -1,6 +1,7 @@
 import ctypes
 import dataclasses
 import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -11,6 +12,8 @@ from pathlib import Path
 
 ADAPTER = "python"
 START = "start"
+RESET = "reset"
+URL = "url"
 
 
 class _Text(ctypes.Structure):
@@ -66,6 +69,8 @@ def state(key, read):
 
 def _shape(kind):
     origin, args = typing.get_origin(kind), typing.get_args(kind)
+    if origin is typing.Literal:
+        return {"enum": list(args)}
     if origin in (typing.Union, types.UnionType):
         return next((_shape(a) for a in args if a is not type(None)), {})
     if kind is bool:
@@ -80,7 +85,18 @@ def _shape(kind):
         return kind.model_json_schema()
     if dataclasses.is_dataclass(kind) or typing.is_typeddict(kind):
         hints = typing.get_type_hints(kind)
-        return {"type": "object", "title": kind.__name__, "properties": {k: _shape(v) for k, v in hints.items()}}
+        needed = (
+            [f.name for f in dataclasses.fields(kind) if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING]
+            if dataclasses.is_dataclass(kind)
+            else sorted(kind.__required_keys__)
+        )
+        return {
+            "type": "object",
+            "title": kind.__name__,
+            "properties": {k: _shape(v) for k, v in hints.items()},
+            "required": needed,
+            "additionalProperties": False,
+        }
     if kind in (list, set, frozenset, tuple) or origin in (list, set, frozenset, tuple):
         return {"type": "array", "items": _shape(args[0]) if args else {}}
     if kind is dict or origin is dict:
@@ -120,14 +136,6 @@ def _native(value):
 
 def _states():
     return {key: json.loads(json.dumps(read(), default=_native)) for key, (read, _) in _STATES.items()}
-
-
-def _schema(value):
-    if value is None:
-        return None
-    if hasattr(value, "model_json_schema"):
-        return value.model_json_schema()
-    return value
 
 
 class _Lines:
@@ -205,98 +213,93 @@ def _fault(error):
     return f"{type(error).__name__}: {error}{at}"
 
 
+def _input(function):
+    parameters = list(inspect.signature(function).parameters.values())
+    if not parameters:
+        return None
+    hints = typing.get_type_hints(function)
+    if parameters[0].name not in hints:
+        raise RuntimeError(f"`{function.__name__}` names the type of its input")
+    return hints[parameters[0].name]
+
+
+def _given(kind, value):
+    if dataclasses.is_dataclass(kind):
+        return kind(**value)
+    if hasattr(kind, "model_validate"):
+        return kind.model_validate(value)
+    return value
+
+
+def _functions(module):
+    found = [
+        value
+        for name, value in vars(module).items()
+        if inspect.isfunction(value) and value.__module__ == module.__name__ and not name.startswith("_")
+    ]
+    return sorted(found, key=lambda f: f.__code__.co_firstlineno)
+
+
 class _Runner:
     def __init__(self, code, adapter, lines):
         self.lines = lines
-        self.uses = []
-        self.hello = []
+        self.reset = []
+        self.actions = []
+        self.said_reset = []
+        self.said_actions = []
         self.serves = None
         for block in code:
             if block["adapter"] != adapter:
-                self.uses.extend(None for _ in block["uses"])
-                self.hello.extend(None for _ in block["uses"])
                 continue
-            modules = {name: _imported(place) for name, place in block["modules"].items()}
-            for module in modules.values():
+            for name, place in block["modules"].items():
+                module = _imported(place)
                 lines.watch(module)
-
-            def exported(name):
-                module, export = name
-                if not hasattr(modules[module], export):
-                    raise RuntimeError(f"`{module}` exports no `{export}`")
-                return getattr(modules[module], export)
-
-            def schema(name):
-                return (".".join(name), _schema(exported(name))) if name else (None, None)
-
-            if block.get("serve"):
-                given = exported(block["serve"])
-                self.serves = str(given() if callable(given) else given)
-            for line in block["uses"]:
-                run = None if line["from"] else exported(line["function"])
-                if run is not None and not callable(run):
-                    raise RuntimeError(f"`{'.'.join(line['function'])}` is no function")
-                inputs = schema(line["input"])
-                self.hello.append({"input": inputs[1]})
-                self.uses.append({"run": run, "method": line["function"][1], "input": inputs[0]})
-        self.pool = {}
+                for function in _functions(module):
+                    kind = _input(function)
+                    said = {"function": [name, function.__name__], "input": None if kind is None else _shape(kind)}
+                    if function.__name__ == URL:
+                        self.serves = str(function())
+                    elif function.__name__ == RESET:
+                        self.reset.append((function, kind))
+                        self.said_reset.append(said)
+                    else:
+                        self.actions.append((function, kind))
+                        self.said_actions.append(said)
         self.start = {}
-        self.actions = {}
+        self.covered = {}
 
-    def _target(self, use, source):
-        if use["run"] is not None:
-            return use["run"]
-        value = self.pool[source]
-        return getattr(value, use["method"]) if use["method"] else value
-
-    def _called(self, use, call):
-        target = self._target(use, call["from"])
-        try:
-            if use["input"] is None:
-                return {"result": target()}
-            return {"result": target(call["input"])}
-        except Exception as error:
-            return {"thrown": _fault(error)}
-
-    def _reported(self, calls):
-        added = []
+    def _reported(self, calls, step):
         for call in calls:
-            use = self.uses[call["use"]]
-            if use is None:
-                raise RuntimeError(f"the diagram has no line {call['use']} for this runner")
-            ended = self._called(use, call)
-            if "thrown" in ended:
-                return {"thrown": ended["thrown"]}
-            if call["add"] is not None:
-                self.pool[call["add"]] = ended["result"]
-                added.append(call["add"])
-        return {"added": added}
+            function, kind = (self.reset if step == START else self.actions)[call["use"]]
+            try:
+                function() if kind is None else function(_given(kind, call["input"]))
+            except Exception as error:
+                return {"thrown": _fault(error)}
+        return None
 
     def play(self, turn):
         step = turn.get("step")
-        if step == START:
-            self.pool.clear()
         known = None
         if step is not None:
-            known = self.start if step == START else self.actions.setdefault(step, {})
+            known = self.start if step == START else self.covered.setdefault(step, {})
         self.lines.now = {} if known is not None else None
         try:
-            report = self._reported(turn["calls"])
+            thrown = self._reported(turn["calls"], step)
         finally:
             for file, hit in (self.lines.now or {}).items():
                 known.setdefault(file, set()).update(hit)
             self.lines.now = None
-        if "added" not in report:
-            return report
+        if thrown is not None:
+            return thrown
         try:
-            return {"states": _states(), **report}
+            return {"states": _states()}
         except Exception as error:
             return {"thrown": _fault(error)}
 
     def ran(self):
         return {
             "start": self.lines.spans(self.start),
-            "actions": {verb: self.lines.spans(ran) for verb, ran in self.actions.items()},
+            "actions": {verb: self.lines.spans(ran) for verb, ran in self.covered.items()},
         }
 
 
@@ -308,7 +311,13 @@ def run():
             os.environ.get("WEFT_ADAPTER", ADAPTER),
             _Lines(),
         )
-        report = {"uses": runner.hello, "serves": runner.serves, "states": _schemas()}
+        report = {
+            "adapter": os.environ.get("WEFT_ADAPTER", ADAPTER),
+            "start": runner.said_reset,
+            "actions": runner.said_actions,
+            "serves": runner.serves,
+            "states": _schemas(),
+        }
         while not (turn := weft.turn(report)).get("done"):
             report = runner.play(turn)
         said = {"ran": runner.ran()}

@@ -11,9 +11,4 @@ setup {
 }
 impl "go" {
   module "door" "../runners/go/door/door.go"
-  start "door.reset"
-  run "door.open"
-  run "door.close"
-  run "door.lock"
-  run "door.unlock"
 }

@@ -3,6 +3,7 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from typing import Literal
 
 import weft
 
@@ -20,15 +21,8 @@ class Shop:
 shop = Shop()
 weft.state("shop", lambda: shop)
 
-chooseAddressSchema = {
-    "type": "object",
-    "properties": {"address_id": {"type": "string", "enum": ["addr-ana", "addr-ben"]}},
-    "required": ["address_id"],
-    "additionalProperties": False,
-}
 
-
-def call(base, method, path, body, headers=None):
+def _call(base, method, path, body, headers=None):
     request = urllib.request.Request(
         os.environ[base] + path,
         data=json.dumps(body).encode(),
@@ -42,13 +36,18 @@ def call(base, method, path, body, headers=None):
         raise RuntimeError(f"{path}: {error.code} {error.read().decode()}") from error
 
 
-def open_shop():
+def reset():
     for c in CUSTOMERS:
-        call("WEFT_ADDRESSES_URL", "PUT", f"/addresses/{c['address']}", {"owner": c["customer"], "street": c["street"]})
-        call("WEFT_ORDERS_URL", "PUT", f"/orders/{c['order']}", {"customer": c["customer"], "address_id": c["address"]})
+        _call("WEFT_ADDRESSES_URL", "PUT", f"/addresses/{c['address']}", {"owner": c["customer"], "street": c["street"]})
+        _call("WEFT_ORDERS_URL", "PUT", f"/orders/{c['order']}", {"customer": c["customer"], "address_id": c["address"]})
     shop.address_id = "addr-ana"
 
 
-def choose_address(input):
-    call("WEFT_ORDERS_URL", "PATCH", "/orders/o-ana", {"address_id": input["address_id"]}, {"x-customer": "ana"})
-    shop.address_id = input["address_id"]
+@dataclass
+class Choice:
+    address_id: Literal["addr-ana", "addr-ben"]
+
+
+def choose_address(choice: Choice):
+    _call("WEFT_ORDERS_URL", "PATCH", "/orders/o-ana", {"address_id": choice.address_id}, {"x-customer": "ana"})
+    shop.address_id = choice.address_id

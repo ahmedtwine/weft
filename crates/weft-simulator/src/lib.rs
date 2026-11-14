@@ -34,14 +34,13 @@ const START: &str = "start";
 pub struct Start {
     pub line: usize,
     pub input: Option<Generator>,
-    pub pool: Option<String>,
 }
 
 pub struct Action {
+    pub object: String,
     pub verb: String,
     pub line: usize,
     pub drawn: Generator,
-    pub pool: Option<String>,
 }
 
 #[derive(Default)]
@@ -49,14 +48,11 @@ pub struct Hello {
     pub schemas: Vec<(String, Json)>,
     pub start: Vec<Start>,
     pub actions: Vec<Action>,
-    pub sized: bool,
 }
 
 pub struct Call<'a> {
     pub line: usize,
     pub input: &'a Json,
-    pub from: &'a Json,
-    pub add: Option<u64>,
 }
 
 pub enum Turn<'a> {
@@ -139,10 +135,8 @@ struct Step {
 struct Run<'a> {
     d: &'a Diagram,
     steps: Vec<Step>,
-    sized: bool,
     machine: bool,
     runs: u64,
-    added: u64,
     first: State,
     tally: Vec<Tally>,
     found: Option<Vec<Line>>,
@@ -161,7 +155,7 @@ type Members<'m> = [Box<dyn Member + 'm>];
 
 impl Call<'_> {
     fn json(&self) -> Json {
-        json!({ "use": self.line, "input": self.input, "from": self.from, "add": self.add })
+        json!({ "use": self.line, "input": self.input })
     }
 }
 
@@ -228,20 +222,6 @@ impl Run<'_> {
         line.evidence
     }
 
-    fn sized(&self, case: &Case, mut state: State) -> State {
-        if self.sized {
-            for o in &self.d.objects {
-                for pool in o.pools.iter().filter(|pool| o.start.contains_key(*pool)) {
-                    state
-                        .entry(o.name.clone())
-                        .or_default()
-                        .insert(pool.clone(), json!(case.size(pool)));
-                }
-            }
-        }
-        state
-    }
-
     fn started(
         &mut self,
         case: &Case,
@@ -256,10 +236,6 @@ impl Run<'_> {
             hops: Vec::new(),
         };
         self.trace.clear();
-        self.added = 0;
-        for pool in self.d.objects.iter().flat_map(|o| &o.pools) {
-            case.pool(pool)?;
-        }
         for m in members.iter_mut() {
             let inputs = m
                 .hello()
@@ -274,18 +250,10 @@ impl Run<'_> {
                 }
                 inputs => inputs?,
             };
-            let pools: Vec<(String, u64)> = m
-                .hello()
-                .start
-                .iter()
-                .filter_map(|s| s.pool.clone())
-                .zip(self.added..)
-                .collect();
             let report = match inputs.is_empty() {
                 true => m.turn(&Turn::Read)?,
                 false => {
                     line.input = inputs.clone();
-                    let mut adds = pools.iter().map(|(_, add)| *add);
                     let calls: Vec<Call> = m
                         .hello()
                         .start
@@ -294,18 +262,13 @@ impl Run<'_> {
                         .map(|(s, input)| Call {
                             line: s.line,
                             input,
-                            from: &Json::Null,
-                            add: s.pool.as_ref().and_then(|_| adds.next()),
                         })
                         .collect();
                     m.turn(&Turn::Start(&calls))?
                 }
             };
-            let added = match report {
-                Report::State(part, added) => {
-                    real = merged(real, part);
-                    added
-                }
+            match report {
+                Report::State(part, _) => real = merged(real, part),
                 Report::Thrown(error) => {
                     line.hops = heard(members);
                     return Ok(Err(self.thrown(line, &error)));
@@ -316,10 +279,6 @@ impl Run<'_> {
                     return Err(Halt::Invalid);
                 }
             };
-            for (pool, add) in pools.iter().filter(|(_, add)| added.contains(add)) {
-                case.add(pool, Json::from(*add))?;
-            }
-            self.added += pools.len() as u64;
         }
         if members.len() > 1 {
             for m in members.iter_mut() {
@@ -334,7 +293,6 @@ impl Run<'_> {
             }
         }
         line.hops = heard(members);
-        let real = self.sized(case, real);
         let started = self.d.started(&real);
         line.state = real.clone();
         line.evidence = started.clone().unwrap_or_default();
@@ -392,10 +350,6 @@ impl Run<'_> {
             evidence: Vec::new(),
             hops: Vec::new(),
         };
-        let add = members[owner].hello().actions[action]
-            .pool
-            .as_ref()
-            .map(|_| self.added);
         let mut report = Report::Refused;
         let mut empty = false;
         for _ in 0..TRIES {
@@ -409,21 +363,18 @@ impl Run<'_> {
                 }
                 drawn => drawn?,
             };
-            let (from, input) = (&drawn[0], &drawn[1]);
-            line.input = vec![from.clone(), input.clone()];
+            line.input = vec![drawn.clone()];
             let call = Call {
                 line: members[owner].hello().actions[action].line,
-                input,
-                from,
-                add,
+                input: &drawn,
             };
             report = members[owner].turn(&Turn::Run(&verb, &object, call))?;
             if matches!(report, Report::Refused) {
                 case.undo()?;
             }
         }
-        let (mut next, added) = match report {
-            Report::State(part, added) => (merged(real.clone(), part), added),
+        let mut next = match report {
+            Report::State(part, _) => merged(real.clone(), part),
             Report::Refused => {
                 heard(members);
                 if !empty {
@@ -436,12 +387,6 @@ impl Run<'_> {
                 return Ok(Stepped::Failed(self.thrown(line, &error)));
             }
         };
-        if let (Some(pool), Some(add)) = (&members[owner].hello().actions[action].pool, add)
-            && added.contains(&add)
-        {
-            case.add(pool, Json::from(add))?;
-            self.added += 1;
-        }
         for (_, m) in members.iter_mut().enumerate().filter(|(i, _)| *i != owner) {
             match m.turn(&Turn::Read)? {
                 Report::State(part, _) => next = merged(next, part),
@@ -453,7 +398,6 @@ impl Run<'_> {
             }
         }
         line.hops = heard(members);
-        let next = self.sized(case, next);
         self.tally[rule].steps += 1;
         self.tally[rule].checks += 1;
         line.state = next.clone();
@@ -552,7 +496,9 @@ pub fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
         .iter()
         .find(|(v, _)| !tally.iter().any(|t| verb(t) == *v))
     {
-        return Err(format!("`ran` names `{v}`, the verb of no `on` line"));
+        return Err(format!(
+            "`ran` names `{v}`, and no module exports the action `{v}`"
+        ));
     }
     if let Some(v) = tally.iter().filter(|t| t.steps > 0).map(verb).find(|v| {
         !ran.actions
@@ -598,13 +544,7 @@ fn registered<'a>(members: &'a Members, o: &str, k: &str) -> Result<Option<&'a J
 
 fn shaped(d: &Diagram, members: &Members) -> Result<(), String> {
     for (o, k) in d.keys() {
-        let counted = d
-            .objects
-            .iter()
-            .any(|x| x.name == **o && x.pools.contains(k));
-        if !counted {
-            registered(members, o, k)?;
-        }
+        registered(members, o, k)?;
     }
     for (o, k, path) in d.fields() {
         let Some(mut at) = registered(members, o, k)?.and_then(item) else {
@@ -642,38 +582,37 @@ fn types(members: &Members, first: &State) -> BTreeMap<String, String> {
 fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
     shaped(d, members)?;
     if members.iter().all(|m| m.hello().start.is_empty()) {
-        return Err("no runner has a `start`".into());
+        return Err("no module exports a `reset`".into());
     }
-    d.verbs()
-        .into_iter()
-        .map(|(object, verb)| {
-            let found: Vec<(usize, usize)> = members
+    let steps: Vec<Step> = members
+        .iter()
+        .enumerate()
+        .flat_map(|(owner, member)| {
+            member
+                .hello()
+                .actions
                 .iter()
                 .enumerate()
-                .flat_map(|(owner, member)| {
-                    member
-                        .hello()
-                        .actions
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, action)| action.verb == verb)
-                        .map(move |(action, _)| (owner, action))
+                .map(move |(action, a)| Step {
+                    verb: a.verb.clone(),
+                    object: a.object.clone(),
+                    owner,
+                    action,
                 })
-                .collect();
-            match found.as_slice() {
-                [(owner, action)] => Ok(Step {
-                    verb: verb.to_string(),
-                    object: object.to_string(),
-                    owner: *owner,
-                    action: *action,
-                }),
-                [] => Err(format!(
-                    "the verb `{verb}` has no `run` line of the verb `{verb}`"
-                )),
-                _ => Err(format!("the verb `{verb}` has {} `run` lines", found.len())),
-            }
         })
-        .collect()
+        .collect();
+    if let Some(twice) = steps
+        .iter()
+        .enumerate()
+        .find(|(at, s)| steps[..*at].iter().any(|t| t.verb == s.verb))
+        .map(|(_, s)| &s.verb)
+    {
+        return Err(format!("two modules export the action `{twice}`"));
+    }
+    match steps.is_empty() {
+        true => Err("no module exports an action".into()),
+        false => Ok(steps),
+    }
 }
 
 pub fn simulate(
@@ -694,10 +633,8 @@ pub fn simulate(
             })
             .collect(),
         steps,
-        sized: members.iter().any(|m| m.hello().sized),
         machine: false,
         runs: 0,
-        added: 0,
         first: State::new(),
         found: None,
         trace: Vec::new(),
@@ -733,7 +670,7 @@ pub fn simulate(
         .next()
     {
         return Err(format!(
-            "each `run` line runs in one case or more, and `{unrun}` runs in none"
+            "each action runs in one case or more, and `{unrun}` runs in none"
         ));
     }
     let ran = Ran {

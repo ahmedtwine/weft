@@ -7,23 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value as Json, json};
-use weft_parse::{Adapter, Config, Diagram, Name, Role, Start};
+use weft_parse::{Adapter, Config, Diagram, Start};
 use weft_simulator::{Member, Outcome, simulate};
 
 use transport::{HUB, listen};
 
 const WAIT: Duration = Duration::from_secs(60);
-
-fn verbs(d: &Diagram) -> Vec<String> {
-    let mut all: Vec<String> = d
-        .verbs()
-        .into_iter()
-        .map(|(_, verb)| verb.to_string())
-        .collect();
-    all.sort_unstable();
-    all.dedup();
-    all
-}
 
 fn clean(path: &Path) -> String {
     let mut out = PathBuf::new();
@@ -41,26 +30,14 @@ fn clean(path: &Path) -> String {
 
 fn code(d: &Diagram, file: &Path) -> String {
     let dir = file.parent().unwrap_or(Path::new(""));
-    let role = |role: Role| match role {
-        Role::Start => "start",
-        Role::Run => "run",
-    };
     let place = |place: &str| match place.starts_with('.') {
         true => format!("./{}", clean(&dir.join(place))),
         false => place.to_string(),
     };
-    let name = |n: &Name| json!([n.module, n.export]);
     Json::from_iter(d.impls.iter().map(|i| {
         json!({
             "adapter": i.adapter,
             "modules": Json::from_iter(i.modules.iter().map(|(module, at)| (module.clone(), place(at)))),
-            "serve": i.serve.as_ref().map(name),
-            "uses": Json::from_iter(i.uses.iter().map(|u| json!({
-                "role": role(u.role),
-                "function": name(&u.function),
-                "input": u.input.as_ref().map(name),
-                "from": u.from.is_some(),
-            }))),
         })
     }))
     .to_string()
@@ -78,24 +55,18 @@ pub fn run(
     }
     let name = file.display().to_string();
     let at = listen(config.transport.as_ref())?;
-    let uses = d.impls.iter().flat_map(|i| i.uses.clone()).collect();
     let draws = d.objects.iter().flat_map(|o| o.draws.clone()).collect();
-    let pools = d.objects.iter().flat_map(|o| o.pools.clone()).collect();
-    let mut from = 0;
-    let impls = d
-        .impls
-        .iter()
-        .map(|i| {
-            let at = from;
-            from += i.uses.len();
-            (i.adapter.clone(), at)
-        })
-        .collect();
-    let session = HUB.open(&name, code(d, file), impls, uses, draws, pools);
+    let impls = d.impls.iter().map(|i| i.adapter.clone()).collect();
+    let objects = d.objects.iter().map(|o| o.name.clone()).collect();
+    let session = HUB.open(&name, code(d, file), impls, objects, draws);
     let routes: proxy::Routes = Arc::new(
         d.impls
             .iter()
-            .map(|i| (i.app().to_string(), i.adapter.clone()))
+            .flat_map(|i| {
+                i.modules
+                    .iter()
+                    .map(|(m, _)| (m.clone(), i.adapter.clone()))
+            })
             .collect(),
     );
     let mut started = Vec::new();
@@ -112,7 +83,11 @@ pub fn run(
         let Some(line) = line else {
             continue;
         };
-        let proxy = match proxy::open(i.app(), session.clone(), routes.clone()) {
+        let app = i
+            .modules
+            .first()
+            .map_or(i.adapter.as_str(), |(m, _)| m.as_str());
+        let proxy = match proxy::open(app, session.clone(), routes.clone()) {
             Ok(proxy) => proxy,
             Err(e) => {
                 HUB.close(&name);
@@ -153,7 +128,7 @@ pub fn run(
             }
         }
     }
-    let joined = session.members(&verbs(d), WAIT);
+    let joined = session.members(WAIT);
     let outcome = match joined {
         Ok(remotes) => {
             let mut members: Vec<Box<dyn Member>> = remotes
@@ -180,7 +155,6 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::env;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
@@ -188,7 +162,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
-    use weft_simulator::view;
     use weft_wire::{DONE, JOIN, Reader, TURN, Writer, receive, send};
 
     static FILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -208,42 +181,21 @@ setup {
       igte "page.count" 0
     }
   }
+  browser "tab"
 }
 impl "bun" {
   module "page" "../src/page.ts"
-  start "page.clear" input="page.clearSchema"
-  run "page.send" input="page.sendSchema"
-  run "page.reload" input="page.reloadSchema"
+}
+impl "other" {
+  module "tab" "../src/tab.ts"
 }
 "#;
     const NONE: &str = r#"{"type":"object","properties":{},"additionalProperties":false}"#;
     const NUMBER: &str = r#"{"type":"object","properties":{"n":{"type":"integer","minimum":0,"maximum":1000}},"required":["n"],"additionalProperties":false}"#;
 
-    const POOL: &str = r#"
-setup {
-  person "user"
-  browser "page" count=0 opened=0 {
-    pool "opened"
-    invariant "closed" {
-      implies {
-        eq "page.opened" 0
-        eq "page.count" (start)"page.count"
-      }
-    }
-  }
-}
-impl "bun" {
-  module "page" "../src/page.ts"
-  start "page.clear" input="page.clearSchema"
-  run "page.open" input="page.openSchema" pool="opened"
-  run "opened" consume="opened" verb="close"
-}
-"#;
-
     #[derive(Default)]
     struct Page {
         count: i64,
-        added: HashMap<u64, i64>,
     }
 
     type App = Arc<Mutex<Page>>;
@@ -304,10 +256,8 @@ impl "bun" {
     }
 
     fn state(app: &App) -> Json {
-        let (count, added) = app.lock().map_or((0, Vec::new()), |page| {
-            (page.count, page.added.keys().copied().collect())
-        });
-        json!({ "states": { "page.count": count }, "added": added })
+        let count = app.lock().map_or(0, |page| page.count);
+        json!({ "states": { "page.count": count } })
     }
 
     fn runner(
@@ -332,7 +282,6 @@ impl "bun" {
         let code: Json = serde_json::from_str(&joined).map_err(|e| e.to_string())?;
         assert_eq!(code[0]["adapter"], "bun");
         assert_eq!(code[0]["modules"]["page"], "./src/page.ts");
-        assert_eq!(code[0]["uses"][0]["function"], json!(["page", "clear"]));
         let mut report = hello;
         loop {
             let turn: Json = serde_json::from_str(&link.said(TURN, &report.to_string())?)
@@ -357,49 +306,6 @@ impl "bun" {
         }
     }
 
-    fn opener(app: &App, turn: &Json, closes: fn(i64) -> bool) -> Json {
-        let call = &turn["calls"][0];
-        if let Ok(mut page) = app.lock() {
-            match (
-                turn["step"].as_str(),
-                call["add"].as_u64(),
-                call["from"].as_u64(),
-            ) {
-                (Some("start"), ..) => *page = Page::default(),
-                (Some("open"), Some(add), _) => {
-                    let n = call["input"]["n"].as_i64().unwrap_or(0);
-                    page.count += n;
-                    page.added.insert(add, n);
-                }
-                (Some("close"), _, Some(from)) => {
-                    let n = page.added.remove(&from).unwrap_or(i64::MAX);
-                    page.count -= if closes(n) { n } else { 0 };
-                }
-                _ => {}
-            }
-        }
-        state(app)
-    }
-
-    fn pooled(name: &str, play: Play) -> Result<Outcome, String> {
-        let config = weft_parse::config(&format!(
-            "{CONFIG}{}\nadapter \"default\" cases=100\n",
-            socket(name)
-        ))
-        .map_err(|e| e.to_string())?;
-        let d = weft_parse::parse(POOL, &config).map_err(|e| e.to_string())?;
-        let at = listen(config.transport.as_ref())?;
-        let hello = json!({ "uses": [input(None, NONE), input(Some("open"), NUMBER), {}], "states": { "page.count": { "type": "integer" } } });
-        let name = file();
-        let joined = name.clone();
-        let opener = thread::spawn(move || {
-            runner(&at, &joined, hello, App::default(), play, ["open", "close"])
-        });
-        let outcome = run(&config, &d, Path::new(&name), None);
-        opener.join().map_err(|_| "a runner panics")??;
-        outcome
-    }
-
     fn sender(app: &App, turn: &Json) -> Json {
         match (
             turn["step"].as_str(),
@@ -416,31 +322,32 @@ impl "bun" {
         if turn["step"] == "reload" {
             set(app, |n| if n > 5 { -1 } else { n });
         }
-        json!({ "states": {}, "added": [] })
+        json!({ "states": {} })
     }
 
     fn reloader_with_no_change(_: &App, _: &Json) -> Json {
-        json!({ "states": {}, "added": [] })
+        json!({ "states": {} })
     }
 
     fn schema(text: &str) -> Json {
         serde_json::from_str(text).unwrap_or_default()
     }
 
-    fn input(verb: Option<&str>, text: &str) -> Json {
-        let mut schema = schema(text);
-        if let Some(verb) = verb {
-            schema["weft"] = json!({ "verb": verb });
-        }
-        json!({ "input": schema })
+    fn function(name: &str, text: &str) -> Json {
+        json!({ "function": ["page", name], "input": schema(text) })
     }
 
     fn sends() -> Json {
-        json!({ "uses": [input(None, NONE), input(Some("send"), NUMBER), null], "states": { "page.count": { "type": "integer" } } })
+        json!({
+            "adapter": "bun",
+            "start": [function("clear", NONE)],
+            "actions": [function("send", NUMBER)],
+            "states": { "page.count": { "type": "integer" } },
+        })
     }
 
     fn reloads() -> Json {
-        json!({ "uses": [null, null, input(Some("reload"), NONE)] })
+        json!({ "adapter": "other", "actions": [{ "function": ["tab", "reload"], "input": schema(NONE) }] })
     }
 
     fn two(transport: &str, draw: &str, sends: Json, reload: Play) -> Result<Outcome, String> {
@@ -494,7 +401,7 @@ impl "bun" {
             [
                 ("start".to_string(), String::new()),
                 ("send to=page".to_string(), "n=6".to_string()),
-                ("reload to=page".to_string(), String::new()),
+                ("reload to=tab".to_string(), String::new()),
             ]
         );
         Ok(())
@@ -516,43 +423,6 @@ impl "bun" {
             reloader,
         )?;
         assert_eq!(steps(&o)[1].1, "n=7");
-        Ok(())
-    }
-
-    #[test]
-    fn an_added_result_of_a_pool_runs_in_a_later_step() -> Result<(), String> {
-        let o = pooled("pool", |app, turn| opener(app, turn, |_| true))?;
-        assert!(!o.failed);
-        assert!(o.tally.iter().all(|t| t.steps > 0), "each verb runs");
-        assert!(
-            o.trace
-                .iter()
-                .any(|l| view(&l.state).contains("opened = 1")),
-            "the state has the count of the pool"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn a_failing_case_with_a_pool_shrinks_to_one_added_result() -> Result<(), String> {
-        let o = pooled("leak", |app, turn| opener(app, turn, |n| n <= 5))?;
-        assert!(o.failed);
-        assert_eq!(
-            steps(&o),
-            [
-                ("start".to_string(), String::new()),
-                ("open to=page".to_string(), "n=6".to_string()),
-                ("close to=page".to_string(), "0".to_string()),
-            ]
-        );
-        assert_eq!(
-            o.trace[2].evidence,
-            [
-                "invariant \"closed\" { implies(eq(page.opened, 0), eq(page.count, start(page.count))) }",
-                "eq(0, 0) = true",
-                "eq(page.count, start(page.count)) = eq(6, 0) = false"
-            ]
-        );
         Ok(())
     }
 

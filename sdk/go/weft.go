@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -21,13 +22,13 @@ const (
 )
 
 type export struct {
+	name     string
 	function reflect.Value
-	schema   json.RawMessage
 }
 
 type Module struct {
 	file    string
-	exports map[string]export
+	exports []export
 }
 
 func NewModule() *Module {
@@ -35,12 +36,7 @@ func NewModule() *Module {
 	if found, err := filepath.EvalSymlinks(file); err == nil {
 		file = found
 	}
-	return &Module{file: file, exports: map[string]export{}}
-}
-
-func (m *Module) Schema(name, schema string) *Module {
-	m.exports[name] = export{schema: json.RawMessage(schema)}
-	return m
+	return &Module{file: file}
 }
 
 func (m *Module) Function(name string, function any) *Module {
@@ -48,14 +44,15 @@ func (m *Module) Function(name string, function any) *Module {
 	if value.Kind() != reflect.Func || value.Type().NumIn() > 1 || value.Type().NumOut() > 2 {
 		panic(fmt.Sprintf("weft: `%s` is a func with at most one input and two results", name))
 	}
-	m.exports[name] = export{function: value}
+	m.exports = slices.DeleteFunc(m.exports, func(e export) bool { return e.name == name })
+	m.exports = append(m.exports, export{name: name, function: value})
 	return m
 }
 
 type used struct {
 	function reflect.Value
 	module   int
-	input    bool
+	name     string
 }
 
 type read struct {
@@ -135,27 +132,20 @@ func (r *runner) observed() (result map[string]any, fault string) {
 }
 
 type runner struct {
-	states  []read
-	serves  string
-	modules []*Module
-	uses    []*used
-	hello   []any
-	start   map[int]map[string]bool
-	actions map[string]map[int]map[string]bool
-}
-
-type line struct {
-	Role     string     `json:"role"`
-	Function [2]string  `json:"function"`
-	Input    *[2]string `json:"input"`
-	From     bool       `json:"from"`
+	states      []read
+	serves      string
+	modules     []*Module
+	reset       []*used
+	actions     []*used
+	saidReset   []any
+	saidActions []any
+	started     map[int]map[string]bool
+	covered     map[string]map[int]map[string]bool
 }
 
 type block struct {
 	Adapter string            `json:"adapter"`
 	Modules map[string]string `json:"modules"`
-	Uses    []line            `json:"uses"`
-	Serve   *[2]string        `json:"serve"`
 }
 
 type failure struct {
@@ -174,78 +164,49 @@ func place(at string) string {
 	return path
 }
 
+func input(function reflect.Value) any {
+	if function.Type().NumIn() == 0 {
+		return nil
+	}
+	return schemaOf(function.Type().In(0), map[reflect.Type]bool{})
+}
+
 func newRunner(code []block, name string, modules []*Module) (*runner, error) {
-	r := &runner{modules: modules, start: map[int]map[string]bool{}, actions: map[string]map[int]map[string]bool{}}
+	r := &runner{modules: modules, started: map[int]map[string]bool{}, covered: map[string]map[int]map[string]bool{}}
 	for _, b := range code {
 		if b.Adapter != name {
-			for range b.Uses {
-				r.uses = append(r.uses, nil)
-				r.hello = append(r.hello, nil)
-			}
 			continue
 		}
-		found := map[string]int{}
-		for module, at := range b.Modules {
+		names := slices.Sorted(maps.Keys(b.Modules))
+		for _, module := range names {
+			at := b.Modules[module]
 			index := slices.IndexFunc(modules, func(m *Module) bool { return m.file == place(at) })
 			if index < 0 {
 				return nil, fmt.Errorf("the runner has no module `%s`", at)
 			}
-			found[module] = index
 			for _, s := range states {
 				if s.file == modules[index].file {
 					r.states = append(r.states, s)
 				}
 			}
-		}
-		exported := func(n [2]string) (int, export, error) {
-			index, ok := found[n[0]]
-			if !ok {
-				return 0, export{}, fmt.Errorf("`impl %q` has no `module %q`", name, n[0])
+			for _, e := range modules[index].exports {
+				u := &used{function: e.function, module: index, name: e.name}
+				said := map[string]any{"function": []string{module, e.name}, "input": input(e.function)}
+				switch e.name {
+				case "url":
+					result, fail := called(e.function, nil)
+					if fail != nil {
+						return nil, errors.New(fail.message)
+					}
+					r.serves = fmt.Sprint(result)
+				case "reset":
+					r.reset = append(r.reset, u)
+					r.saidReset = append(r.saidReset, said)
+				default:
+					r.actions = append(r.actions, u)
+					r.saidActions = append(r.saidActions, said)
+				}
 			}
-			e, ok := modules[index].exports[n[1]]
-			if !ok {
-				return 0, export{}, fmt.Errorf("`%s` exports no `%s`", n[0], n[1])
-			}
-			return index, e, nil
-		}
-		schema := func(n *[2]string) (string, json.RawMessage, error) {
-			if n == nil {
-				return "", nil, nil
-			}
-			_, e, err := exported(*n)
-			if err == nil && e.schema == nil {
-				err = fmt.Errorf("`%s.%s` is no schema", n[0], n[1])
-			}
-			return n[0] + "." + n[1], e.schema, err
-		}
-		if b.Serve != nil {
-			_, e, err := exported(*b.Serve)
-			if err != nil {
-				return nil, err
-			}
-			result, fail := called(e.function, nil)
-			if fail != nil {
-				return nil, errors.New(fail.message)
-			}
-			r.serves = fmt.Sprint(result)
-		}
-		for _, l := range b.Uses {
-			if l.From {
-				return nil, errors.New("the go runner calls named functions, and a `from` or `consume` line needs a runner with objects")
-			}
-			index, e, err := exported(l.Function)
-			if err != nil {
-				return nil, err
-			}
-			if !e.function.IsValid() {
-				return nil, fmt.Errorf("`%s.%s` is no function", l.Function[0], l.Function[1])
-			}
-			_, input, err := schema(l.Input)
-			if err != nil {
-				return nil, err
-			}
-			r.hello = append(r.hello, map[string]json.RawMessage{"input": input})
-			r.uses = append(r.uses, &used{function: e.function, module: index, input: input != nil})
 		}
 	}
 	return r, nil
@@ -303,7 +264,6 @@ func panicked() string {
 type call struct {
 	Use   int             `json:"use"`
 	Input json.RawMessage `json:"input"`
-	Add   *uint64         `json:"add"`
 }
 
 type turn struct {
@@ -322,33 +282,26 @@ func (r *runner) note(ran map[int]map[string]bool, u *used) {
 
 func (r *runner) play(t turn) (any, error) {
 	ran := map[int]map[string]bool{}
+	list := r.actions
 	switch {
 	case t.Step == nil:
 	case *t.Step == start:
-		ran = r.start
+		ran, list = r.started, r.reset
 	default:
-		if r.actions[*t.Step] == nil {
-			r.actions[*t.Step] = map[int]map[string]bool{}
+		if r.covered[*t.Step] == nil {
+			r.covered[*t.Step] = map[int]map[string]bool{}
 		}
-		ran = r.actions[*t.Step]
+		ran = r.covered[*t.Step]
 	}
-	added := []uint64{}
 	for _, c := range t.Calls {
-		if c.Use >= len(r.uses) || r.uses[c.Use] == nil {
-			return nil, fmt.Errorf("the diagram has no line %d for this runner", c.Use)
+		if c.Use >= len(list) {
+			return nil, fmt.Errorf("the runner has no function %d", c.Use)
 		}
-		u := r.uses[c.Use]
+		u := list[c.Use]
 		r.note(ran, u)
-		input := c.Input
-		if !u.input {
-			input = nil
-		}
-		_, fail := called(u.function, input)
+		_, fail := called(u.function, c.Input)
 		switch {
 		case fail == nil:
-			if c.Add != nil {
-				added = append(added, *c.Add)
-			}
 		case fail.refused:
 			return map[string]bool{"refused": true}, nil
 		default:
@@ -359,7 +312,7 @@ func (r *runner) play(t turn) (any, error) {
 	if fault != "" {
 		return map[string]string{"thrown": fault}, nil
 	}
-	return map[string]any{"states": found, "added": added}, nil
+	return map[string]any{"states": found}, nil
 }
 
 type span struct {
@@ -395,10 +348,10 @@ func (r *runner) spans(ran map[int]map[string]bool) []span {
 
 func (r *runner) ran() map[string]any {
 	actions := map[string][]span{}
-	for verb, ran := range r.actions {
+	for verb, ran := range r.covered {
 		actions[verb] = r.spans(ran)
 	}
-	return map[string]any{"start": r.spans(r.start), "actions": actions}
+	return map[string]any{"start": r.spans(r.started), "actions": actions}
 }
 
 func played(modules []*Module) (map[string]any, error) {
@@ -426,7 +379,7 @@ func played(modules []*Module) (map[string]any, error) {
 	for _, s := range r.states {
 		keys[s.key] = s.schema
 	}
-	var report any = map[string]any{"uses": r.hello, "serves": r.serves, "states": keys}
+	var report any = map[string]any{"adapter": name, "start": r.saidReset, "actions": r.saidActions, "serves": r.serves, "states": keys}
 	for {
 		message, err := json.Marshal(report)
 		if err != nil {

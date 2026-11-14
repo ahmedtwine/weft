@@ -5,31 +5,10 @@ const KEY: &str = "weft";
 #[derive(Clone, Copy, PartialEq)]
 enum Type {
     Text,
-    Flag,
     Count,
 }
 
-const KEYS: [(&str, Type, &str); 8] = [
-    (
-        "verb",
-        Type::Text,
-        "The branch of an input that is one action of this verb.",
-    ),
-    (
-        "pool",
-        Type::Text,
-        "Each drawn value of this part goes to this Hegel pool.",
-    ),
-    (
-        "from",
-        Type::Text,
-        "This part is a value of this Hegel pool.",
-    ),
-    (
-        "consume",
-        Type::Flag,
-        "A `from` draw removes the value from the pool.",
-    ),
+const KEYS: [(&str, Type, &str); 4] = [
     (
         "maxLeaves",
         Type::Count,
@@ -50,10 +29,6 @@ const KEYS: [(&str, Type, &str); 8] = [
 
 #[derive(Clone, Default, PartialEq)]
 pub struct Annotation {
-    pub verb: Option<String>,
-    pub pool: Option<String>,
-    pub from: Option<String>,
-    pub consume: bool,
     pub max_leaves: Option<u64>,
     pub max_depth: Option<u64>,
     pub grammar: Option<String>,
@@ -74,7 +49,6 @@ impl Annotation {
                 .ok_or_else(wrong)?;
             let fits = match ty {
                 Type::Text => value.is_string(),
-                Type::Flag => value.is_boolean(),
                 Type::Count => value.is_u64(),
             };
             if !fits {
@@ -84,10 +58,6 @@ impl Annotation {
         let text = |key: &str| fields.get(key).and_then(Json::as_str).map(String::from);
         let count = |key: &str| fields.get(key).and_then(Json::as_u64);
         Ok(Annotation {
-            verb: text("verb"),
-            pool: text("pool"),
-            from: text("from"),
-            consume: fields.get("consume").and_then(Json::as_bool) == Some(true),
             max_leaves: count("maxLeaves"),
             max_depth: count("maxDepth"),
             grammar: text("grammar"),
@@ -102,7 +72,6 @@ pub fn schema() -> String {
         .map(|(key, ty, description)| {
             let ty = match ty {
                 Type::Text => "\"type\": \"string\"",
-                Type::Flag => "\"type\": \"boolean\"",
                 Type::Count => "\"type\": \"integer\",\n      \"minimum\": 0",
             };
             format!(
@@ -123,7 +92,6 @@ pub fn types() -> String {
         .map(|(key, ty, _)| {
             let ty = match ty {
                 Type::Text => "string",
-                Type::Flag => "boolean",
                 Type::Count => "number",
             };
             format!("  {key}?: {ty};\n")

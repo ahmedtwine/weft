@@ -11,9 +11,4 @@ setup {
 }
 impl "python" {
   module "door" "../runners/python/door/door.py"
-  start "door.reset"
-  run "door.open"
-  run "door.close"
-  run "door.lock"
-  run "door.unlock"
 }

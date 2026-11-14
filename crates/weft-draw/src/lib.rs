@@ -866,9 +866,6 @@ setup {
 impl "bun" {
   module "origin" "../src/origin.ts"
   module "page" "../src/page.ts"
-  start "origin.clear"
-  run "origin.type"
-  run "page.click"
 }
 "#;
 

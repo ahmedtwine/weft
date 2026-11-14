@@ -4,7 +4,7 @@ import inspector from "node:inspector";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { schemas, states } from "./state";
-import { type Call, done, join, type Name, type Report, type Turn, turn, type Use } from "./weft";
+import { type Call, done, join, type Report, type Turn, turn } from "./weft";
 
 type Schema = {
   _zod: unknown;
@@ -12,12 +12,7 @@ type Schema = {
   safeParse: (value: unknown) => { success: boolean; data?: unknown };
 };
 type Run = (input?: unknown) => unknown;
-type Used = {
-  role: Use["role"];
-  run?: Run;
-  method: string;
-  input?: Schema;
-};
+type Used = { run: Run; input?: Schema };
 type Called = { result: unknown } | { thrown: string };
 type Served = { file: string; counts: Int32Array; marks: [number, number][]; starts: number[] };
 type Range = { startOffset: number; endOffset: number; count: number };
@@ -26,6 +21,8 @@ type Code = Map<string, Set<number>>;
 
 const ADAPTER = Bun.env.WEFT_ADAPTER ?? "bun";
 const START = "start";
+const RESET = "reset";
+const URL = "url";
 const SAMPLES = 8;
 const SOURCE = new RegExp(
   `^${process.cwd().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?!.*node_modules/).*\\.[cm]?[jt]sx?$`
@@ -176,53 +173,36 @@ const loaded = async () => {
   const { z } = await import(Bun.resolveSync("zod", dirname(Bun.resolveSync(placed(first), process.cwd()))));
   const json = (schema: Schema | undefined, io: "input" | "output") =>
     schema && z.toJSONSchema(schema, { io, unrepresentable: () => ({ not: {} }) });
-  const uses: (Used | null)[] = [];
+  const start: Used[] = [];
+  const actions: Used[] = [];
+  const said = { start: [] as unknown[], actions: [] as unknown[] };
   let serves: string | undefined;
-  for (const { adapter, modules: places, uses: lines, serve } of code) {
-    if (adapter !== ADAPTER) {
-      uses.push(...lines.map(() => null));
-      continue;
-    }
-    const modules: Record<string, Record<string, unknown>> = Object.fromEntries(
-      await Promise.all(
-        Object.entries(places).map(async ([module, place]) => [
-          module,
-          await import(placed(place)),
-        ])
-      )
-    );
-    const exported = ([module, name]: Name) => {
-      if (!(name in modules[module])) throw new Error(`\`${module}\` exports no \`${name}\``);
-      return modules[module][name];
-    };
-    const schema = (name: Name | null) => {
-      if (!name) return undefined;
-      const found = exported(name) as Schema;
-      if (!found?._zod) throw new Error(`\`${name.join(".")}\` is no Zod schema`);
-      return found;
-    };
-    if (serve) {
-      const given = exported(serve);
-      serves = String(typeof given === "function" ? await given() : given);
-    }
-    for (const line of lines) {
-      const run = line.from ? undefined : exported(line.function);
-      if (!line.from && typeof run !== "function")
-        throw new Error(`\`${line.function.join(".")}\` is no function`);
-      uses.push({
-        role: line.role,
-        run: run as Run | undefined,
-        method: line.function[1],
-        input: schema(line.input),
-      });
+  for (const { adapter, modules: places } of code) {
+    if (adapter !== ADAPTER) continue;
+    for (const [module, place] of Object.entries(places)) {
+      const exports: Record<string, unknown> = await import(placed(place));
+      for (const [name, run] of Object.entries(exports)) {
+        if (typeof run !== "function") continue;
+        const input = exports[`${name}Schema`] as Schema | undefined;
+        const each = { function: [module, name], input: json(input, "input") ?? null };
+        if (name === URL) serves = String(await run());
+        else if (name === RESET) {
+          start.push({ run: run as Run, input });
+          said.start.push(each);
+        } else {
+          actions.push({ run: run as Run, input });
+          said.actions.push(each);
+        }
+      }
     }
   }
   const hello = {
+    adapter: ADAPTER,
     serves,
     states: schemas((type) => json(type as Schema, "output")),
-    uses: uses.map((use) => use && { input: json(use.input, "input") }),
+    ...said,
   };
-  return { uses, hello };
+  return { start, actions, hello };
 };
 
 const accepted = (schema: Schema, value: unknown): [unknown] | [] => {
@@ -249,16 +229,10 @@ const thrower = (error: Error) => {
 const ran = { start: new Map() as Code, actions: new Map<string, Code>() };
 
 const played = async () => {
-  const { uses, hello } = await loaded();
-  const pool = new Map<number, unknown>();
-  const target = (use: Used, from: number | null): Run => {
-    if (use.run) return use.run;
-    const value = pool.get(from ?? -1) as Run & Record<string, Run>;
-    return use.method ? value[use.method].bind(value) : value;
-  };
-  const called = async (use: Used, call: Call, input: unknown): Promise<Called> => {
+  const { start, actions, hello } = await loaded();
+  const called = async (use: Used, input: unknown): Promise<Called> => {
     const [result, ...thrown] = await Promise.resolve()
-      .then(() => target(use, call.from)(input))
+      .then(() => use.run(input))
       .then(
         (result) => [result],
         (error: unknown) => [undefined, error]
@@ -268,20 +242,16 @@ const played = async () => {
     if (!(error instanceof Error)) return { thrown: String(error) };
     return { thrown: `${error.name}: ${error.message}${thrower(error)}` };
   };
+  let uses = actions;
   const reported = async (calls: Call[], inputs: unknown[][]): Promise<Report> => {
-    const added: number[] = [];
     for (const [at, call] of calls.entries()) {
       const use = uses[call.use];
-      if (!use) throw new Error(`the diagram has no line ${call.use} for \`impl "${ADAPTER}"\``);
+      if (!use) throw new Error(`the runner has no function ${call.use}`);
       const [input] = inputs[at];
-      const ended = await called(use, call, input);
+      const ended = await called(use, input);
       if ("thrown" in ended) return ended;
-      if (call.add !== null) {
-        pool.set(call.add, ended.result);
-        added.push(call.add);
-      }
     }
-    return { states: {}, added };
+    return { states: {} };
   };
   const stepped = async (calls: Call[], known?: Code): Promise<Report> => {
     const inputs = calls.map(({ use, input }) => {
@@ -300,11 +270,9 @@ const played = async () => {
     }
   };
   const play = ({ step, calls }: Turn): Promise<Report> => {
+    uses = step === START ? start : actions;
     if (step === undefined) return stepped(calls);
-    if (step === START) {
-      pool.clear();
-      return stepped(calls, ran.start);
-    }
+    if (step === START) return stepped(calls, ran.start);
     const known = ran.actions.get(step) ?? new Map();
     ran.actions.set(step, known);
     return stepped(calls, known);

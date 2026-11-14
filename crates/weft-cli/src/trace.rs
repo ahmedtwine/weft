@@ -51,7 +51,7 @@ pub fn code(d: &Diagram, o: &Outcome) -> Code {
                 .map(|(k, v)| row(o, &to, k, v))
                 .collect();
             Some(Step {
-                from: d.caller(&verb).unwrap_or(&to).to_string(),
+                from: d.caller().unwrap_or(&to).to_string(),
                 calls: calls(&after.hops),
                 changed,
                 verb,

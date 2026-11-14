@@ -19,11 +19,6 @@ const FORMATS: [(&str, Generator); 9] = [
     ("date-time", Generator::Datetime),
 ];
 
-pub struct Branch {
-    pub verb: Option<String>,
-    pub generator: Generator,
-}
-
 fn any() -> Generator {
     let subtree = || Box::new(Generator::Subtree(ANY.into()));
     Generator::Recursive(
@@ -252,25 +247,14 @@ pub fn live(g: Generator) -> Option<Generator> {
 
 struct Read<'a> {
     defs: Option<&'a Json>,
-    pools: &'a [String],
     open: Vec<(String, bool)>,
 }
 
 impl<'a> Read<'a> {
-    fn new(node: &'a Json, pools: &'a [String]) -> Read<'a> {
+    fn new(node: &'a Json) -> Read<'a> {
         Read {
             defs: node.get("$defs"),
-            pools,
             open: vec![(ROOT.to_string(), false)],
-        }
-    }
-
-    fn pool(&self, name: &str, pool: &str) -> Result<String, String> {
-        match self.pools.iter().any(|known| known == pool) {
-            true => Ok(pool.to_string()),
-            false => Err(format!(
-                "the field `{name}` names the pool `{pool}`, and no object of `setup` has `pool \"{pool}\"`"
-            )),
         }
     }
 
@@ -326,14 +310,9 @@ impl<'a> Read<'a> {
 
     fn choice(&mut self, name: &str, node: &Json) -> Result<Generator, String> {
         let meta = Annotation::of(node)?;
-        let body = match (&meta.from, &meta.grammar) {
-            (Some(pool), _) => Generator::Pool(self.pool(name, pool)?, meta.consume),
-            (None, Some(grammar)) => Generator::Grammar(grammar.clone(), meta.start.clone()),
-            (None, None) => self.shaped(name, node)?,
-        };
-        match &meta.pool {
-            Some(pool) => Ok(Generator::Add(self.pool(name, pool)?, Box::new(body))),
-            None => Ok(body),
+        match &meta.grammar {
+            Some(grammar) => Ok(Generator::Grammar(grammar.clone(), meta.start.clone())),
+            None => self.shaped(name, node),
         }
     }
 
@@ -494,65 +473,18 @@ impl<'a> Read<'a> {
     }
 }
 
-pub fn whole(name: &str, node: &Json, pools: &[String]) -> Result<Generator, String> {
-    let mut read = Read::new(node, pools);
+pub fn whole(name: &str, node: &Json) -> Result<Generator, String> {
+    let mut read = Read::new(node);
     let body = read.choice(name, node)?;
     read.recursive(name, ROOT, node, body)
-}
-
-pub fn branches(name: &str, node: &Json, pools: &[String]) -> Result<Vec<Branch>, String> {
-    let target = |option: &'_ Json| -> Result<Option<String>, String> {
-        let def = option
-            .get("$ref")
-            .and_then(Json::as_str)
-            .and_then(|path| path.strip_prefix(DEFS))
-            .and_then(|key| node.get("$defs")?.get(key));
-        Ok(Annotation::of(option)?.verb.or(def
-            .map(Annotation::of)
-            .transpose()?
-            .and_then(|meta| meta.verb)))
-    };
-    let options: Vec<&Json> = ["anyOf", "oneOf"]
-        .iter()
-        .find_map(|k| node.get(k).and_then(Json::as_array))
-        .map_or(Vec::new(), |all| all.iter().collect());
-    let verbs = options
-        .iter()
-        .map(|option| target(option))
-        .collect::<Result<Vec<_>, _>>()?;
-    let parts: Vec<(Option<String>, &Json)> = match verbs.iter().any(Option::is_some) {
-        true => verbs.into_iter().zip(options).collect(),
-        false => vec![(Annotation::of(node)?.verb, node)],
-    };
-    let whole = parts.len() == 1;
-    parts
-        .into_iter()
-        .map(|(verb, part)| {
-            let mut read = Read::new(node, pools);
-            let body = read.choice(name, part)?;
-            match (whole, read.open.first()) {
-                (false, Some((_, true))) => Err(format!(
-                    "the schema `{name}` is in a value of one of its branches, and each branch with a verb is one input"
-                )),
-                _ => Ok(Branch {
-                    verb,
-                    generator: read.recursive(name, ROOT, node, body)?,
-                }),
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn pools() -> Vec<String> {
-        vec!["ids".to_string()]
-    }
-
     fn read(schema: Json) -> Result<Generator, String> {
-        whole("input", &schema, &pools())
+        whole("input", &schema)
     }
 
     fn draw(path: &str, values: &[&str]) -> Draw {
@@ -565,27 +497,6 @@ mod tests {
 
     #[test]
     fn each_annotation_gives_the_generator_of_its_hegel_part() {
-        let id = json!({ "type": "integer", "minimum": 1, "maximum": 9 });
-        let annotated = |weft: Json| {
-            let mut node = id.clone();
-            node["weft"] = weft;
-            read(node)
-        };
-        assert_eq!(
-            annotated(json!({ "pool": "ids" })),
-            Ok(Generator::Add(
-                "ids".into(),
-                Box::new(Generator::Integer(1, 9))
-            ))
-        );
-        assert_eq!(
-            annotated(json!({ "from": "ids" })),
-            Ok(Generator::Pool("ids".into(), false))
-        );
-        assert_eq!(
-            annotated(json!({ "from": "ids", "consume": true })),
-            Ok(Generator::Pool("ids".into(), true))
-        );
         assert_eq!(
             read(
                 json!({ "type": "string", "weft": { "grammar": "start: \"a\"", "start": "start" } })
@@ -617,11 +528,8 @@ mod tests {
     #[test]
     fn weft_refuses_an_annotation_that_it_does_not_know() {
         let wrong = |weft: Json| read(json!({ "type": "integer", "weft": weft })).unwrap_err();
-        assert!(
-            wrong(json!({ "pool": "names" })).contains("no object of `setup` has `pool \"names\"`")
-        );
-        assert!(wrong(json!({ "pol": "ids" })).contains("is not an annotation of weft"));
-        assert!(wrong(json!({ "consume": "yes" })).contains("is not an annotation of weft"));
+        assert!(wrong(json!({ "pool": "names" })).contains("is not an annotation of weft"));
+        assert!(wrong(json!({ "maxDepth": "deep" })).contains("is not an annotation of weft"));
         assert!(wrong(json!("send")).contains("is not an annotation of weft"));
     }
 
@@ -685,33 +593,6 @@ mod tests {
                     ),
                 ])
             )])
-        );
-    }
-
-    #[test]
-    fn each_branch_with_a_verb_is_one_input() {
-        let schema = json!({
-            "oneOf": [
-                { "type": "object", "properties": {}, "weft": { "verb": "send" } },
-                { "type": "object", "properties": { "id": { "type": "integer", "weft": { "from": "ids" } } }, "required": ["id"], "weft": { "verb": "remove" } },
-                { "type": "object", "properties": {} }
-            ]
-        });
-        let found: Vec<(Option<String>, Generator)> = branches("input", &schema, &pools())
-            .unwrap()
-            .into_iter()
-            .map(|b| (b.verb, b.generator))
-            .collect();
-        assert_eq!(
-            found,
-            [
-                (Some("send".into()), Generator::Record(Vec::new())),
-                (
-                    Some("remove".into()),
-                    Generator::Record(vec![("id".into(), Generator::Pool("ids".into(), false))])
-                ),
-                (None, Generator::Record(Vec::new())),
-            ]
         );
     }
 }

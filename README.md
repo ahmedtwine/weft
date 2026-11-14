@@ -1,6 +1,6 @@
 # weft
 
-A distributed runner for property tests, built on [Hegel](https://hegel.dev) and [KDL](https://kdl.dev). A test names its objects, the invariants that hold over their state, and the functions of each runner that change it. Hegel draws every sequence of those functions with inputs from their schemas, checks each invariant after each step, and shrinks a failing case to the fewest steps and the least values, as `quint run --invariant` does for a Quint spec.
+A distributed runner for property tests, built on [Hegel](https://hegel.dev) and [KDL](https://kdl.dev). A test names its objects, the invariants that hold over their state, and the module of each object. Hegel draws every sequence of the functions of those modules with inputs from their native types, checks each invariant after each step, and shrinks a failing case to the fewest steps and the least values, as `quint run --invariant` does for a Quint spec.
 
 ## Run the examples
 
@@ -45,24 +45,24 @@ setup {
 }
 impl "bun" {
   module "door" "../runners/bun/door/door.ts"
-  start "door.reset"
-  run "door.open"
-  run "door.close"
-  run "door.lock"
-  run "door.unlock"
 }
 ```
 
-| Line                                 | Gives                                                                                   |
-| ------------------------------------ | --------------------------------------------------------------------------------------- |
-| `<kind> "<object>"`                  | An object; a kind is any word with `style "<kind>" icon="<lucide icon>"` in `weft.kdl`  |
-| `invariant "<name>" { <condition> }` | A Quint builtin over the state: `eq`, `implies`, `forall`, `exists` and more            |
-| `module "<object>" "<path>"`         | The file of the functions of that object                                                |
-| `start "<object>.<function>"`        | The function that sets the state before each case                                       |
-| `run "<object>.<function>"`          | An action; its verb is the name of the function                                         |
-| `input="<object>.<schema>"`          | The schema Hegel draws each input from                                                  |
-| `by="<person>"`                      | The person who calls the action in the diagram                                          |
-| `serve "<app>.<function>"`           | The function that gives the url of an HTTP app                                          |
+| Line                                 | Gives                                                                                  |
+| ------------------------------------ | -------------------------------------------------------------------------------------- |
+| `<kind> "<object>"`                  | An object; a kind is any word with `style "<kind>" icon="<lucide icon>"` in `weft.kdl` |
+| `invariant "<name>" { <condition> }` | A Quint builtin over the state: `eq`, `implies`, `forall`, `exists` and more           |
+| `impl "<lang>" { module … }`         | The runner of a language and the module of each of its objects                         |
+
+An `impl` block holds `module` lines only. The module gives the rest:
+
+| Export of the module | Is                                                                     |
+| -------------------- | ---------------------------------------------------------------------- |
+| `reset`              | The function that sets the state before each case                      |
+| `url`                | The function that gives the url of an HTTP app                         |
+| each other function  | An action; its name is the verb, the type of its input the schema Hegel draws from |
+
+The input of an action is the native type of its parameter: a `JsonSchema` type in Rust, a struct in Go, a dataclass or `Literal` in Python, and the zod schema `<function>Schema` in TypeScript. The first person of `setup` calls each action in the diagram.
 
 `examples/runners/bun/door/door.ts`:
 
@@ -96,7 +96,7 @@ The Diagram tab draws the state after `start` as a table of type, key and value 
 
 ## A shop of four apps
 
-`tests/parcel.weft.kdl` runs four apps, one in each runner: `orders` in Go keeps each order in Redis in a testcontainer, `addresses` in Rust keeps the address book, `shop` in Python lets a customer choose the address of an order, and `courier` in TypeScript ships an order to its address. An app reaches another app at `WEFT_<APP>_URL`; weft forwards each request and draws it in the color of the app that sends it.
+`tests/parcel.weft.kdl` runs four apps, one in each runner: `orders` in Go keeps each order in Redis in a testcontainer, `addresses` in Rust keeps the address book, `shop` in Python lets a customer choose the address of an order, and `courier` in TypeScript ships an order to its address. An app reaches another app at `WEFT_<MODULE>_URL`; weft forwards each request and draws it in the color of the app that sends it.
 
 The orders app checks that the customer owns the order, and the address book trusts the courier, so a customer can choose the address of another customer:
 
@@ -114,21 +114,36 @@ api "courier" {
 ✕ tests/parcel.weft.kdl · "a parcel goes only to the address of its own customer" · courier.parcels[0].customer = "ana" ≠ courier.parcels[0].recipient = "ben"
 ```
 
-The test fails by design: Hegel finds `choose_address(addr-ben)` and then `ship(o-ana)`.
+The test fails by design: Hegel finds `choose_address(addr-ben)` and then `ship(o-ana)`. Its `impl` blocks hold one `module` line each:
+
+```kdl
+impl "go" {
+  module "orders" "../runners/go/parcel/orders.go"
+}
+impl "rust" {
+  module "addresses" "../runners/rust/parcel/addresses.rs"
+}
+impl "python" {
+  module "shop" "../runners/python/parcel/shop.py"
+}
+impl "bun" {
+  module "courier" "../runners/bun/parcel/courier.ts"
+}
+```
 
 ## Runners
 
 `weft.kdl` names one `runner` line for each language. Weft starts each command with these variables:
 
-| Variable         | Value                                                                 |
-| ---------------- | --------------------------------------------------------------------- |
-| `WEFT_DIAGRAM`   | The path of the test                                                  |
-| `WEFT_ADAPTER`   | The name of the `impl` block                                          |
-| `WEFT_TRANSPORT` | The socket or url of weft                                             |
-| `WEFT_LIB`       | The path of libweft, the C ABI over Hegel                             |
-| `WEFT_<APP>_URL` | The url of the app of a `serve "<app>.<function>"` line, through weft |
+| Variable            | Value                                                            |
+| ------------------- | ---------------------------------------------------------------- |
+| `WEFT_DIAGRAM`      | The path of the test                                             |
+| `WEFT_ADAPTER`      | The name of the `impl` block                                     |
+| `WEFT_TRANSPORT`    | The socket or url of weft                                        |
+| `WEFT_LIB`          | The path of libweft, the C ABI over Hegel                        |
+| `WEFT_<MODULE>_URL` | The url of the app of a module with a `url` export, through weft |
 
-The `start` lines run in the order of the `impl` blocks.
+The `reset` functions run in the order of the `impl` blocks.
 
 ## License
 

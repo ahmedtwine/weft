@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::Display;
 use std::fs;
@@ -26,15 +26,19 @@ pub enum Failure {
 
 type Call = Arc<dyn Fn(Json) -> Result<Json, Failure> + Send + Sync>;
 
-enum Export {
-    Function(Call),
-    Schema(Json),
+const RESET: &str = "reset";
+const URL: &str = "url";
+
+struct Export {
+    name: String,
+    call: Call,
+    input: Option<Json>,
 }
 
 pub struct Module {
     file: PathBuf,
     source: String,
-    exports: HashMap<String, Export>,
+    exports: Vec<Export>,
 }
 
 #[macro_export]
@@ -46,6 +50,7 @@ macro_rules! module {
 
 pub trait Function<M>: Send + Sync + 'static {
     fn call(&self, input: Json) -> Result<Json, Failure>;
+    fn input(&self) -> Option<Json>;
 }
 
 fn returned<T: Serialize, E: Display>(result: Result<T, E>) -> Result<Json, Failure> {
@@ -64,18 +69,26 @@ where
     fn call(&self, _: Json) -> Result<Json, Failure> {
         returned(self())
     }
+
+    fn input(&self) -> Option<Json> {
+        None
+    }
 }
 
 impl<F, I, T, E> Function<(I,)> for F
 where
     F: Fn(I) -> Result<T, E> + Send + Sync + 'static,
-    I: DeserializeOwned,
+    I: DeserializeOwned + JsonSchema,
     T: Serialize,
     E: Display,
 {
     fn call(&self, input: Json) -> Result<Json, Failure> {
         let input = serde_json::from_value(input).map_err(|_| Failure::Refused)?;
         returned(self(input))
+    }
+
+    fn input(&self) -> Option<Json> {
+        serde_json::to_value(schemars::schema_for!(I)).ok()
     }
 }
 
@@ -89,26 +102,27 @@ impl Module {
         Module {
             file: fs::canonicalize(&found).unwrap_or(found),
             source: file.to_string(),
-            exports: HashMap::new(),
+            exports: Vec::new(),
         }
     }
 
-    pub fn schema(mut self, name: &str, schema: Json) -> Module {
-        self.exports.insert(name.into(), Export::Schema(schema));
-        self
-    }
-
     pub fn function<M>(mut self, name: &str, function: impl Function<M>) -> Module {
+        let input = function.input();
         let call: Call = Arc::new(move |input| function.call(input));
-        self.exports.insert(name.into(), Export::Function(call));
+        self.exports.retain(|e| e.name != name);
+        self.exports.push(Export {
+            name: name.into(),
+            call,
+            input,
+        });
         self
     }
 }
 
 struct Used {
-    run: Option<Call>,
-    function: (usize, String),
-    input: bool,
+    module: usize,
+    name: String,
+    call: Call,
 }
 
 type Read = Box<dyn Fn() -> Result<Json, String> + Send>;
@@ -150,10 +164,11 @@ type Ran = BTreeSet<(usize, String)>;
 struct Runner {
     files: Vec<PathBuf>,
     states: Vec<String>,
-    uses: Vec<Option<Used>>,
+    start: Vec<Used>,
+    actions: Vec<Used>,
     hello: Json,
-    start: Ran,
-    actions: BTreeMap<String, Ran>,
+    started: Ran,
+    ran: BTreeMap<String, Ran>,
 }
 
 static FAULT: Mutex<Option<String>> = Mutex::new(None);
@@ -163,103 +178,72 @@ fn place(at: &str) -> PathBuf {
     fs::canonicalize(&path).unwrap_or(path)
 }
 
-fn name(node: &Json) -> Option<(String, String)> {
-    Some((
-        node.get(0)?.as_str()?.to_string(),
-        node.get(1)?.as_str()?.to_string(),
-    ))
-}
-
 impl Runner {
     fn new(code: &Json, adapter: &str, modules: Vec<Module>) -> Result<Runner, String> {
         let files: Vec<PathBuf> = modules.iter().map(|m| m.file.clone()).collect();
-        let mut uses = Vec::new();
-        let mut hello = Vec::new();
+        let (mut start, mut actions) = (Vec::new(), Vec::new());
+        let (mut said_start, mut said_actions) = (Vec::new(), Vec::new());
         let mut serves = None;
-        let mut used: BTreeSet<usize> = BTreeSet::new();
-        for i in code.as_array().into_iter().flatten() {
-            let lines = i["uses"].as_array().map_or(&[][..], Vec::as_slice);
-            if i["adapter"] != adapter {
-                uses.extend(lines.iter().map(|_| None));
-                hello.extend(lines.iter().map(|_| Json::Null));
-                continue;
-            }
-            let mut found: HashMap<String, usize> = HashMap::new();
+        let mut sources = Vec::new();
+        let mine = code
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|i| i["adapter"] == adapter);
+        for i in mine {
             for (module, at) in i["modules"].as_object().into_iter().flatten() {
                 let at = at.as_str().unwrap_or_default();
                 let index = files
                     .iter()
                     .position(|file| *file == place(at))
                     .ok_or_else(|| format!("the runner has no module `{at}`"))?;
-                found.insert(module.clone(), index);
-                used.insert(index);
-            }
-            let export = |(module, name): (String, String)| {
-                let index = *found
-                    .get(&module)
-                    .ok_or_else(|| format!("`impl \"{adapter}\"` has no `module \"{module}\"`"))?;
-                modules[index]
-                    .exports
-                    .get(&name)
-                    .map(|e| (index, name.clone(), e))
-                    .ok_or_else(|| format!("`{module}` exports no `{name}`"))
-            };
-            let schema = |node: &Json| match name(node) {
-                None => Ok(None),
-                Some(n) => match export(n.clone())? {
-                    (_, _, Export::Schema(json)) => {
-                        Ok(Some((format!("{}.{}", n.0, n.1), json.clone())))
+                sources.push(modules[index].source.clone());
+                for e in &modules[index].exports {
+                    let used = Used {
+                        module: index,
+                        name: e.name.clone(),
+                        call: e.call.clone(),
+                    };
+                    let said = json!({ "function": [module, e.name], "input": e.input });
+                    match e.name.as_str() {
+                        URL => {
+                            let given = Self::called(&e.call, Json::Null).map_err(|f| match f {
+                                Failure::Error(m) | Failure::Fault(m) => m,
+                                Failure::Refused => "`url` takes no input".into(),
+                            })?;
+                            serves = Some(given.as_str().map_or(given.to_string(), String::from));
+                        }
+                        RESET => {
+                            start.push(used);
+                            said_start.push(said);
+                        }
+                        _ => {
+                            actions.push(used);
+                            said_actions.push(said);
+                        }
                     }
-                    _ => Err(format!("`{}.{}` is no schema", n.0, n.1)),
-                },
-            };
-            if let Some(n) = name(&i["serve"]) {
-                match export(n.clone())? {
-                    (_, _, Export::Function(call)) => {
-                        let given = Self::called(call, Json::Null).map_err(|f| match f {
-                            Failure::Error(m) | Failure::Fault(m) => m,
-                            Failure::Refused => "the `serve` function takes no input".into(),
-                        })?;
-                        serves = Some(given.as_str().map_or(given.to_string(), String::from));
-                    }
-                    _ => return Err(format!("`{}.{}` is no function", n.0, n.1)),
                 }
-            }
-            for line in lines {
-                if line["from"] == true {
-                    return Err("the rust runner calls named functions, and a `from` or `consume` line needs a runner with objects".into());
-                }
-                let n = name(&line["function"]).ok_or("a line names no function")?;
-                let (index, function, run) = match export(n.clone())? {
-                    (index, function, Export::Function(call)) => (index, function, call.clone()),
-                    _ => return Err(format!("`{}.{}` is no function", n.0, n.1)),
-                };
-                let input = schema(&line["input"])?;
-                hello.push(json!({ "input": input.as_ref().map(|(_, j)| j) }));
-                uses.push(Some(Used {
-                    run: Some(run),
-                    function: (index, function),
-                    input: input.is_some(),
-                }));
             }
         }
-        let sources: Vec<&str> = used.iter().map(|i| modules[*i].source.as_str()).collect();
         let registered = STATES.lock().map_err(|e| e.to_string())?;
-        let mine: Vec<&Registered> = registered
+        let states: Vec<&Registered> = registered
             .iter()
-            .filter(|s| sources.contains(&s.source))
+            .filter(|s| sources.iter().any(|source| source == s.source))
             .collect();
         Ok(Runner {
             hello: json!({
-                "uses": hello,
+                "adapter": adapter,
                 "serves": serves,
-                "states": mine.iter().map(|s| (s.key.clone(), s.schema.clone())).collect::<serde_json::Map<_, _>>(),
+                "start": said_start,
+                "actions": said_actions,
+                "states": states.iter().map(|s| (s.key.clone(), s.schema.clone())).collect::<serde_json::Map<_, _>>(),
             }),
-            states: mine.iter().map(|s| s.key.clone()).collect(),
+            states: states.iter().map(|s| s.key.clone()).collect(),
             files,
-            uses,
-            start: Ran::new(),
-            actions: BTreeMap::new(),
+            start,
+            actions,
+            started: Ran::new(),
+            ran: BTreeMap::new(),
         })
     }
 
@@ -281,26 +265,18 @@ impl Runner {
     fn play(&mut self, turn: &Json) -> Result<Json, String> {
         let step = turn["step"].as_str();
         let mut ran = Ran::new();
-        let mut added = Vec::new();
         for call in turn["calls"].as_array().into_iter().flatten() {
             let at = call["use"].as_u64().unwrap_or(u64::MAX) as usize;
-            let used = self
-                .uses
-                .get(at)
-                .and_then(Option::as_ref)
-                .ok_or_else(|| format!("the diagram has no line {at} for this runner"))?;
-            let input = match used.input {
-                true => call["input"].clone(),
-                false => Json::Null,
+            let list = match step {
+                Some(START) => &self.start,
+                _ => &self.actions,
             };
-            ran.insert(used.function.clone());
-            let run = used.run.as_ref().ok_or("a line with no function")?;
-            match Self::called(run, input) {
-                Ok(_) => {
-                    if let Some(add) = call["add"].as_u64() {
-                        added.push(add);
-                    }
-                }
+            let used = list
+                .get(at)
+                .ok_or_else(|| format!("the runner has no function {at}"))?;
+            ran.insert((used.module, used.name.clone()));
+            match Self::called(&used.call, call["input"].clone()) {
+                Ok(_) => {}
                 Err(Failure::Refused) => return Ok(json!({ "refused": true })),
                 Err(Failure::Error(message) | Failure::Fault(message)) => {
                     return Ok(json!({ "thrown": message }));
@@ -309,11 +285,11 @@ impl Runner {
         }
         match step {
             None => {}
-            Some(START) => self.start.extend(ran),
-            Some(verb) => self.actions.entry(verb.into()).or_default().extend(ran),
+            Some(START) => self.started.extend(ran),
+            Some(verb) => self.ran.entry(verb.into()).or_default().extend(ran),
         }
         Ok(match states(&self.states) {
-            Ok(states) => json!({ "states": states, "added": added }),
+            Ok(states) => json!({ "states": states }),
             Err(e) => json!({ "thrown": e }),
         })
     }
@@ -347,11 +323,11 @@ impl Runner {
 
     fn ran(&self) -> Json {
         let actions: serde_json::Map<String, Json> = self
-            .actions
+            .ran
             .iter()
             .map(|(verb, ran)| (verb.clone(), self.spans(ran)))
             .collect();
-        json!({ "start": self.spans(&self.start), "actions": actions })
+        json!({ "start": self.spans(&self.started), "actions": actions })
     }
 }
 
