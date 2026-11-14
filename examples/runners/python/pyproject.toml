@@ -1,0 +1,11 @@
+[project]
+name = "door"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["weft-sdk"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+weft-sdk = { path = "../../../sdk/python", editable = true }

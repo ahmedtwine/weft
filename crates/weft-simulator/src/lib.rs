@@ -8,6 +8,19 @@ use weft_hegel::{Case, Engine, Halt, INTERESTING, INVALID, OVERRUN, VALID};
 use weft_parse::{Diagram, Ran, Seen, Span, State, shown};
 
 pub use hub::{Hub, Peer, Remote, Session};
+
+#[derive(Clone, Debug)]
+pub struct Hop {
+    pub from: String,
+    pub to: String,
+    pub method: String,
+    pub path: String,
+    pub body: String,
+    pub status: u16,
+    pub reply: String,
+    pub sent: usize,
+    pub answered: usize,
+}
 pub use weft_hegel::Generator;
 
 const STEPS: i64 = 20;
@@ -62,6 +75,13 @@ pub trait Member {
     fn hello(&self) -> &Hello;
     fn turn(&mut self, turn: &Turn) -> Result<Report, String>;
     fn finish(&mut self) -> Result<Ran, String>;
+    fn hops(&mut self) -> Vec<Hop> {
+        Vec::new()
+    }
+}
+
+fn heard(members: &mut Members) -> Vec<Hop> {
+    members.iter_mut().flat_map(|m| m.hops()).collect()
 }
 
 #[derive(Clone)]
@@ -70,6 +90,7 @@ pub struct Line {
     pub input: Vec<Json>,
     pub state: State,
     pub evidence: Vec<String>,
+    pub hops: Vec<Hop>,
 }
 
 impl Line {
@@ -214,6 +235,7 @@ impl Run<'_> {
             input: Vec::new(),
             state: State::new(),
             evidence: Vec::new(),
+            hops: Vec::new(),
         };
         self.trace.clear();
         self.added = 0;
@@ -266,8 +288,12 @@ impl Run<'_> {
                     real = merged(real, part);
                     added
                 }
-                Report::Thrown(error) => return Ok(Err(self.thrown(line, &error))),
+                Report::Thrown(error) => {
+                    line.hops = heard(members);
+                    return Ok(Err(self.thrown(line, &error)));
+                }
                 Report::Refused => {
+                    heard(members);
                     self.refused.insert(START.into());
                     return Err(Halt::Invalid);
                 }
@@ -277,6 +303,19 @@ impl Run<'_> {
             }
             self.added += pools.len() as u64;
         }
+        if members.len() > 1 {
+            for m in members.iter_mut() {
+                match m.turn(&Turn::Read)? {
+                    Report::State(part, _) => real = merged(real, part),
+                    _ => {
+                        return Err(Halt::Fatal(
+                            "the runner answers `read` with no state".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        line.hops = heard(members);
         let real = self.sized(case, real);
         let started = self.d.started(&real);
         line.state = real.clone();
@@ -336,6 +375,7 @@ impl Run<'_> {
             input: Vec::new(),
             state: State::new(),
             evidence: Vec::new(),
+            hops: Vec::new(),
         };
         let add = members[owner].hello().actions[action]
             .pool
@@ -370,12 +410,16 @@ impl Run<'_> {
         let (mut next, added) = match report {
             Report::State(part, added) => (merged(real.clone(), part), added),
             Report::Refused => {
+                heard(members);
                 if !empty {
                     self.refused.insert(verb);
                 }
                 return Ok(Stepped::Refused);
             }
-            Report::Thrown(error) => return Ok(Stepped::Failed(self.thrown(line, &error))),
+            Report::Thrown(error) => {
+                line.hops = heard(members);
+                return Ok(Stepped::Failed(self.thrown(line, &error)));
+            }
         };
         if let (Some(pool), Some(add)) = (&members[owner].hello().actions[action].pool, add)
             && added.contains(&add)
@@ -393,6 +437,7 @@ impl Run<'_> {
                 }
             }
         }
+        line.hops = heard(members);
         let next = self.sized(case, next);
         self.tally[rule].steps += 1;
         self.tally[rule].checks += 1;

@@ -10,7 +10,12 @@ export type Use = {
   error: Name | null;
   from: boolean;
 };
-export type Code = { adapter: string; modules: Record<string, string>; uses: Use[] }[];
+export type Code = {
+  adapter: string;
+  modules: Record<string, string>;
+  uses: Use[];
+  serve: Name | null;
+}[];
 export type Call = { use: number; input: unknown; from: number | null; add: number | null };
 export type Turn = { step?: string; calls: Call[]; done?: true };
 export type Report =

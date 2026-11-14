@@ -4,7 +4,7 @@ use std::process;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use weft_wire::{Reader, Short, Writer, receive, send};
+use crate::{Reader, Short, Writer, receive, send};
 
 const AT: &str = "WEFT_TRANSPORT";
 const UNIX: &str = "unix:";

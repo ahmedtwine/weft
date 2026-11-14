@@ -1,13 +1,11 @@
 #![allow(non_camel_case_types, clippy::missing_safety_doc)]
 
-mod client;
-
 use std::ffi::c_char;
 use std::ptr;
 
 use weft_draw::{Code, Theme};
 use weft_parse::Diagram;
-use weft_wire::{DONE, JOIN, TURN};
+use weft_wire::{DONE, JOIN, TURN, client};
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct weft_string_t {

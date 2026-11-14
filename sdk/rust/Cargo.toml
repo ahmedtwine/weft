@@ -1,0 +1,12 @@
+[package]
+name = "weft-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde = "1"
+serde_json = "1"
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing"] }
+weft-wire = { path = "../../crates/weft-wire" }

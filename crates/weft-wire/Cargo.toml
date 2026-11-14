@@ -3,3 +3,6 @@ name = "weft-wire"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+ureq = { version = "3.5.1", default-features = false }

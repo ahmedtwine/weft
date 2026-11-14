@@ -3,11 +3,14 @@
 A distributed runner for property tests, built on [Hegel](https://hegel.dev) and [KDL](https://kdl.dev).
 
 
-Adding support for runners in multiple languages.
+Runners:
 
-Currently supported:
-- Typescript
-- Rust
+| Language   | SDK          | Start                                              |
+| ---------- | ------------ | -------------------------------------------------- |
+| TypeScript | `sdk/`       | `adapter "bun"`, or `runner "<name>" harness="bun"` |
+| Rust       | `sdk/rust`   | `runner "<name>" command="<binary>"`               |
+| Go         | `sdk/go`     | `runner "<name>" command="<binary>"`               |
+| Python     | `sdk/python` | `runner "<name>" command="python -m weft"`         |
 
 ## Diagram
 
@@ -113,6 +116,55 @@ impl "bun" {
 ```sh
 bunx weft            
 bunx weft --ui       # browse the diagrams at http://127.0.0.1:7357
+```
+
+## Runners and apps
+
+`weft.kdl` names one `runner` line for each `impl` block. Weft starts the command of each line for each diagram, with these variables:
+
+| Variable              | Value                                          |
+| --------------------- | ---------------------------------------------- |
+| `WEFT_DIAGRAM`        | The path of the diagram                        |
+| `WEFT_ADAPTER`        | The name of the `impl` block                   |
+| `WEFT_TRANSPORT`      | The socket or url of weft                      |
+| `WEFT_LIB`            | The path of libweft                            |
+| `WEFT_<NAME>_URL`     | The url of the app of `impl "<name>"`, through weft |
+
+An app that serves HTTP names its url with a `serve` line. Weft forwards each request between apps, records it as a step of the trace, and draws it in the diagram in the color of the app that sends it. The `start` lines run in the order of the `impl` blocks.
+
+```kdl
+impl "authz" {
+  module "authz" "../../apps/authz/authz/authz.go"
+  serve "authz.url"
+  start "authz.reset"
+  read "authz.authz" output="authz.authzSchema"
+}
+```
+
+## Examples
+
+`examples/` is a mise monorepo project. `mise //examples:test` builds weft and each runner, then runs each diagram. `mise //examples:report` serves the report.
+
+| Path                                                 | Shows                                                                 |
+| ---------------------------------------------------- | --------------------------------------------------------------------- |
+| `examples/runners/{bun,rust,go,python}`              | The door of this README in each language                              |
+| `examples/tests/test_single_runner`                  | One diagram for each door runner                                      |
+| `examples/apps/{authz,vault,admin,tool}`             | Four apps in Go, Rust, Python and TypeScript; authz runs SpiceDB in a testcontainer |
+| `examples/tests/test_multiple_runner`                | One invariant over the four apps; weft finds the cross-tenant read    |
+
+The multiple runner test fails by design. The admin of `acme` points the store of `acme` at the credential of `globex`, and the tool reads that credential for an analyst of `acme`:
+
+```kdl
+invariant "a credential is read only for its own tenant" {
+  implies {
+    neq "vault.read_owner" ""
+    eq "vault.read_owner" "tool.tenant"
+  }
+}
+```
+
+```text
+✕ tests/test_multiple_runner/credential.weft.kdl · "a credential is read only for its own tenant" · vault.read_owner = "globex" ≠ tool.tenant = "acme"
 ```
 
 ## License

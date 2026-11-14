@@ -1,3 +1,5 @@
+pub mod client;
+
 use std::io::{self, Read, Write};
 
 pub const JOIN: u8 = 0;

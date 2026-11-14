@@ -135,24 +135,57 @@ fn headline(config: &Config, o: &Outcome, took: Duration) -> String {
     )
 }
 
-fn tables(o: &Outcome) -> Vec<Table> {
+fn tables(d: &Diagram, o: &Outcome) -> Vec<Table> {
+    let named = trace::checked(d);
+    let shown = |state: &weft_parse::State| {
+        let kept: weft_parse::State = state
+            .iter()
+            .map(|(object, pairs)| {
+                (
+                    object.clone(),
+                    pairs
+                        .iter()
+                        .filter(|(key, _)| {
+                            named.is_empty() || named.contains(&(object.clone(), key.to_string()))
+                        })
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                )
+            })
+            .filter(|(_, pairs): &(String, weft_parse::Pairs)| !pairs.is_empty())
+            .collect();
+        view(&kept)
+    };
+    let cut = |text: String| {
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        match text.chars().count() > INPUT {
+            true => text.chars().take(INPUT).chain(['…']).collect(),
+            false => text,
+        }
+    };
     let trace = Table {
         head: &["step", "action", "input", "state", "check"],
         rows: o
             .trace
             .iter()
             .enumerate()
-            .map(|(k, l)| {
-                vec![
+            .flat_map(|(k, l)| {
+                iter::once(vec![
                     k.to_string(),
                     l.step(),
-                    match l.input().chars().count() > INPUT {
-                        true => l.input().chars().take(INPUT).chain(['…']).collect(),
-                        false => l.input(),
-                    },
-                    view(&l.state),
-                    l.evidence.join(" · "),
-                ]
+                    cut(l.input()),
+                    shown(&l.state),
+                    trace::brief(&l.evidence).join(" · "),
+                ])
+                .chain(trace::sorted(&l.hops).into_iter().map(|h| {
+                    vec![
+                        String::new(),
+                        format!("↳ {} → {} {} {}", h.from, h.to, h.method, h.path),
+                        cut(trace::compact(&h.body)),
+                        cut(format!("{} {}", h.status, trace::compact(&h.reply))),
+                        String::new(),
+                    ]
+                }))
             })
             .collect(),
     };
@@ -203,6 +236,7 @@ fn rules(d: &Diagram) -> Vec<String> {
         .flat_map(|o| {
             o.rules
                 .iter()
+                .filter(|rule| rule.checks(&o.name))
                 .map(|rule| format!("{} · {}", o.name, rule.source()))
                 .chain(
                     o.invariants
@@ -221,14 +255,14 @@ fn summary(path: &str, d: &Diagram, config: &Config, o: &Outcome, took: Duration
             false => '✓',
         },
         match (o.failed, o.trace.last()) {
-            (true, Some(last)) => format!(" · {}", last.evidence.join(" · ")),
+            (true, Some(last)) => format!(" · {}", trace::brief(&last.evidence).join(" · ")),
             _ => String::new(),
         }
     );
     [head, format!("  {}", headline(config, o, took))]
         .into_iter()
         .chain(rules(d).into_iter().map(|rule| format!("  {rule}")))
-        .chain(tables(o).iter().flat_map(Table::text))
+        .chain(tables(d, o).iter().flat_map(Table::text))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -247,8 +281,8 @@ fn section(
     Ok(format!(
         r#"<section><h2>{}</h2><ul class="unstyled">{rules}</ul>{}<div class="d">{}</div><details><summary>{}</summary><pre>{}</pre></details></section>"#,
         escape(path),
-        trace::panel(o)?,
-        weft_draw::svg(d, theme, &trace::code(&o.ran, path)?)?,
+        trace::panel(d, o)?,
+        weft_draw::svg(d, theme, &trace::code(o, path)?)?,
         escape(path),
         escape(src)
     ))

@@ -1,0 +1,29 @@
+monorepo_root = true
+
+[monorepo]
+config_roots = [
+  "examples",
+  "examples/runners/*",
+  "examples/apps/*",
+]
+
+[tools]
+rust = { version = "1.98.1", components = "clippy" }
+bun = "1.4.0"
+
+[tasks.build]
+description = "Build the weft command and libweft"
+run = "cargo build --release --locked -p weft-cli -p weft-c"
+sources = ["Cargo.toml", "Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml"]
+outputs = ["target/release/weft"]
+
+[tasks.install]
+description = "Install the packages of the bun SDK and link it for the examples"
+run = ["bun install --frozen-lockfile", "bun link"]
+
+[tasks.test]
+description = "Run the tests and clippy of the Cargo workspace"
+run = [
+  "cargo clippy --workspace --all-targets --locked -- -D warnings",
+  "cargo test --workspace --locked",
+]

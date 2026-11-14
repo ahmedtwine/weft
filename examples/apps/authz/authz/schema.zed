@@ -1,0 +1,25 @@
+definition user {}
+
+definition service {}
+
+definition tenant {
+	relation admin: user | service
+	relation member: user | service
+	permission is_member = member + admin
+	permission manage = admin
+}
+
+definition credential {
+	relation tenant: tenant
+	relation owner: user | service
+	relation reader: service
+	permission read = reader + (owner & tenant->is_member)
+}
+
+definition store {
+	relation tenant: tenant
+	relation querier: tenant#member | user
+	permission query = querier & tenant->is_member
+	permission manage = tenant->manage
+	permission read = query + manage
+}

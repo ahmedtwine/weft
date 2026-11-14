@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 serde_json = "1"
+ureq = { version = "3.5.1", default-features = false }
 weft-parse = { path = "../weft-parse" }
 weft-simulator = { path = "../weft-simulator" }
 weft-wire = { path = "../weft-wire" }

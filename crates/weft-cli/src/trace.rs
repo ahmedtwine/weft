@@ -1,9 +1,9 @@
 use std::{cmp::Reverse, collections::BTreeSet, ffi::OsStr, fs, iter, path::Path};
 
 use serde_json::{Value as Json, json};
-use weft_draw::{Card, Code};
-use weft_parse::{Ran, Span, State};
-use weft_simulator::Outcome;
+use weft_draw::{Call, Card, Code};
+use weft_parse::{Diagram, Ran, Span, State};
+use weft_simulator::{Hop, Outcome};
 
 use crate::escape;
 
@@ -157,8 +157,28 @@ fn card(spans: &[Span], ran: &Ran, path: &str) -> Result<Option<Card>, String> {
         })
 }
 
-pub fn code(ran: &Ran, path: &str) -> Result<Code, String> {
+pub fn code(o: &Outcome, path: &str) -> Result<Code, String> {
+    let ran = &o.ran;
+    let mut action_calls: Vec<(String, Vec<Call>)> = Vec::new();
+    for l in o.trace.iter().skip(1) {
+        if let Some((verb, _)) = &l.action
+            && !action_calls.iter().any(|(v, _)| v == verb)
+        {
+            action_calls.push((verb.clone(), calls(&l.hops)));
+        }
+    }
+    let failed = o.failed.then(|| o.trace.last()).flatten().map(|l| {
+        (
+            l.action
+                .as_ref()
+                .map_or(START.to_string(), |(verb, _)| verb.clone()),
+            brief(&l.evidence),
+        )
+    });
     Ok(Code {
+        failed,
+        start_calls: o.trace.first().map_or(Vec::new(), |l| calls(&l.hops)),
+        action_calls,
         start: card(&ran.start, ran, path)?,
         actions: ran
             .actions
@@ -191,7 +211,8 @@ fn cell(value: &Json, changed: bool) -> String {
     }
 }
 
-pub fn panel(o: &Outcome) -> Result<String, String> {
+pub fn panel(d: &Diagram, o: &Outcome) -> Result<String, String> {
+    let named = checked(d);
     let icon =
         |name: &str| weft_draw::icon(name).ok_or_else(|| format!("`{name}` is not a Lucide icon"));
     let (pass, fail) = (icon(PASS)?, icon(FAIL)?);
@@ -201,6 +222,9 @@ pub fn panel(o: &Outcome) -> Result<String, String> {
         .iter()
         .flat_map(|l| &l.state)
         .flat_map(|(object, pairs)| pairs.keys().map(move |key| (object, key)))
+        .filter(|(object, key)| {
+            named.is_empty() || named.contains(&(object.to_string(), key.to_string()))
+        })
         .collect();
     let head: String = keys
         .iter()
@@ -237,7 +261,7 @@ pub fn panel(o: &Outcome) -> Result<String, String> {
             format!(
                 r#"<tr{class}><td><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{drawn}</svg> {k}</td><td>{}</td>{input}{state}<td>{}</td></tr>"#,
                 escape(&l.step()),
-                l.evidence
+                brief(&l.evidence)
                     .iter()
                     .map(|e| escape(e))
                     .collect::<Vec<_>>()
@@ -248,4 +272,136 @@ pub fn panel(o: &Outcome) -> Result<String, String> {
     Ok(format!(
         r#"<div class="table t"><table><thead><tr><th>step</th><th>action</th><th>input</th>{head}<th>check</th></tr></thead><tbody>{rows}</tbody></table></div>"#
     ))
+}
+
+fn parts(text: &str) -> Vec<String> {
+    let inner = text
+        .split_once('(')
+        .map_or(text, |(_, rest)| rest.strip_suffix(')').unwrap_or(rest));
+    let (mut out, mut depth, mut now) = (Vec::new(), 0, String::new());
+    for c in inner.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(now.trim().to_string());
+                now.clear();
+                continue;
+            }
+            _ => {}
+        }
+        now.push(c);
+    }
+    out.push(now.trim().to_string());
+    out
+}
+
+pub fn brief(evidence: &[String]) -> Vec<String> {
+    let Some(name) = evidence
+        .first()
+        .and_then(|first| first.strip_prefix("invariant \""))
+        .and_then(|rest| rest.split_once('"'))
+        .map(|(name, _)| name.to_string())
+    else {
+        return evidence.to_vec();
+    };
+    let shown = evidence
+        .iter()
+        .rev()
+        .find_map(|line| {
+            let mut sides = line.split(" = ");
+            let (terms, values) = (sides.next()?, sides.next()?);
+            (line.ends_with("= false") && sides.next() == Some("false")).then(|| {
+                let sign = match terms.split('(').next() {
+                    Some("eq") => " ≠ ",
+                    _ => " · ",
+                };
+                parts(terms)
+                    .iter()
+                    .zip(parts(values))
+                    .map(|(term, value)| match *term == value {
+                        true => value,
+                        false => format!("{term} = {value}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(sign)
+            })
+        })
+        .unwrap_or_else(|| evidence.last().cloned().unwrap_or_default());
+    vec![format!("\"{name}\""), shown]
+}
+
+pub fn checked(d: &Diagram) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for o in &d.objects {
+        for r in o.rules.iter().filter(|r| r.checks(&o.name)) {
+            out.extend(r.next.iter().map(|(k, _)| (o.name.clone(), k.clone())));
+        }
+    }
+    let sources: Vec<String> = d.invariants().iter().map(|i| i.source()).collect();
+    for (object, key) in d.keys() {
+        if sources
+            .iter()
+            .any(|s| s.contains(&format!("{object}.{key}")))
+        {
+            out.insert((object.clone(), key.clone()));
+        }
+    }
+    out
+}
+
+pub fn compact(text: &str) -> String {
+    serde_json::from_str::<Json>(text).map_or_else(|_| text.trim().to_string(), |j| j.to_string())
+}
+
+pub fn sorted(hops: &[Hop]) -> Vec<&Hop> {
+    let mut all: Vec<&Hop> = hops.iter().collect();
+    all.sort_by_key(|h| h.sent);
+    all
+}
+
+const LABEL: usize = 56;
+
+fn short(text: String) -> String {
+    match text.chars().count() > LABEL {
+        true => text.chars().take(LABEL).chain(['…']).collect(),
+        false => text,
+    }
+}
+
+fn calls(hops: &[Hop]) -> Vec<Call> {
+    let mut timed: Vec<(usize, Call)> = Vec::new();
+    for h in hops {
+        let reply = compact(&h.reply);
+        let empty = matches!(reply.as_str(), "" | "{}");
+        let ended = match empty {
+            true => format!(" → {}", h.status),
+            false => String::new(),
+        };
+        timed.push((
+            h.sent,
+            Call {
+                from: h.from.clone(),
+                to: h.to.clone(),
+                text: format!(
+                    "{}{ended}",
+                    short(format!("{} {} {}", h.method, h.path, compact(&h.body)))
+                ),
+                reply: false,
+            },
+        ));
+        if !empty {
+            timed.push((
+                h.answered,
+                Call {
+                    from: h.to.clone(),
+                    to: h.from.clone(),
+                    text: short(format!("{} {reply}", h.status)),
+                    reply: true,
+                },
+            ));
+        }
+    }
+    timed.sort_by_key(|(at, _)| *at);
+    timed.into_iter().map(|(_, c)| c).collect()
 }

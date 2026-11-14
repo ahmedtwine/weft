@@ -1,0 +1,38 @@
+setup {
+  person "user"
+  element "door" state="closed" error="" {
+    state state="closed" {
+      on "open" state="open"
+      on "lock" state="locked"
+    }
+    state state="open" {
+      on "close" state="closed"
+    }
+    state state="locked" {
+      on "open" error="the door is locked"
+      on "unlock" state="closed"
+    }
+    invariant "an error only when locked" {
+      implies {
+        neq "door.error" ""
+        eq "door.state" "locked"
+      }
+    }
+  }
+}
+action {
+  open from="user" to="door"
+  close from="user" to="door"
+  lock from="user" to="door"
+  open from="user" to="door"
+  unlock from="user" to="door"
+}
+impl "bun" {
+  module "door" "../../runners/bun/door.ts"
+  start "door.reset"
+  read "door.door" output="door.doorSchema"
+  run "door.open" input="door.openSchema" error="door.errorSchema"
+  run "door.close" input="door.closeSchema"
+  run "door.lock" input="door.lockSchema"
+  run "door.unlock" input="door.unlockSchema"
+}

@@ -1,0 +1,23 @@
+[tools]
+python = "3.13"
+uv = "0.9"
+go = "1.26"
+
+[tasks.install]
+description = "Install the packages of the examples"
+depends = ["//:install"]
+run = "bun install"
+
+[tasks.build]
+description = "Build weft and every runner of the examples"
+depends = ["//:build", ":install", "//examples/runners/...:build", "//examples/apps/...:build"]
+
+[tasks.test]
+description = "Run every weft diagram of the examples"
+depends = [":build"]
+run = "../target/release/weft"
+
+[tasks.report]
+description = "Serve the report of every diagram at http://127.0.0.1:7357"
+depends = [":build"]
+run = "../target/release/weft --ui"

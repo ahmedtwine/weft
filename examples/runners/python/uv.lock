@@ -1,0 +1,19 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "door"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "weft-sdk" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "weft-sdk", editable = "../../../sdk/python" }]
+
+[[package]]
+name = "weft-sdk"
+version = "0.3.0"
+source = { editable = "../../../sdk/python" }

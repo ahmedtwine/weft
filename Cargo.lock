@@ -1689,7 +1689,6 @@ name = "weft-c"
 version = "0.3.0"
 dependencies = [
  "cbindgen",
- "ureq",
  "weft-draw",
  "weft-parse",
  "weft-wire",
@@ -1739,8 +1738,20 @@ name = "weft-runner"
 version = "0.3.0"
 dependencies = [
  "serde_json",
+ "ureq",
  "weft-parse",
  "weft-simulator",
+ "weft-wire",
+]
+
+[[package]]
+name = "weft-sdk"
+version = "0.3.0"
+dependencies = [
+ "proc-macro2",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
  "weft-wire",
 ]
 
@@ -1757,6 +1768,9 @@ dependencies = [
 [[package]]
 name = "weft-wire"
 version = "0.3.0"
+dependencies = [
+ "ureq",
+]
 
 [[package]]
 name = "winapi-util"

@@ -95,6 +95,7 @@ pub struct Impl {
     pub adapter: String,
     pub modules: Vec<(String, String)>,
     pub uses: Vec<Use>,
+    pub serve: Option<Name>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,6 +446,13 @@ impl Next {
 }
 
 impl Rule {
+    pub fn checks(&self, object: &str) -> bool {
+        !self
+            .next
+            .iter()
+            .all(|(key, next)| matches!(next, Next::After(o, k) if o == object && k == key))
+    }
+
     pub fn source(&self) -> String {
         let terms: String = self
             .next
@@ -971,9 +979,17 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
         adapter: shape(n, 1, &[], true)?.remove(0),
         modules: Vec::new(),
         uses: Vec::new(),
+        serve: None,
     };
     for c in lines(n) {
         match name(c) {
+            "serve" if found.serve.is_some() => {
+                return Err("`serve` is set twice".into());
+            }
+            "serve" => {
+                let given = shape(c, 1, &[], false)?.remove(0);
+                found.serve = Some(named(c, &given)?);
+            }
             "module" => {
                 let mut given = shape(c, 2, &[], false)?;
                 let (place, module) = (given.remove(1), given.remove(0));
@@ -1002,6 +1018,7 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
             ]
         })
         .flatten()
+        .chain(found.serve.as_ref())
         .collect();
     if let Some(unknown) = names
         .iter()
@@ -1445,6 +1462,13 @@ pub struct Config {
     pub adapter: Adapter,
     pub transport: Option<Transport>,
     pub cases: u64,
+    pub runners: Vec<(String, Start)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    Command(String),
+    Bun,
 }
 
 pub fn config(src: &str) -> Result<Config, Error> {
@@ -1456,6 +1480,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
         adapter: Adapter::Default,
         transport: None,
         cases: 100,
+        runners: Vec::new(),
     };
     let mut set = false;
     for n in doc.nodes() {
@@ -1512,9 +1537,27 @@ pub fn config(src: &str) -> Result<Config, Error> {
                 c.cases = cases;
                 set = true;
             }
+            "runner" => {
+                let adapter = shape(n, 1, &["command", "harness"], false)
+                    .map_err(Error)?
+                    .remove(0);
+                if c.runners.iter().any(|(known, _)| *known == adapter) {
+                    return Err(Error(format!("`runner \"{adapter}\"` is set twice")));
+                }
+                let start = match (n.get("command").map(text), n.get("harness").map(text)) {
+                    (Some(command), None) => Start::Command(command),
+                    (None, Some(harness)) if harness == "bun" => Start::Bun,
+                    _ => {
+                        return Err(Error(format!(
+                            "`runner \"{adapter}\"` takes `command=\"<command>\"` or `harness=\"bun\"`"
+                        )));
+                    }
+                };
+                c.runners.push((adapter, start));
+            }
             other => {
                 return Err(Error(format!(
-                    "`{other}` is not include, theme, style, adapter or transport"
+                    "`{other}` is not include, theme, style, adapter, transport or runner"
                 )));
             }
         }

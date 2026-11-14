@@ -1,0 +1,3 @@
+[tasks.build]
+description = "Make the virtual environment of the Python runner"
+run = "uv sync --quiet"

@@ -1,0 +1,12 @@
+[package]
+name = "vault"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+tiny_http = "0.12"
+ureq = { version = "3.5.1", default-features = false, features = ["json"] }
+weft-sdk = { path = "../../../sdk/rust" }

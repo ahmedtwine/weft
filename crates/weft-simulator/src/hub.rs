@@ -8,7 +8,7 @@ use weft_parse::{Draw, Ran, Role, Span, State, Use};
 use weft_wire::{DONE, JOIN, Reader, Short, TURN, Writer};
 
 use crate::schema::{Branch, Tag, branches, live, narrowed, tags, whole};
-use crate::{Action, Hello, Member, Report, Start, Turn};
+use crate::{Action, Hello, Hop, Member, Report, Start, Turn};
 
 const REFUSED: i32 = 1;
 const CUT: &str = "the message of the runner is too short";
@@ -30,6 +30,8 @@ struct Read {
 
 pub struct Seat {
     hello: Hello,
+    adapter: String,
+    serves: Option<String>,
     reads: Vec<Read>,
     found: Vec<usize>,
     desk: Mutex<Desk>,
@@ -44,6 +46,9 @@ struct Joined {
 
 pub struct Session {
     code: String,
+    impls: Vec<(String, usize)>,
+    hops: Mutex<Vec<Hop>>,
+    clock: std::sync::atomic::AtomicUsize,
     uses: Vec<Use>,
     draws: Vec<Draw>,
     pools: Vec<String>,
@@ -64,6 +69,7 @@ pub struct Peer {
 
 pub struct Remote {
     seat: Arc<Seat>,
+    session: Arc<Session>,
 }
 
 fn held<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -85,6 +91,15 @@ fn hello(session: &Session, said: &Json) -> Result<Seat, String> {
             uses.len()
         ));
     }
+    let first = all.iter().position(|node| !node.is_null());
+    let adapter = session
+        .impls
+        .iter()
+        .rev()
+        .find(|(_, from)| first.is_some_and(|first| first >= *from))
+        .map(|(adapter, _)| adapter.clone())
+        .ok_or("the runner sends no use of its `impl`")?;
+    let serves = said.get("serves").and_then(Json::as_str).map(String::from);
     let mut hello = Hello {
         sized: true,
         ..Hello::default()
@@ -215,6 +230,8 @@ fn hello(session: &Session, said: &Json) -> Result<Seat, String> {
         .collect();
     Ok(Seat {
         hello,
+        adapter,
+        serves,
         reads,
         found,
         desk: Mutex::default(),
@@ -316,17 +333,78 @@ impl Seat {
 }
 
 impl Session {
-    pub fn members(&self, verbs: &[String], wait: Duration) -> Result<Vec<Remote>, String> {
+    pub fn adapters(&self) -> Vec<String> {
+        self.impls
+            .iter()
+            .map(|(adapter, _)| adapter.clone())
+            .collect()
+    }
+
+    pub fn serves(&self, adapter: &str, wait: Duration) -> Result<String, String> {
         let until = Instant::now() + wait;
         let mut joined = held(&self.joined);
         loop {
-            let missing = verbs.iter().find(|verb| {
-                !joined
-                    .seats
-                    .iter()
-                    .any(|s| s.hello.actions.iter().any(|action| action.verb == **verb))
-            });
-            let (Some(verb), None) = (missing, &joined.lost) else {
+            if let Some(url) = joined
+                .seats
+                .iter()
+                .find(|s| s.adapter == adapter)
+                .and_then(|s| s.serves.clone())
+            {
+                return Ok(url);
+            }
+            if let Some(why) = &joined.lost {
+                return Err(why.clone());
+            }
+            let left = until
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    format!("the runner of `impl \"{adapter}\"` serves no `serve` url")
+                })?;
+            joined = self
+                .changed
+                .wait_timeout(joined, left)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+    }
+
+    pub fn tick(&self) -> usize {
+        self.clock
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn record(&self, hop: Hop) {
+        held(&self.hops).push(hop);
+    }
+
+    pub fn members(
+        self: &Arc<Self>,
+        verbs: &[String],
+        wait: Duration,
+    ) -> Result<Vec<Remote>, String> {
+        let until = Instant::now() + wait;
+        let mut joined = held(&self.joined);
+        loop {
+            let missing = verbs
+                .iter()
+                .find(|verb| {
+                    !joined
+                        .seats
+                        .iter()
+                        .any(|s| s.hello.actions.iter().any(|action| action.verb == **verb))
+                })
+                .map(|verb| {
+                    format!(
+                        "the verb `{verb}` has no runner with a `run` line of the verb `{verb}`"
+                    )
+                })
+                .or_else(|| {
+                    self.impls
+                        .iter()
+                        .find(|(adapter, _)| !joined.seats.iter().any(|s| s.adapter == *adapter))
+                        .map(|(adapter, _)| format!("no runner of `impl \"{adapter}\"` joins"))
+                });
+            let (Some(missing), None) = (missing, &joined.lost) else {
                 let unused = self.draws.iter().enumerate().find(|(at, draw)| {
                     !draw.keys && joined.seats.iter().all(|s| s.found[*at] == 0)
                 });
@@ -336,20 +414,26 @@ impl Session {
                         "the line `{}` of `draw` names a field of no input, or no value of the line is a value of the field",
                         draw.path.join(".")
                     )),
-                    (None, None) => Ok(joined
-                        .seats
-                        .iter()
-                        .map(|seat| Remote { seat: seat.clone() })
-                        .collect()),
+                    (None, None) => Ok({
+                        let mut seats = joined.seats.clone();
+                        seats.sort_by_key(|seat| {
+                            self.impls
+                                .iter()
+                                .position(|(adapter, _)| *adapter == seat.adapter)
+                        });
+                        seats
+                    }
+                    .iter()
+                    .map(|seat| Remote {
+                        seat: seat.clone(),
+                        session: self.clone(),
+                    })
+                    .collect()),
                 };
             };
             let left = until
                 .checked_duration_since(Instant::now())
-                .ok_or_else(|| {
-                    format!(
-                        "the verb `{verb}` has no runner with a `run` line of the verb `{verb}`"
-                    )
-                })?;
+                .ok_or(missing)?;
             joined = self
                 .changed
                 .wait_timeout(joined, left)
@@ -367,16 +451,21 @@ impl Session {
 }
 
 impl Hub {
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         &self,
         name: &str,
         code: String,
+        impls: Vec<(String, usize)>,
         uses: Vec<Use>,
         draws: Vec<Draw>,
         pools: Vec<String>,
     ) -> Arc<Session> {
         let session = Arc::new(Session {
             code,
+            impls,
+            hops: Mutex::default(),
+            clock: std::sync::atomic::AtomicUsize::new(0),
             uses,
             draws,
             pools,
@@ -497,6 +586,10 @@ impl Member for Remote {
     fn finish(&mut self) -> Result<Ran, String> {
         self.seat.set(|d| d.turn = Some(Turn::Done.json()));
         self.seat.wait(|d| d.done.take())?
+    }
+
+    fn hops(&mut self) -> Vec<Hop> {
+        std::mem::take(&mut *held(&self.session.hops))
     }
 }
 

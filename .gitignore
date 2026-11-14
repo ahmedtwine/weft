@@ -4,3 +4,6 @@ pkg/
 .env
 node_modules/
 dist/
+bin/
+.venv/
+__pycache__/

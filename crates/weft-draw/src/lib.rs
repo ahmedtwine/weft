@@ -53,6 +53,7 @@ const DARK: Palette = Palette {
 enum Kind {
     Initial,
     Rule,
+    Failed,
 }
 
 pub struct Card {
@@ -61,10 +62,43 @@ pub struct Card {
     pub html: String,
 }
 
+pub struct Call {
+    pub from: String,
+    pub to: String,
+    pub text: String,
+    pub reply: bool,
+}
+
 #[derive(Default)]
 pub struct Code {
     pub start: Option<Card>,
     pub actions: Vec<(String, Card)>,
+    pub start_calls: Vec<Call>,
+    pub action_calls: Vec<(String, Vec<Call>)>,
+    pub failed: Option<(String, Vec<String>)>,
+}
+
+enum Message<'a> {
+    Step(usize),
+    Call(&'a Call),
+}
+
+const SERIES: [&str; 8] = [
+    "#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2", "#eeca3b", "#b279a2", "#9d755d",
+];
+
+fn colors(d: &Diagram) -> Vec<Option<&'static str>> {
+    let mut next = 0;
+    d.objects
+        .iter()
+        .map(|o| match o.kind {
+            weft_parse::Kind::Person => None,
+            _ => {
+                next += 1;
+                Some(SERIES[(next - 1) % SERIES.len()])
+            }
+        })
+        .collect()
 }
 
 enum Note<'a> {
@@ -74,6 +108,7 @@ enum Note<'a> {
 
 struct Plan<'a> {
     source: String,
+    messages: Vec<Message<'a>>,
     heads: Vec<Vec<String>>,
     notes: Vec<Note<'a>>,
     initial: Vec<(usize, String)>,
@@ -148,6 +183,7 @@ fn stereotype(kind: Kind) -> &'static str {
     match kind {
         Kind::Initial => "«initial»",
         Kind::Rule => "«on»",
+        Kind::Failed => "«fails»",
     }
 }
 
@@ -171,10 +207,32 @@ fn card<'a>(p: &mut Plan<'a>, over: String, card: &'a Card) {
     p.notes.push(Note::Card(card));
 }
 
+fn calls<'a>(p: &mut Plan<'a>, d: &Diagram, all: &'a [Call]) {
+    for c in all {
+        let known = |name: &str| d.objects.iter().any(|o| o.name == name);
+        if !known(&c.from) || !known(&c.to) {
+            continue;
+        }
+        let _ = writeln!(
+            p.source,
+            "  o{}{}o{}: {}",
+            col(d, &c.from),
+            match c.reply {
+                true => "-->>",
+                false => "->>",
+            },
+            col(d, &c.to),
+            mermaid_text(std::slice::from_ref(&c.text))
+        );
+        p.messages.push(Message::Call(c));
+    }
+}
+
 fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
     let svg = code.is_some();
     let mut p = Plan {
         source: String::new(),
+        messages: Vec::new(),
         heads: Vec::new(),
         notes: Vec::new(),
         initial: Vec::new(),
@@ -220,8 +278,25 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
     ) {
         card(&mut p, format!("o{first},o{last}"), start);
     }
+    if let Some(code) = code {
+        calls(&mut p, d, &code.start_calls);
+        if let (Some(("start", evidence)), Some(first)) = (
+            code.failed.as_ref().map(|(v, e)| (v.as_str(), e)),
+            order.first(),
+        ) {
+            note(
+                &mut p,
+                format!("o{first}"),
+                evidence.join("\n"),
+                Kind::Failed,
+            );
+        }
+    }
     let mut placed: Vec<&str> = Vec::new();
-    for s in &d.path {
+    let mut called: Vec<&str> = Vec::new();
+    let mut failed_drawn = false;
+    for (k, s) in d.path.iter().enumerate() {
+        p.messages.push(Message::Step(k));
         let _ = writeln!(
             p.source,
             "  o{}->>o{}: {}",
@@ -241,17 +316,41 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
                 found,
             );
         }
+        if let Some((_, found)) = code
+            .into_iter()
+            .flat_map(|c| &c.action_calls)
+            .find(|(verb, _)| *verb == s.verb && !called.contains(&verb.as_str()))
+        {
+            called.push(&s.verb);
+            calls(&mut p, d, found);
+        }
+        if let Some((_, evidence)) = code
+            .and_then(|c| c.failed.as_ref())
+            .filter(|(verb, _)| *verb == s.verb)
+            .filter(|_| !failed_drawn)
+        {
+            failed_drawn = true;
+            note(
+                &mut p,
+                format!("o{}", col(d, &s.to)),
+                evidence.join("\n"),
+                Kind::Failed,
+            );
+        }
         let rules: Vec<String> = d
             .rules(&s.to, &s.verb)
             .into_iter()
+            .filter(|rule| rule.checks(&s.to))
             .map(|rule| rule.source())
             .collect();
-        note(
-            &mut p,
-            format!("o{}", col(d, &s.to)),
-            rules.join("\n"),
-            Kind::Rule,
-        );
+        if !rules.is_empty() {
+            note(
+                &mut p,
+                format!("o{}", col(d, &s.to)),
+                rules.join("\n"),
+                Kind::Rule,
+            );
+        }
     }
     p
 }
@@ -413,16 +512,26 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x0:.1} {y0:.1} {w:.1} {h:.1}" width="{w:.0}" height="{h:.0}" style="max-width:100%;height:auto" font-family="{FONT}" font-size="13"><rect x="{x0:.1}" y="{y0:.1}" width="{w:.1}" height="{h:.1}" fill="{}"/>"#,
         p.bg
     );
+    let tint = colors(d);
     for e in edges.iter().filter(|e| {
         e["id"]
             .as_str()
             .is_some_and(|id| id.starts_with("lifeline-"))
     }) {
+        let color = e["id"]
+            .as_str()
+            .and_then(|id| {
+                id.trim_start_matches("lifeline-")
+                    .trim_start_matches('o')
+                    .parse::<usize>()
+                    .ok()
+            })
+            .and_then(|i| tint.get(i).copied().flatten())
+            .unwrap_or(p.border);
         if let [(ax, ay), .., (zx, zy)] = points(e).as_slice() {
             let _ = write!(
                 out,
-                r#"<line x1="{ax:.1}" y1="{ay:.1}" x2="{zx:.1}" y2="{zy:.1}" stroke="{}" stroke-width="1"/>"#,
-                p.border
+                r#"<line x1="{ax:.1}" y1="{ay:.1}" x2="{zx:.1}" y2="{zy:.1}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.25"/>"#
             );
         }
     }
@@ -434,9 +543,42 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
                 .map_or(0.0, |n| num(n, "x"))
         })
         .collect();
-    for (k, e) in sorted(&edges, "msg-").into_iter().enumerate() {
+    for (e, m) in sorted(&edges, "msg-").into_iter().zip(&plan.messages) {
         let pts = points(e);
-        let (Some(&(ax, ay)), Some(s)) = (pts.first(), d.path.get(k)) else {
+        let k = match m {
+            Message::Step(k) => *k,
+            Message::Call(c) => {
+                if let ([(ax, ay), ..], [.., prev, last]) = (pts.as_slice(), pts.as_slice()) {
+                    let color = tint.get(col(d, &c.from)).copied().flatten().unwrap_or(p.fg);
+                    let dash = match c.reply {
+                        true => r#" stroke-dasharray="5 4""#,
+                        false => "",
+                    };
+                    let line = pts
+                        .iter()
+                        .map(|(x, y)| format!("{x:.1},{y:.1}"))
+                        .collect::<Vec<_>>()
+                        .join(" L ");
+                    let _ = write!(
+                        out,
+                        r#"<path d="M {line}" fill="none" stroke="{color}" stroke-width="1.25"{dash}/>"#
+                    );
+                    arrow(&mut out, *prev, *last, color);
+                    let _ = write!(
+                        out,
+                        r#"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="11" fill="{color}">{}</text>"#,
+                        (ax + last.0) / 2.0,
+                        ay - 6.0,
+                        escape(&c.text)
+                    );
+                }
+                continue;
+            }
+        };
+        let Some(&(ax, ay)) = pts.first() else {
+            continue;
+        };
+        let Some(s) = d.path.get(k) else {
             continue;
         };
         let (path, prev, end, mid) = match (s.from == s.to, pts.as_slice()) {
@@ -507,6 +649,14 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
                     );
                 }
             }
+            Note::Text(text, Kind::Failed) => node(
+                &mut out,
+                (x, y),
+                Kind::Failed,
+                text,
+                (SERIES[3], SERIES[3]),
+                p,
+            ),
             Note::Text(text, kind) => node(&mut out, (x, y), *kind, text, (p.border, p.fg), p),
         }
     }
@@ -539,10 +689,10 @@ pub fn svg(d: &Diagram, theme: Theme, code: &Code) -> Result<String, String> {
             x - 20.0,
             top + 20.0,
             p.surface,
-            p.border,
+            tint.get(i).copied().flatten().unwrap_or(p.border),
             x - 12.0,
             top + 28.0,
-            p.fg
+            tint.get(i).copied().flatten().unwrap_or(p.fg)
         );
         for (k, line) in head.iter().enumerate() {
             write_text(

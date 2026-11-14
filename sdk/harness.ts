@@ -26,7 +26,7 @@ type Range = { startOffset: number; endOffset: number; count: number };
 type Taken = { result: { url: string; functions: { ranges: Range[] }[] }[] };
 type Code = Map<string, Set<number>>;
 
-const ADAPTER = "bun";
+const ADAPTER = Bun.env.WEFT_ADAPTER ?? "bun";
 const START = "start";
 const SAMPLES = 8;
 const FAULTS = [TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError];
@@ -180,7 +180,8 @@ const loaded = async () => {
   const json = (schema: Schema | undefined, io: "input" | "output") =>
     schema && z.toJSONSchema(schema, { io, unrepresentable: () => ({ not: {} }) });
   const uses: (Used | null)[] = [];
-  for (const { adapter, modules: places, uses: lines } of code) {
+  let serves: string | undefined;
+  for (const { adapter, modules: places, uses: lines, serve } of code) {
     if (adapter !== ADAPTER) {
       uses.push(...lines.map(() => null));
       continue;
@@ -203,6 +204,10 @@ const loaded = async () => {
       if (!found?._zod) throw new Error(`\`${name.join(".")}\` is no Zod schema`);
       return found;
     };
+    if (serve) {
+      const given = exported(serve);
+      serves = String(typeof given === "function" ? await given() : given);
+    }
     for (const line of lines) {
       const run = line.from ? undefined : exported(line.function);
       if (!line.from && typeof run !== "function")
@@ -218,6 +223,7 @@ const loaded = async () => {
     }
   }
   const hello = {
+    serves,
     uses: uses.map(
       (use) =>
         use && {

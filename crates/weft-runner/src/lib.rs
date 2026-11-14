@@ -1,11 +1,12 @@
-mod bun;
+mod process;
+mod proxy;
 mod transport;
 
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value as Json, json};
-use weft_parse::{Adapter, Config, Diagram, Name, Role};
+use weft_parse::{Adapter, Config, Diagram, Name, Role, Start};
 use weft_simulator::{Member, Outcome, simulate};
 
 use transport::{HUB, listen};
@@ -53,6 +54,7 @@ fn code(d: &Diagram, file: &Path) -> String {
         json!({
             "adapter": i.adapter,
             "modules": Json::from_iter(i.modules.iter().map(|(module, at)| (module.clone(), place(at)))),
+            "serve": i.serve.as_ref().map(name),
             "uses": Json::from_iter(i.uses.iter().map(|u| json!({
                 "role": role(u.role),
                 "function": name(&u.function),
@@ -81,11 +83,76 @@ pub fn run(
     let uses = d.impls.iter().flat_map(|i| i.uses.clone()).collect();
     let draws = d.objects.iter().flat_map(|o| o.draws.clone()).collect();
     let pools = d.objects.iter().flat_map(|o| o.pools.clone()).collect();
-    let session = HUB.open(&name, code(d, file), uses, draws, pools);
-    let bun = match config.adapter {
-        Adapter::Bun => Some(bun::start(&name, &at, session.clone())?),
-        Adapter::Default => None,
-    };
+    let mut from = 0;
+    let impls = d
+        .impls
+        .iter()
+        .map(|i| {
+            let at = from;
+            from += i.uses.len();
+            (i.adapter.clone(), at)
+        })
+        .collect();
+    let session = HUB.open(&name, code(d, file), impls, uses, draws, pools);
+    let mut started = Vec::new();
+    let mut proxies = Vec::new();
+    for i in &d.impls {
+        let line = config
+            .runners
+            .iter()
+            .find(|(adapter, _)| *adapter == i.adapter)
+            .map(|(_, start)| start.clone())
+            .or_else(|| {
+                (i.adapter == "bun" && config.adapter == Adapter::Bun).then_some(Start::Bun)
+            });
+        let Some(line) = line else {
+            continue;
+        };
+        let proxy = match proxy::open(&i.adapter, session.clone()) {
+            Ok(proxy) => proxy,
+            Err(e) => {
+                HUB.close(&name);
+                return Err(e);
+            }
+        };
+        let env: Vec<(String, String)> = session
+            .adapters()
+            .iter()
+            .map(|adapter| {
+                let key: String = adapter
+                    .chars()
+                    .map(|c| match c.is_ascii_alphanumeric() {
+                        true => c.to_ascii_uppercase(),
+                        false => '_',
+                    })
+                    .collect();
+                (
+                    format!("WEFT_{key}_URL"),
+                    format!("{}/{adapter}", proxy.url),
+                )
+            })
+            .chain([("WEFT_PROXY".to_string(), proxy.url.clone())])
+            .collect();
+        let r = process::Runner {
+            adapter: &i.adapter,
+            name: &name,
+            at: &at,
+            env: &env,
+            session: session.clone(),
+        };
+        proxies.push(proxy);
+        let runner = match line {
+            Start::Command(line) => process::command(&line, r),
+            Start::Bun => process::bun(r),
+        };
+        match runner {
+            Ok(runner) => started.push(runner),
+            Err(e) => {
+                HUB.close(&name);
+                return Err(e);
+            }
+        }
+    }
     let outcome = session.members(&verbs(d), WAIT).and_then(|remotes| {
         let mut members: Vec<Box<dyn Member>> = remotes
             .into_iter()
@@ -94,10 +161,14 @@ pub fn run(
         simulate(d, &mut members, config.cases, key)
     });
     HUB.close(&name);
-    let log = bun.and_then(|bun| bun.join().ok());
-    match (outcome, log) {
-        (Err(e), Some(log)) => Err(format!("{e}: {log}")),
-        (outcome, _) => outcome,
+    drop(proxies);
+    let logs: Vec<String> = started
+        .into_iter()
+        .filter_map(|runner| runner.join().ok())
+        .collect();
+    match outcome {
+        Err(e) if !logs.is_empty() => Err(format!("{e}: {}", logs.join("; "))),
+        outcome => outcome,
     }
 }
 
@@ -115,7 +186,14 @@ mod tests {
     use weft_simulator::view;
     use weft_wire::{DONE, JOIN, Reader, TURN, Writer, receive, send};
 
-    const FILE: &str = "invariants/page.weft.kdl";
+    static FILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn file() -> String {
+        format!(
+            "invariants/page-{}.weft.kdl",
+            FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }
     const CONFIG: &str = "include \"**/*.weft.kdl\"\ntheme \"light\"\nstyle \"person\" icon=\"user\"\nstyle \"browser\" icon=\"app-window\"\n";
     const PAGE: &str = r#"
 setup {
@@ -239,14 +317,21 @@ impl "bun" {
         json!({ "outputs": { "1": { "count": count } }, "errors": {}, "added": added })
     }
 
-    fn runner(at: &str, hello: Json, app: App, play: Play, verbs: [&str; 2]) -> Result<(), String> {
+    fn runner(
+        at: &str,
+        file: &str,
+        hello: Json,
+        app: App,
+        play: Play,
+        verbs: [&str; 2],
+    ) -> Result<(), String> {
         let mut link = match at.strip_prefix("unix:") {
             Some(path) => Link::Unix(UnixStream::connect(path).map_err(|e| e.to_string())?),
             None => Link::Http(format!("{at}/{}", hello.to_string().len())),
         };
         let joined = (0..500)
             .find_map(|_| {
-                link.said(JOIN, FILE)
+                link.said(JOIN, file)
                     .inspect_err(|_| thread::sleep(Duration::from_millis(10)))
                     .ok()
             })
@@ -312,9 +397,12 @@ impl "bun" {
         let d = weft_parse::parse(POOL, &config).map_err(|e| e.to_string())?;
         let at = listen(config.transport.as_ref())?;
         let hello = json!({ "uses": [input(None, NONE), { "output": schema(COUNT) }, input(Some("open"), NUMBER), {}] });
-        let opener =
-            thread::spawn(move || runner(&at, hello, App::default(), play, ["open", "close"]));
-        let outcome = run(&config, &d, Path::new(FILE), None);
+        let name = file();
+        let joined = name.clone();
+        let opener = thread::spawn(move || {
+            runner(&at, &joined, hello, App::default(), play, ["open", "close"])
+        });
+        let outcome = run(&config, &d, Path::new(&name), None);
         opener.join().map_err(|_| "a runner panics")??;
         outcome
     }
@@ -371,11 +459,12 @@ impl "bun" {
             weft_parse::parse(&PAGE.replace("DRAW", draw), &config).map_err(|e| e.to_string())?;
         let at = listen(config.transport.as_ref())?;
         let app = App::default();
+        let name = file();
         let runners = [(sends, sender as Play), (reloads(), reload)].map(|(hello, play)| {
-            let (at, app) = (at.clone(), app.clone());
-            thread::spawn(move || runner(&at, hello, app, play, ["send", "reload"]))
+            let (at, app, joined) = (at.clone(), app.clone(), name.clone());
+            thread::spawn(move || runner(&at, &joined, hello, app, play, ["send", "reload"]))
         });
-        let outcome = run(&config, &d, Path::new(FILE), None);
+        let outcome = run(&config, &d, Path::new(&name), None);
         for r in runners {
             let _ = r.join().map_err(|_| "a runner panics")?;
         }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "sdk/rust"]
 
 [workspace.package]
 version = "0.3.0"

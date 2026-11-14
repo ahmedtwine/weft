@@ -1,0 +1,9 @@
+{
+  "name": "weft-examples",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "weft": "link:weft",
+    "zod": "^4.0.0"
+  }
+}
