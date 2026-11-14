@@ -26,3 +26,7 @@ run = [
   "cargo clippy --workspace --all-targets --locked -- -D warnings",
   "cargo test --workspace --locked",
 ]
+
+[tasks.notices]
+description = "Write THIRD-PARTY-NOTICES.md from the licenses of each part weft ships"
+run = "python3 scripts/notices.py"

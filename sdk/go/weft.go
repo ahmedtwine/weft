@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -101,6 +102,7 @@ func schemaOf(t reflect.Type, seen map[reflect.Type]bool) map[string]any {
 		}
 		seen[t] = true
 		properties := map[string]any{}
+		required := []string{}
 		for i := range t.NumField() {
 			f := t.Field(i)
 			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
@@ -110,9 +112,20 @@ func schemaOf(t reflect.Type, seen map[reflect.Type]bool) map[string]any {
 			if name == "" {
 				name = f.Name
 			}
-			properties[name] = schemaOf(f.Type, seen)
+			field := schemaOf(f.Type, seen)
+			for _, bound := range []string{"minimum", "maximum"} {
+				if given, ok := f.Tag.Lookup(bound); ok {
+					if n, err := strconv.ParseFloat(given, 64); err == nil {
+						field[bound] = n
+					}
+				}
+			}
+			properties[name] = field
+			required = append(required, name)
 		}
 		out["properties"] = properties
+		out["required"] = required
+		out["additionalProperties"] = false
 		return out
 	}
 	return map[string]any{}

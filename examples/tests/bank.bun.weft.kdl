@@ -1,0 +1,11 @@
+setup {
+  person "owner"
+  api "bank" {
+    invariant "the balance never goes below zero" {
+      igte "bank.balance" 0
+    }
+  }
+}
+impl "bun" {
+  module "bank" "../runners/bun/bank/bank.ts"
+}

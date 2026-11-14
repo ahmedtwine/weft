@@ -1,0 +1,11 @@
+setup {
+  person "owner"
+  api "bank" {
+    invariant "the balance never goes below zero" {
+      igte "bank.balance" 0
+    }
+  }
+}
+impl "go" {
+  module "bank" "../runners/go/bank/bank.go"
+}

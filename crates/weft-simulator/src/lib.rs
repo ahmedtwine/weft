@@ -242,14 +242,7 @@ impl Run<'_> {
                 .start
                 .iter()
                 .map(|s| s.input.as_ref().map_or(Ok(Json::Null), |g| case.draw(g)))
-                .collect::<Result<Vec<Json>, Halt>>();
-            let inputs = match inputs {
-                Err(Halt::Empty) => {
-                    self.refused.insert(START.into());
-                    return Err(Halt::Invalid);
-                }
-                inputs => inputs?,
-            };
+                .collect::<Result<Vec<Json>, Halt>>()?;
             let report = match inputs.is_empty() {
                 true => m.turn(&Turn::Read)?,
                 false => {
@@ -351,35 +344,23 @@ impl Run<'_> {
             hops: Vec::new(),
         };
         let mut report = Report::Refused;
-        let mut empty = false;
         for _ in 0..TRIES {
             if !matches!(report, Report::Refused) {
                 break;
             }
-            let drawn = match case.draw(&members[owner].hello().actions[action].drawn) {
-                Err(Halt::Empty) => {
-                    empty = true;
-                    break;
-                }
-                drawn => drawn?,
-            };
+            let drawn = case.draw(&members[owner].hello().actions[action].drawn)?;
             line.input = vec![drawn.clone()];
             let call = Call {
                 line: members[owner].hello().actions[action].line,
                 input: &drawn,
             };
             report = members[owner].turn(&Turn::Run(&verb, &object, call))?;
-            if matches!(report, Report::Refused) {
-                case.undo()?;
-            }
         }
         let mut next = match report {
             Report::State(part, _) => merged(real.clone(), part),
             Report::Refused => {
                 heard(members);
-                if !empty {
-                    self.refused.insert(verb);
-                }
+                self.refused.insert(verb);
                 return Ok(Stepped::Refused);
             }
             Report::Thrown(error) => {
@@ -456,7 +437,7 @@ impl Run<'_> {
             Ok(None) => VALID,
             Ok(Some(_)) => INTERESTING,
             Err(Halt::Overrun) => OVERRUN,
-            Err(Halt::Invalid | Halt::Empty | Halt::Retry) => INVALID,
+            Err(Halt::Invalid | Halt::Retry) => INVALID,
             Err(Halt::Fatal(e)) => return Err(e),
         };
         match status == INTERESTING {

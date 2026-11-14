@@ -76,8 +76,6 @@ pub enum Generator {
     Record(Vec<(String, Generator)>),
     Recursive(String, Box<Generator>, Option<u64>, Option<u64>),
     Subtree(String),
-    Add(String, Box<Generator>),
-    Pool(String, bool),
     Event(String, Box<Generator>),
 }
 
@@ -85,9 +83,7 @@ impl Generator {
     pub fn ends(&self, closed: &[&str]) -> bool {
         match self {
             Generator::Subtree(name) => !closed.contains(&name.as_str()),
-            Generator::Recursive(_, body, ..)
-            | Generator::Add(_, body)
-            | Generator::Event(_, body) => body.ends(closed),
+            Generator::Recursive(_, body, ..) | Generator::Event(_, body) => body.ends(closed),
             Generator::OneOf(all) => all.iter().any(|g| g.ends(closed)),
             Generator::List(item, min, ..) => *min == 0 || item.ends(closed),
             Generator::Tuple(all) => all.iter().all(|g| g.ends(closed)),
@@ -100,9 +96,7 @@ impl Generator {
         match self {
             Generator::Subtree(known) => known == name,
             Generator::Recursive(known, body, ..) => known != name && body.loops(name),
-            Generator::Optional(body) | Generator::Add(_, body) | Generator::Event(_, body) => {
-                body.loops(name)
-            }
+            Generator::Optional(body) | Generator::Event(_, body) => body.loops(name),
             Generator::OneOf(all) | Generator::Tuple(all) => all.iter().any(|g| g.loops(name)),
             Generator::List(item, ..) => item.loops(name),
             Generator::Dict(key, value) => key.loops(name) || value.loops(name),
@@ -138,9 +132,6 @@ impl Generator {
             Generator::Tuple(_) => "hegel.tuples",
             Generator::Record(_) => "hegel.fixed_dicts",
             Generator::Recursive(..) | Generator::Subtree(_) => "hegel.recursive",
-            Generator::Add(..) => "hegel.pool",
-            Generator::Pool(_, false) => "hegel.pool.values_reusable",
-            Generator::Pool(_, true) => "hegel.pool.values_consumed",
             Generator::Event(..) => "hegel.event",
         }
     }
@@ -151,7 +142,6 @@ impl Generator {
             Generator::Optional(body)
             | Generator::List(body, ..)
             | Generator::Recursive(_, body, ..)
-            | Generator::Add(_, body)
             | Generator::Event(_, body) => vec![body],
             Generator::Dict(key, value) => vec![key, value],
             Generator::Record(fields) => fields.iter().map(|(_, g)| g).collect(),
@@ -518,11 +508,6 @@ impl<'c> Drawer<'c> {
 
     pub(crate) fn draw(&mut self, generator: &'c Generator) -> Result<Json, Halt> {
         match generator {
-            Generator::Add(pool, body) => {
-                let value = self.draw(body)?;
-                self.case.add(pool, value.clone())?;
-                Ok(value)
-            }
             Generator::Event(label, body) => {
                 let value = self.draw(body)?;
                 self.case.event(&format!("{label} {value}"))?;
@@ -738,8 +723,7 @@ impl<'c> Drawer<'c> {
                     .ok_or_else(|| Halt::Fatal(format!("the schema `{name}` is not open")))?;
                 self.subtree(at).map(|(value, _)| value)
             }
-            Generator::Pool(name, consume) => self.case.take(name, *consume),
-            Generator::Add(..) | Generator::Event(..) => self.draw(generator),
+            Generator::Event(..) => self.draw(generator),
         }
     }
 }

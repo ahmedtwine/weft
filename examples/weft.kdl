@@ -1,6 +1,5 @@
 include "tests/*.weft.kdl"
 style "person" icon="user"
-style "device" icon="door-closed"
 style "api" icon="server"
 adapter "bun" cases=100
 runner "rust" command="runners/rust/target/release/runner"

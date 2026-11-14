@@ -10,7 +10,6 @@ fn each(mut body: impl FnMut(&Case) -> Result<(), Halt>) -> Vec<String> {
     while let Some(case) = engine.case().expect("case") {
         match body(&case) {
             Ok(()) | Err(Halt::Overrun | Halt::Invalid) => {}
-            Err(Halt::Empty) => panic!("a pool has no value"),
             Err(Halt::Retry) => panic!("a recursion ends with a retry"),
             Err(Halt::Fatal(e)) => panic!("{e}"),
         }
@@ -153,28 +152,6 @@ fn a_recursive_generator_obeys_the_limits_of_hegel() {
         "the trees have {most:?} levels and leaves"
     );
     drawn(&tree(None, None), |v| leaves(v) <= 100);
-}
-
-#[test]
-fn a_pool_gives_a_value_that_an_earlier_draw_added() {
-    let id = Generator::Add("ids".into(), Box::new(Generator::Integer(1, 1000)));
-    let ids = Generator::List(Box::new(id), 1, Some(5), false);
-    let reused = Generator::Pool("ids".into(), false);
-    let consumed = Generator::Pool("ids".into(), true);
-    each(|case| {
-        case.pool("ids")?;
-        assert!(matches!(case.draw(&reused), Err(Halt::Empty)));
-        let added = case.draw(&ids)?;
-        let added = added.as_array().expect("a list");
-        assert_eq!(case.size("ids"), added.len());
-        assert!(added.contains(&case.draw(&reused)?));
-        assert_eq!(case.size("ids"), added.len());
-        assert!(added.contains(&case.draw(&consumed)?));
-        assert_eq!(case.size("ids"), added.len() - 1);
-        case.undo()?;
-        assert_eq!(case.size("ids"), added.len());
-        Ok(())
-    });
 }
 
 #[test]

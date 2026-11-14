@@ -9,8 +9,8 @@ use std::slice;
 
 use hegel_c::hegel_result_t::{HEGEL_E_ASSUME, HEGEL_E_RETRY, HEGEL_E_STOP_TEST, HEGEL_OK};
 use hegel_c::{
-    HegelContext, HegelGrammar, HegelPool, HegelRun, HegelStateMachine, HegelTestCase,
-    hegel_result_t, hegel_string_t,
+    HegelContext, HegelGrammar, HegelRun, HegelStateMachine, HegelTestCase, hegel_result_t,
+    hegel_string_t,
 };
 use serde_json::Value as Json;
 
@@ -31,7 +31,6 @@ pub const INTERESTING: u32 = 3;
 pub enum Halt {
     Overrun,
     Invalid,
-    Empty,
     Retry,
     Fatal(String),
 }
@@ -109,12 +108,6 @@ pub struct Engine {
     grammars: Grammars,
 }
 
-struct Pool {
-    name: String,
-    raw: *mut HegelPool,
-    values: Vec<(i64, Json)>,
-}
-
 pub struct Case {
     pub(crate) ctx: *mut HegelContext,
     pub(crate) tc: *mut HegelTestCase,
@@ -123,8 +116,6 @@ pub struct Case {
     machine: *mut HegelStateMachine,
     step: u64,
     spans: Cell<usize>,
-    pools: RefCell<Vec<Pool>>,
-    taken: RefCell<Vec<(usize, i64, Json)>>,
 }
 
 pub struct Ended {
@@ -193,8 +184,6 @@ impl Engine {
             machine: ptr::null_mut(),
             step: self.step,
             spans: Cell::new(0),
-            pools: RefCell::default(),
-            taken: RefCell::default(),
         }))
     }
 
@@ -284,92 +273,7 @@ impl Case {
     }
 
     pub fn draw(&self, generator: &Generator) -> Result<Json, Halt> {
-        let open = self.open();
-        self.taken.borrow_mut().clear();
-        let drawn = Drawer::new(self).draw(generator);
-        if matches!(drawn, Err(Halt::Empty)) {
-            while self.open() > open {
-                self.stop(true)?;
-            }
-            self.undo()?;
-        }
-        drawn
-    }
-
-    fn pooled(&self, name: &str) -> Result<usize, Halt> {
-        self.pools
-            .borrow()
-            .iter()
-            .position(|pool| pool.name == name)
-            .ok_or_else(|| Halt::Fatal(format!("the case has no pool `{name}`")))
-    }
-
-    pub fn pool(&self, name: &str) -> Result<(), Halt> {
-        let mut raw = ptr::null_mut();
-        hegel!(self.ctx, hegel_new_pool(self.tc, &mut raw))?;
-        self.pools.borrow_mut().push(Pool {
-            name: name.to_string(),
-            raw,
-            values: Vec::new(),
-        });
-        Ok(())
-    }
-
-    pub fn add(&self, name: &str, value: Json) -> Result<(), Halt> {
-        let at = self.pooled(name)?;
-        let raw = self.pools.borrow()[at].raw;
-        let mut id = 0;
-        hegel!(self.ctx, hegel_pool_add(self.tc, raw, &mut id))?;
-        self.pools.borrow_mut()[at].values.push((id, value));
-        Ok(())
-    }
-
-    pub(crate) fn take(&self, name: &str, consume: bool) -> Result<Json, Halt> {
-        let at = self.pooled(name)?;
-        let raw = match &self.pools.borrow()[at] {
-            pool if pool.values.is_empty() => return Err(Halt::Empty),
-            pool => pool.raw,
-        };
-        let mut id = 0;
-        hegel!(
-            self.ctx,
-            hegel_pool_generate(self.tc, raw, consume, &mut id)
-        )?;
-        let values = &mut self.pools.borrow_mut()[at].values;
-        let found = values
-            .iter()
-            .position(|(known, _)| *known == id)
-            .ok_or_else(|| {
-                Halt::Fatal(format!(
-                    "Hegel gives the value {id}, and the pool `{name}` has no value {id}"
-                ))
-            })?;
-        match consume {
-            true => {
-                let (id, value) = values.remove(found);
-                self.taken.borrow_mut().push((at, id, value.clone()));
-                Ok(value)
-            }
-            false => Ok(values[found].1.clone()),
-        }
-    }
-
-    pub fn undo(&self) -> Result<(), Halt> {
-        let taken: Vec<(usize, i64, Json)> = self.taken.borrow_mut().drain(..).rev().collect();
-        for (at, id, value) in taken {
-            let raw = self.pools.borrow()[at].raw;
-            hegel!(self.ctx, hegel_pool_restore(self.tc, raw, id))?;
-            self.pools.borrow_mut()[at].values.push((id, value));
-        }
-        Ok(())
-    }
-
-    pub fn size(&self, name: &str) -> usize {
-        self.pools
-            .borrow()
-            .iter()
-            .find(|pool| pool.name == name)
-            .map_or(0, |pool| pool.values.len())
+        Drawer::new(self).draw(generator)
     }
 
     pub fn machine(
@@ -469,9 +373,6 @@ impl Case {
             )
         );
         unsafe {
-            for pool in self.pools.borrow().iter() {
-                let _ = hegel_c::hegel_pool_free(self.ctx, pool.raw);
-            }
             let _ = hegel_c::hegel_state_machine_free(self.ctx, self.machine);
             let _ = hegel_c::hegel_test_case_free(self.ctx, self.tc);
         }

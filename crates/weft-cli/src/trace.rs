@@ -213,6 +213,11 @@ pub fn brief(evidence: &[String]) -> Vec<String> {
             (line.ends_with("= false") && sides.next() == Some("false")).then(|| {
                 let sign = match terms.split('(').next() {
                     Some("eq") => " ≠ ",
+                    Some("neq") => " = ",
+                    Some("ilt") => " ≥ ",
+                    Some("ilte") => " > ",
+                    Some("igt") => " ≤ ",
+                    Some("igte") => " < ",
                     _ => " · ",
                 };
                 parts(terms)

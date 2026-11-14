@@ -10,41 +10,23 @@ mise //examples:test      # build weft and the four runners, then run each test
 mise //examples:report    # serve the report at http://127.0.0.1:7357
 ```
 
-| Path                              | Holds                                                         |
-| --------------------------------- | ------------------------------------------------------------- |
-| `examples/runners/<lang>/`        | One runner for each language: bun, rust, go and python        |
-| `examples/runners/<lang>/<test>/` | The modules of one test in that language                      |
-| `examples/tests/*.weft.kdl`       | Each test; its `impl "<lang>"` blocks name the modules to run |
-
-Weft starts the runner of each `impl` block, drives it through each case, and stops it when the test ends:
-
-```text
-▸ tests/parcel.weft.kdl · go · runners/go/bin/runner · pid 19877
-▸ tests/parcel.weft.kdl · rust · runners/rust/target/release/runner · pid 19887
-▸ tests/parcel.weft.kdl · python · uv run --quiet --project runners/python python -m weft · pid 19897
-▸ tests/parcel.weft.kdl · bun · bun test · pid 19898
-■ tests/parcel.weft.kdl · rust · exit status: 0 · 1.30s
-■ tests/parcel.weft.kdl · go · exit status: 0 · 1.52s
-```
+`examples/tests/*.weft.kdl` holds each test. `examples/runners/<lang>/` holds one runner for each language, with a folder of modules for each test. Weft starts the runner of each `impl` block, drives it through each case, and stops it at the end of the test.
 
 ## A test
 
-`examples/tests/door.bun.weft.kdl`:
+`examples/tests/bank.bun.weft.kdl`:
 
 ```kdl
 setup {
-  person "user"
-  device "door" {
-    invariant "an error only when locked" {
-      implies {
-        neq "door.error" ""
-        eq "door.state" "locked"
-      }
+  person "owner"
+  api "bank" {
+    invariant "the balance never goes below zero" {
+      igte "bank.balance" 0
     }
   }
 }
 impl "bun" {
-  module "door" "../runners/bun/door/door.ts"
+  module "bank" "../runners/bun/bank/bank.ts"
 }
 ```
 
@@ -56,30 +38,44 @@ impl "bun" {
 
 An `impl` block holds `module` lines only. The module gives the rest:
 
-| Export of the module | Is                                                                     |
-| -------------------- | ---------------------------------------------------------------------- |
-| `reset`              | The function that sets the state before each case                      |
-| `url`                | The function that gives the url of an HTTP app                         |
+| Export of the module | Is                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| `reset`              | The function that sets the state before each case                                  |
+| `url`                | The function that gives the url of an HTTP app                                     |
 | each other function  | An action; its name is the verb, the type of its input the schema Hegel draws from |
 
-The input of an action is the native type of its parameter: a `JsonSchema` type in Rust, a struct in Go, a dataclass or `Literal` in Python, and the zod schema `<function>Schema` in TypeScript. The first person of `setup` calls each action in the diagram.
+The input of an action is the native type of its parameter: a `JsonSchema` type in Rust, a struct with `minimum` and `maximum` tags in Go, a dataclass with `Literal` or `Annotated[int, range(…)]` in Python, and the zod schema `<function>Schema` in TypeScript. The first person of `setup` calls each action in the diagram.
 
-`examples/runners/bun/door/door.ts`:
+`examples/runners/bun/bank/bank.ts`:
 
 ```ts
 import { state } from "weft";
+import { z } from "zod";
 
-const door = { state: "closed", error: "" };
-state("door", () => door);
+const bank = { balance: 0 };
+state("bank", () => bank);
 
-const set = (to: string, error = "") => Object.assign(door, { state: to, error });
+export const depositSchema = z.object({ amount: z.int().min(1).max(100) });
+export const withdrawSchema = depositSchema;
 
-export const reset = () => set("closed");
-export const open = () => (door.state === "locked" ? set("locked", "the door is locked") : set("open"));
-export const close = () => set("closed");
-export const lock = () => set("locked");
-export const unlock = () => set("closed");
+export const reset = () => {
+  bank.balance = 0;
+};
+export const deposit = ({ amount }: z.infer<typeof depositSchema>) => {
+  bank.balance += amount;
+};
+export const withdraw = ({ amount }: z.infer<typeof withdrawSchema>) => {
+  if (amount <= bank.balance) bank.balance -= amount;
+};
 ```
+
+Hegel draws `deposit` and `withdraw` in any order with amounts from 1 to 100, and checks the balance after each step. With the `if` gone from `withdraw`, the test fails and Hegel shrinks the case to one step:
+
+```text
+✕ tests/bank.bun.weft.kdl · "the balance never goes below zero" · bank.balance = -1 < 0
+```
+
+The same bank runs in each language: `runners/rust/bank/bank.rs`, `runners/go/bank/bank.go` and `runners/python/bank/bank.py`.
 
 ## State
 
@@ -88,11 +84,11 @@ A runner gives its state to weft with one call. The call takes a native value, o
 | Language   | SDK          | Call                                                       | Start in `weft.kdl`                        |
 | ---------- | ------------ | ---------------------------------------------------------- | ------------------------------------------ |
 | TypeScript | `sdk/`       | `state("courier.parcels", () => parcels, z.array(Parcel))` | `adapter "bun"`                            |
-| Rust       | `sdk/rust`   | `weft_sdk::state("door", now)` with `JsonSchema`           | `runner "rust" command="<binary>"`         |
-| Go         | `sdk/go`     | `weft.State("door", func() Door { return door })`          | `runner "go" command="<binary>"`           |
-| Python     | `sdk/python` | `weft.state("door", lambda: door)` with a dataclass        | `runner "python" command="python -m weft"` |
+| Rust       | `sdk/rust`   | `weft_sdk::state("bank", now)` with `JsonSchema`           | `runner "rust" command="<binary>"`         |
+| Go         | `sdk/go`     | `weft.State("bank", func() Bank { return bank })`          | `runner "go" command="<binary>"`           |
+| Python     | `sdk/python` | `weft.state("bank", lambda: bank)` with a dataclass        | `runner "python" command="python -m weft"` |
 
-The Diagram tab draws the state after `start` as a table of type, key and value under each object, each step with the keys it changes, and the failing condition. The Run tab holds each step of the case and the state after it.
+The Diagram tab of the report draws the state after `reset` as a table of type, key and value under each object, each step with the keys it changes, and the failing condition. The Run tab holds each step of the case and the state after it.
 
 ## A shop of four apps
 
@@ -114,22 +110,7 @@ api "courier" {
 ✕ tests/parcel.weft.kdl · "a parcel goes only to the address of its own customer" · courier.parcels[0].customer = "ana" ≠ courier.parcels[0].recipient = "ben"
 ```
 
-The test fails by design: Hegel finds `choose_address(addr-ben)` and then `ship(o-ana)`. Its `impl` blocks hold one `module` line each:
-
-```kdl
-impl "go" {
-  module "orders" "../runners/go/parcel/orders.go"
-}
-impl "rust" {
-  module "addresses" "../runners/rust/parcel/addresses.rs"
-}
-impl "python" {
-  module "shop" "../runners/python/parcel/shop.py"
-}
-impl "bun" {
-  module "courier" "../runners/bun/parcel/courier.ts"
-}
-```
+The test fails by design: Hegel finds `choose_address(addr-ben)` and then `ship(o-ana)`.
 
 ## Runners
 
@@ -145,6 +126,19 @@ impl "bun" {
 
 The `reset` functions run in the order of the `impl` blocks.
 
+## Crates
+
+| Crate            | Does                                                                                         |
+| ---------------- | -------------------------------------------------------------------------------------------- |
+| `weft-parse`     | Reads `weft.kdl` and each test into objects, invariants and modules, and evaluates invariants |
+| `weft-hegel`     | Drives Hegel through its C ABI: cases, the state machine, generators and shrinking            |
+| `weft-simulator` | Reads the hello of each runner, turns its schemas into generators, and runs each case        |
+| `weft-runner`    | Starts the runners, carries their messages, and forwards the HTTP calls between apps          |
+| `weft-wire`      | The framing of each message between weft and a runner                                        |
+| `weft-draw`      | Draws a test and its failing case as a sequence diagram                                      |
+| `weft-c`         | libweft, the C ABI that each SDK loads                                                       |
+| `weft-cli`       | The `weft` command and its report                                                            |
+
 ## License
 
-MIT. merman is MIT OR Apache-2.0. Icons are Lucide, ISC, in `crates/weft-draw/src/vendor`.
+MIT. `mise run notices` writes `THIRD-PARTY-NOTICES.md`, the license of each part weft ships: Hegel and each crate it links, the Lucide icons, and the scripts and fonts of the report.

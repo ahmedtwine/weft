@@ -103,10 +103,9 @@ fn keyed(g: &mut Generator, values: &[Json]) -> usize {
             1
         }
         Generator::OneOf(all) => all.iter_mut().map(|g| keyed(g, values)).sum(),
-        Generator::List(body, ..)
-        | Generator::Optional(body)
-        | Generator::Add(_, body)
-        | Generator::Event(_, body) => keyed(body, values),
+        Generator::List(body, ..) | Generator::Optional(body) | Generator::Event(_, body) => {
+            keyed(body, values)
+        }
         _ => 0,
     }
 }
@@ -144,10 +143,9 @@ fn fit(g: &mut Generator, draw: &Draw, values: &[Json]) -> usize {
         | Generator::Time
         | Generator::Datetime => Box::new(Json::is_string),
         Generator::OneOf(all) => return all.iter_mut().map(|g| fit(g, draw, values)).sum(),
-        Generator::List(body, ..)
-        | Generator::Optional(body)
-        | Generator::Add(_, body)
-        | Generator::Event(_, body) => return fit(body, draw, values),
+        Generator::List(body, ..) | Generator::Optional(body) | Generator::Event(_, body) => {
+            return fit(body, draw, values);
+        }
         _ => return 0,
     };
     let fitting: Vec<Json> = values.iter().filter(|v| fits(v)).cloned().collect();
@@ -188,7 +186,6 @@ fn narrow(g: &mut Generator, at: &mut Vec<String>, draw: &Draw, values: &[Json])
         | Generator::Dict(_, body)
         | Generator::Optional(body)
         | Generator::Recursive(_, body, ..)
-        | Generator::Add(_, body)
         | Generator::Event(_, body) => narrow(body, at, draw, values),
         _ => 0,
     }
@@ -239,7 +236,6 @@ pub fn live(g: Generator) -> Option<Generator> {
         Generator::Recursive(key, body, depth, leaves) => {
             boxed(*body).map(|body| Generator::Recursive(key, body, depth, leaves))
         }
-        Generator::Add(pool, body) => boxed(*body).map(|body| Generator::Add(pool, body)),
         Generator::Event(label, body) => boxed(*body).map(|body| Generator::Event(label, body)),
         other => Some(other),
     }

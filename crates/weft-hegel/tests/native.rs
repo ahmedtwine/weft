@@ -5,7 +5,11 @@ use std::process::Command;
 use serde_json::Value as Json;
 
 const FAMILIES: [&str; 3] = ["hegel_generate_", "hegel_string_generator_", "hegel_new_"];
-const NO_SCHEMA_FORM: [&str; 2] = ["hegel_generate_integer_big", "hegel_new_repeat"];
+const NO_SCHEMA_FORM: [&str; 3] = [
+    "hegel_generate_integer_big",
+    "hegel_new_repeat",
+    "hegel_new_pool",
+];
 const SOURCES: [&str; 2] = [
     include_str!("../src/generator.rs"),
     include_str!("../src/engine.rs"),

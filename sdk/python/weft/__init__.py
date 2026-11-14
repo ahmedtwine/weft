@@ -69,6 +69,12 @@ def state(key, read):
 
 def _shape(kind):
     origin, args = typing.get_origin(kind), typing.get_args(kind)
+    if origin is typing.Annotated:
+        shape = _shape(args[0])
+        for bound in args[1:]:
+            if isinstance(bound, range):
+                shape |= {"minimum": bound.start, "maximum": bound.stop - 1}
+        return shape
     if origin is typing.Literal:
         return {"enum": list(args)}
     if origin in (typing.Union, types.UnionType):
@@ -84,7 +90,7 @@ def _shape(kind):
     if hasattr(kind, "model_json_schema"):
         return kind.model_json_schema()
     if dataclasses.is_dataclass(kind) or typing.is_typeddict(kind):
-        hints = typing.get_type_hints(kind)
+        hints = typing.get_type_hints(kind, include_extras=True)
         needed = (
             [f.name for f in dataclasses.fields(kind) if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING]
             if dataclasses.is_dataclass(kind)

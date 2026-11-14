@@ -190,10 +190,16 @@ fn lines(text: &str) -> Vec<String> {
 }
 
 fn condition(text: &str) -> Vec<String> {
-    match text.split_once(" ≠ ") {
-        Some((left, right)) => vec![left.to_string(), format!("≠ {right}")],
-        None => lines(text),
-    }
+    [" ≠ ", " = ", " ≥ ", " > ", " ≤ ", " < "]
+        .iter()
+        .find_map(|sign| {
+            let (left, right) = text.split_once(sign)?;
+            Some(vec![
+                left.to_string(),
+                format!("{}{right}", sign.trim_start()),
+            ])
+        })
+        .unwrap_or_else(|| lines(text))
 }
 
 fn cut(text: &str) -> String {
