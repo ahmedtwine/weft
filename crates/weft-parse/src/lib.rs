@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 use kdl::KdlValue;
@@ -13,7 +13,6 @@ pub type State = BTreeMap<String, Pairs>;
 #[derive(Debug, Clone, Default)]
 pub struct Diagram {
     pub objects: Vec<Object>,
-    pub path: Vec<Step>,
     pub impls: Vec<Impl>,
 }
 
@@ -52,6 +51,7 @@ pub struct Use {
     pub input: Option<Name>,
     pub tag: Option<String>,
     pub verb: Option<String>,
+    pub by: Option<String>,
     pub pool: Option<String>,
     pub from: Option<(String, bool)>,
 }
@@ -69,7 +69,10 @@ impl Use {
         let parts = [
             named("input", &self.input),
             text("tag", &self.tag),
-            text("verb", &self.verb),
+            text(
+                "verb",
+                &self.verb.clone().filter(|v| *v != self.function.export),
+            ),
             text("pool", &self.pool),
             self.from.as_ref().map(|(pool, consume)| match consume {
                 true => format!(" consume=\"{pool}\""),
@@ -144,34 +147,9 @@ pub struct Object {
     pub icon: String,
     pub line: usize,
     pub start: Pairs,
-    pub rules: Vec<Rule>,
     pub invariants: Vec<Invariant>,
     pub draws: Vec<Draw>,
     pub pools: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Step {
-    pub from: String,
-    pub to: String,
-    pub verb: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Next {
-    Value(Json),
-    Input(Vec<String>),
-    Before(String, String),
-    After(String, String),
-    Start(String, String),
-}
-
-#[derive(Debug, Clone)]
-pub struct Rule {
-    pub verb: String,
-    pub when: Pairs,
-    pub next: Vec<(String, Next)>,
-    pub line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -214,14 +192,6 @@ pub struct Invariant {
     pub name: String,
     pub body: Now,
     pub line: usize,
-}
-
-#[derive(Clone, Copy)]
-pub struct Seen<'a> {
-    pub start: &'a State,
-    pub before: &'a State,
-    pub after: &'a State,
-    pub input: &'a Json,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,86 +376,6 @@ pub fn shown(p: &Pairs) -> String {
 
 fn written(p: &Pairs) -> String {
     joined(p, |k, v| format!("{k}={v}"), " ")
-}
-
-impl fmt::Display for Next {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Next::Value(v) => write!(f, "{v}"),
-            Next::Input(path) => write!(f, "(input)\"{}\"", path.join(".")),
-            Next::Before(o, k) => write!(f, "\"{o}.{k}\""),
-            Next::After(o, k) => write!(f, "(next)\"{o}.{k}\""),
-            Next::Start(o, k) => write!(f, "(start)\"{o}.{k}\""),
-        }
-    }
-}
-
-impl Next {
-    fn eval(&self, c: &Seen) -> Option<Json> {
-        match self {
-            Next::Value(v) => Some(v.clone()),
-            Next::Input(path) => path
-                .iter()
-                .try_fold(c.input, |node, part| node.get(part))
-                .cloned(),
-            Next::Before(o, k) => read(c.before, o, k).cloned(),
-            Next::After(o, k) => read(c.after, o, k).cloned(),
-            Next::Start(o, k) => read(c.start, o, k).cloned(),
-        }
-    }
-
-    fn key(&self) -> Option<(&String, &String)> {
-        match self {
-            Next::Before(o, k) | Next::After(o, k) | Next::Start(o, k) => Some((o, k)),
-            Next::Value(_) | Next::Input(_) => None,
-        }
-    }
-}
-
-impl Rule {
-    pub fn checks(&self, object: &str) -> bool {
-        !self
-            .next
-            .iter()
-            .all(|(key, next)| matches!(next, Next::After(o, k) if o == object && k == key))
-    }
-
-    pub fn source(&self) -> String {
-        let terms: String = self
-            .next
-            .iter()
-            .map(|(k, term)| format!(" {k}={term}"))
-            .collect();
-        match self.when.is_empty() {
-            true => format!("on \"{}\"{terms}", self.verb),
-            false => format!(
-                "state {} {{ on \"{}\"{terms} }}",
-                written(&self.when),
-                self.verb
-            ),
-        }
-    }
-
-    fn applies(&self, o: &str, verb: &str, before: &State) -> bool {
-        self.verb == verb && self.when.iter().all(|(k, v)| read(before, o, k) == Some(v))
-    }
-
-    fn differs(&self, o: &str, framed: &Pairs, error: Option<&str>, c: &Seen) -> Option<String> {
-        let keys: BTreeSet<&String> = framed
-            .keys()
-            .chain(self.next.iter().map(|(k, _)| k))
-            .collect();
-        keys.into_iter().find_map(|k| {
-            let want = match self.next.iter().find(|(key, _)| key == k) {
-                Some((_, term)) => term.eval(c),
-                None if error == Some(k.as_str()) => Some(json!("")),
-                None => read(c.before, o, k).cloned(),
-            };
-            let code = read(c.after, o, k);
-            (want.as_ref() != code)
-                .then(|| format!("{o}.{k} = {}, not {}", found(code), found(want.as_ref())))
-        })
-    }
 }
 
 impl Now {
@@ -697,33 +587,11 @@ impl Invariant {
 }
 
 impl Object {
-    fn rules(&self, verb: &str, before: &State) -> Vec<&Rule> {
-        let all: Vec<&Rule> = self
-            .rules
-            .iter()
-            .filter(|r| r.applies(&self.name, verb, before))
-            .collect();
-        match all.iter().any(|r| !r.when.is_empty()) {
-            true => all.into_iter().filter(|r| !r.when.is_empty()).collect(),
-            false => all,
-        }
-    }
-
     fn keys(&self) -> Vec<(&String, &String)> {
         let o = &self.name;
         self.start
             .keys()
-            .chain(
-                self.rules
-                    .iter()
-                    .flat_map(|r| r.when.keys().chain(r.next.iter().map(|(k, _)| k))),
-            )
             .map(|k| (o, k))
-            .chain(
-                self.rules
-                    .iter()
-                    .flat_map(|r| r.next.iter().filter_map(|(_, term)| term.key())),
-            )
             .chain(self.invariants.iter().flat_map(|i| i.body.keys()))
             .collect()
     }
@@ -740,24 +608,39 @@ impl Diagram {
             .map(|o| shown(&o.start))
     }
 
+    pub fn target(&self, u: &Use) -> Option<&str> {
+        let object = match &u.from {
+            Some((pool, _)) => self.objects.iter().find(|o| o.pools.contains(pool))?,
+            None => self.object(&u.function.module)?,
+        };
+        Some(&object.name)
+    }
+
     pub fn verbs(&self) -> Vec<(&str, &str)> {
         let mut out: Vec<(&str, &str)> = Vec::new();
-        for o in &self.objects {
-            for r in &o.rules {
-                if !out.contains(&(o.name.as_str(), r.verb.as_str())) {
-                    out.push((&o.name, &r.verb));
-                }
+        for u in self.impls.iter().flat_map(|i| &i.uses) {
+            if let (Role::Run, Some(object), Some(verb)) = (u.role, self.target(u), &u.verb)
+                && !out.contains(&(object, verb.as_str()))
+            {
+                out.push((object, verb));
             }
         }
         out
     }
 
-    pub fn rules(&self, object: &str, verb: &str) -> Vec<&Rule> {
-        self.object(object)
-            .into_iter()
-            .flat_map(|o| &o.rules)
-            .filter(|r| r.verb == verb)
-            .collect()
+    pub fn caller(&self, verb: &str) -> Option<&str> {
+        let by = self
+            .impls
+            .iter()
+            .flat_map(|i| &i.uses)
+            .find(|u| u.verb.as_deref() == Some(verb))
+            .and_then(|u| u.by.as_deref());
+        by.or_else(|| {
+            self.objects
+                .iter()
+                .find(|o| o.kind.is_person())
+                .map(|o| o.name.as_str())
+        })
     }
 
     pub fn invariants(&self) -> Vec<&Invariant> {
@@ -781,11 +664,6 @@ impl Diagram {
             .collect()
     }
 
-    pub fn enabled(&self, object: &str, verb: &str, before: &State) -> bool {
-        self.object(object)
-            .is_some_and(|o| !o.rules(verb, before).is_empty())
-    }
-
     pub fn started(&self, real: &State) -> Option<Vec<String>> {
         self.objects.iter().find_map(|o| {
             o.start.iter().find_map(|(k, v)| {
@@ -798,46 +676,6 @@ impl Diagram {
                 })
             })
         })
-    }
-
-    pub fn stepped(
-        &self,
-        object: &str,
-        verb: &str,
-        error: Option<&str>,
-        c: &Seen,
-    ) -> Option<Vec<String>> {
-        let found = self.object(object)?;
-        let rules = found.rules(verb, c.before);
-        let names = |r: &Rule| r.next.iter().any(|(k, _)| error == Some(k.as_str()));
-        let thrown = error
-            .filter(|k| read(c.after, object, k).is_some_and(|v| v != ""))
-            .filter(|_| !rules.iter().any(|r| names(r)))
-            .map(|k| Rule {
-                verb: verb.to_string(),
-                when: Pairs::new(),
-                next: vec![(
-                    k.to_string(),
-                    Next::After(object.to_string(), k.to_string()),
-                )],
-                line: 0,
-            });
-        let differs: Vec<(&Rule, Option<String>)> = match &thrown {
-            Some(rule) => vec![rule],
-            None => rules,
-        }
-        .into_iter()
-        .map(|r| (r, r.differs(object, &found.start, error, c)))
-        .collect();
-        match differs.iter().any(|(_, d)| d.is_none()) {
-            true => None,
-            false => Some(
-                differs
-                    .into_iter()
-                    .flat_map(|(r, d)| [r.source(), d.unwrap_or_default()])
-                    .collect(),
-            ),
-        }
     }
 }
 
@@ -1008,7 +846,10 @@ fn named(n: &KdlNode, text: &str) -> Result<Name, String> {
 fn used(n: &KdlNode) -> Result<Use, String> {
     let (role, allowed): (Role, &[&str]) = match name(n) {
         "start" => (Role::Start, &["input", "tag", "pool"]),
-        "run" => (Role::Run, &["input", "verb", "pool", "from", "consume"]),
+        "run" => (
+            Role::Run,
+            &["input", "verb", "by", "pool", "from", "consume"],
+        ),
         other => {
             return Err(format!(
                 "`impl` has `module`, `serve`, `start` and `run`, not `{other}`; a runner gives its state with `weft.state`"
@@ -1026,7 +867,6 @@ fn used(n: &KdlNode) -> Result<Use, String> {
     };
     let wrong = match (role, given("input"), given("tag"), given("verb")) {
         (_, None, Some(_), _) => Err("has a `tag` and no `input`"),
-        (Role::Run, None, _, None) => Err("needs `input` or `verb`"),
         _ => from,
     };
     let from = wrong.map_err(|wrong| format!("`{}` {wrong}", name(n)))?;
@@ -1045,12 +885,23 @@ fn used(n: &KdlNode) -> Result<Use, String> {
             }
         },
     };
+    let verb = function.export.clone();
+    if role == Role::Run && verb.is_empty() && given("verb").is_none() {
+        return Err(format!(
+            "`{}` names its verb with `verb=\"<verb>\"`",
+            name(n)
+        ));
+    }
     Ok(Use {
         role,
         function,
         input: schema("input")?,
         tag: given("tag"),
-        verb: given("verb"),
+        verb: match role {
+            Role::Run => given("verb").or(Some(verb)),
+            Role::Start => None,
+        },
+        by: given("by"),
         pool: given("pool"),
         from,
     })
@@ -1120,88 +971,12 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
     }
 }
 
-const ON: &str = "`on \"<verb>\" <key>=<term>…` has the value of each key after the step; a term is a value, `(input)\"<path>\"`, `\"<object>.<key>\"`, `(next)\"<object>.<key>\"` or `(start)\"<object>.<key>\"`, a key of the setup with no term has its value from before the step, and each other key is free";
-
 const INVARIANT: &str = "`invariant \"<name>\" { <condition> }` has one condition on one state; a condition is a Quint builtin `<op> <term>… { <op line>… }`: `and`, `or`, `not`, `implies`, `iff`, `eq`, `neq`, `in`, `ilt`, `ilte`, `igt`, `igte`, `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` or `iuminus`, or `forall` and `exists` as `forall \"<name>\" in=\"<object>.<key>\" { <condition> }` over each item of a list or a map; a term is `\"<name>.<field>\"` inside it, `\"<object>.<key>\"`, `(start)\"<object>.<key>\"` or a value, and each comparison names at least one `\"<object>.<key>\"`";
 
 fn refer(names: &[String], s: &str) -> Option<(String, String)> {
     let (o, k) = s.split_once('.')?;
     (names.iter().any(|n| n == o) && !k.is_empty() && !k.contains('.'))
         .then(|| (o.to_string(), k.to_string()))
-}
-
-fn next(e: &KdlEntry, names: &[String]) -> Result<Next, String> {
-    let named = |s: &str, to: fn(String, String) -> Next| {
-        refer(names, s).map(|(o, k)| to(o, k)).ok_or_else(|| {
-            format!(
-                "`{}` names `\"<object>.<key>\"`: {ON}",
-                e.to_string().trim()
-            )
-        })
-    };
-    match (e.ty().map(|t| t.value()), e.value()) {
-        (None, KdlValue::String(s)) => {
-            Ok(named(s, Next::Before).unwrap_or_else(|_| Next::Value(json!(s))))
-        }
-        (None, v @ KdlValue::Integer(_)) => Ok(Next::Value(value(v))),
-        (Some("input"), KdlValue::String(s)) if !s.is_empty() => {
-            Ok(Next::Input(s.split('.').map(String::from).collect()))
-        }
-        (Some("next"), KdlValue::String(s)) => named(s, Next::After),
-        (Some("start"), KdlValue::String(s)) => named(s, Next::Start),
-        _ => Err(format!("`{}` is not a term: {ON}", e.to_string().trim())),
-    }
-}
-
-fn on(n: &KdlNode, when: &Pairs, names: &[String], src: &str) -> Result<Rule, String> {
-    let verb = match n
-        .entries()
-        .iter()
-        .filter(|e| e.name().is_none())
-        .map(|e| (e.ty(), e.value()))
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        [(None, KdlValue::String(verb))] if n.children().is_none() => verb.clone(),
-        _ => return Err(ON.into()),
-    };
-    let mut terms: Vec<(String, Next)> = Vec::new();
-    for (key, e) in n
-        .entries()
-        .iter()
-        .filter_map(|e| e.name().map(|key| (key.value(), e)))
-    {
-        if terms.iter().any(|(k, _)| k == key) {
-            return Err(format!("`on \"{verb}\"` sets `{key}` twice"));
-        }
-        terms.push((key.to_string(), next(e, names)?));
-    }
-    Ok(Rule {
-        verb,
-        when: when.clone(),
-        next: terms,
-        line: line(src, n),
-    })
-}
-
-fn state(n: &KdlNode, o: &mut Object, names: &[String], src: &str) -> Result<(), String> {
-    shape(n, 0, &keys(n), true)?;
-    let when = pairs(n)?;
-    if when.is_empty() || lines(n).is_empty() {
-        return Err("`state <key>=<value>… { on … }` has the `on` lines of one state".into());
-    }
-    for c in lines(n) {
-        match name(c) {
-            "on" => o.rules.push(on(c, &when, names, src)?),
-            other => {
-                return Err(format!(
-                    "`state {}` has `on`, not `{other}`",
-                    written(&when)
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn term(e: &KdlEntry, names: &[String], bound: &[String]) -> Result<Now, String> {
@@ -1336,22 +1111,17 @@ fn object(n: &KdlNode, config: &Config, names: &[String], src: &str) -> Result<O
         icon,
         line: line(src, n),
         start: pairs(n).map_err(at)?,
-        rules: Vec::new(),
         invariants: Vec::new(),
         draws: Vec::new(),
         pools: Vec::new(),
     };
     for c in n.iter_children() {
         match name(c) {
-            "on" => on(c, &Pairs::new(), names, src).map(|rule| o.rules.push(rule)),
-            "state" => state(c, &mut o, names, src),
             "invariant" => invariant(c, names, src).map(|found| o.invariants.push(found)),
             "draw" if !o.draws.is_empty() => Err("has one `draw`".into()),
             "draw" => draw(c, &[], &mut o.draws),
             "pool" => shape(c, 1, &[], false).map(|mut given| o.pools.push(given.remove(0))),
-            other => Err(format!(
-                "has `pool`, `draw`, `on`, `state` and `invariant`, not `{other}`"
-            )),
+            other => Err(format!("has `pool`, `draw` and `invariant`, not `{other}`")),
         }
         .map_err(at)?;
     }
@@ -1365,15 +1135,6 @@ fn object(n: &KdlNode, config: &Config, names: &[String], src: &str) -> Result<O
         )));
     }
     Ok(o)
-}
-
-fn step(n: &KdlNode) -> Result<Step, String> {
-    shape(n, 0, &["from", "to"], false)?;
-    Ok(Step {
-        from: need(n, "from")?,
-        to: need(n, "to")?,
-        verb: name(n).to_string(),
-    })
 }
 
 fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, String> {
@@ -1396,18 +1157,15 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
             d.impls.push(found);
             continue;
         }
-        if !matches!(parent, "setup" | "action") {
-            return Err(format!("`{parent}` is not setup, action or impl"));
+        if parent != "setup" {
+            return Err(format!("`{parent}` is not setup or impl"));
         }
         shape(n, 0, &[], true)?;
         if !seen.insert(parent) {
             return Err(format!("`{parent}` is set twice"));
         }
         for c in n.iter_children() {
-            match parent {
-                "setup" => d.objects.push(object(c, config, &names, src)?),
-                _ => d.path.push(step(c)?),
-            }
+            d.objects.push(object(c, config, &names, src)?);
         }
     }
     if d.objects.is_empty() {
@@ -1437,18 +1195,21 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
             u.line()
         ));
     }
-    let verbs = d.verbs();
-    if let Some((u, verb)) = d.impls.iter().flat_map(|i| &i.uses).find_map(|u| {
-        [u.tag.as_ref(), u.verb.as_ref()]
-            .into_iter()
-            .flatten()
-            .find(|verb| !verbs.iter().any(|(_, v)| v == verb))
-            .map(|verb| (u, verb))
-    }) {
-        return Err(format!(
-            "{} names the verb `{verb}`, and no object of `setup` has `on \"{verb}\"`",
-            u.line()
-        ));
+    for u in d.impls.iter().flat_map(|i| &i.uses) {
+        if u.role == Role::Run && d.target(u).is_none() {
+            return Err(format!(
+                "{} runs on `{}`, and `setup` has no object `{}`",
+                u.line(),
+                u.function.module,
+                u.function.module
+            ));
+        }
+        if let Some(by) = u.by.as_ref().filter(|by| d.object(by).is_none()) {
+            return Err(format!(
+                "{} is `by=\"{by}\"`, and `setup` has no object `{by}`",
+                u.line()
+            ));
+        }
     }
     let invariants = d.invariants();
     if let Some(found) = invariants.iter().enumerate().find_map(|(at, i)| {
@@ -1459,22 +1220,8 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
     }) {
         return Err(format!("`invariant \"{}\"` is set twice", found.name));
     }
-    if verbs.is_empty() {
-        return Err("`setup` has one `on \"<verb>\"` line or more".into());
-    }
-    if d.path.is_empty() {
-        return Err(
-            "`action` has one `<verb> from=\"<object>\" to=\"<object>\"` line or more".into(),
-        );
-    }
-    for (k, s) in d.path.iter().enumerate() {
-        let at = |e: String| format!("`action` line {}: {e}", k + 1);
-        if let Some(unknown) = [&s.from, &s.to].into_iter().find(|x| d.object(x).is_none()) {
-            return Err(at(format!("unknown object `{unknown}`")));
-        }
-        if !verbs.contains(&(s.to.as_str(), s.verb.as_str())) {
-            return Err(at(format!("`{}` has no `on \"{}\"` line", s.to, s.verb)));
-        }
+    if d.verbs().is_empty() {
+        return Err("an `impl` has one `run` line or more".into());
     }
     Ok(d)
 }
@@ -1709,23 +1456,17 @@ style "element" icon="square-dashed-mouse-pointer""#;
     const BASE: &str = r#"
 setup {
   person "user"
-  browser "history" snapshot="snap_0" {
-    on "leave" snapshot="snap_1"
-    state snapshot="snap_1" {
-      on "back" snapshot="snap_0"
-    }
-  }
+  browser "history" snapshot="snap_0"
   element "origin" value="San Francisco" {
-    on "type" value=(input)"text"
     invariant "filled" {
       neq "origin.value" ""
     }
   }
 }
-action {
-  type from="user" to="origin"
-  leave from="user" to="history"
-  back from="user" to="history"
+impl "bun" {
+  module "origin" "../src/origin.ts"
+  start "origin.clear"
+  run "origin.type" input="origin.typeSchema"
 }
 "#;
 
@@ -1734,8 +1475,6 @@ setup {
   person "user"
   browser "page" count=0 opened=0 {
     pool "opened"
-    on "open" count=(next)"page.count" opened=(next)"page.opened"
-    on "close" count=(next)"page.count" opened=(next)"page.opened"
     invariant "closed" {
       implies {
         eq "page.opened" 0
@@ -1743,10 +1482,6 @@ setup {
       }
     }
   }
-}
-action {
-  open from="user" to="page"
-  close from="user" to="page"
 }
 impl "bun" {
   module "page" "../src/page.ts"
@@ -1774,170 +1509,31 @@ impl "bun" {
     }
 
     #[test]
-    fn a_diagram_has_objects_a_path_and_the_code() {
+    fn a_diagram_has_objects_and_the_code() {
         let d = parse(POOL, &config(CONFIG).unwrap()).unwrap();
         assert_eq!(d.verbs(), [("page", "open"), ("page", "close")]);
         assert_eq!(d.initial("page").unwrap(), "count = 0, opened = 0");
-        assert_eq!(d.path.len(), 2);
         assert_eq!(d.impls[0].uses.len(), 3);
         let cases = [
             (
-                "action {",
-                "rules {\n}\naction {",
-                Err("`rules` is not setup, action or impl"),
+                "impl \"bun\" {",
+                "rules {\n}\nimpl \"bun\" {",
+                Err("`rules` is not setup or impl"),
             ),
             (
-                "  close from=\"user\" to=\"page\"\n",
-                "  close from=\"user\" to=\"page\" page.count=1\n",
-                Err("`close` takes no `page.count`"),
+                "  module \"page\" \"../src/page.ts\"\n",
+                "  module \"page\" \"../src/page.ts\"\n  module \"tab\" \"../src/tab.ts\"\n  run \"tab.open\"\n",
+                Err("`run \"tab.open\"` runs on `tab`, and `setup` has no object `tab`"),
             ),
             (
-                "  close from=\"user\" to=\"page\"\n",
-                "  shut from=\"user\" to=\"page\"\n",
-                Err("`action` line 2: `page` has no `on \"shut\"` line"),
-            ),
-            (
-                "  open from=\"user\" to=\"page\"\n  close from=\"user\" to=\"page\"\n",
-                "",
-                Err("`action` has one `<verb> from=\"<object>\" to=\"<object>\"` line or more"),
-            ),
-            (
-                "    invariant \"closed\" {",
-                "    state count=0 {\n    }\n    invariant \"closed\" {",
-                Err(
-                    "browser page: `state <key>=<value>… { on … }` has the `on` lines of one state",
-                ),
+                "  run \"page.open\" input=\"page.openSchema\" pool=\"opened\"\n",
+                "  run \"page.open\" by=\"admin\"\n",
+                Err("`run \"page.open\"` is `by=\"admin\"`, and `setup` has no object `admin`"),
             ),
         ];
         for (from, to, want) in cases {
             assert_eq!(built(POOL, from, to), want.map_err(String::from), "{to}");
         }
-    }
-
-    #[test]
-    fn an_on_line_has_the_value_of_each_key_after_its_step() {
-        let d = parse(BASE, &config(CONFIG).unwrap()).unwrap();
-        assert_eq!(
-            d.rules("origin", "type")[0].source(),
-            r#"on "type" value=(input)"text""#
-        );
-        let origin = |value: &str| state("origin", &[("value", json!(value))]);
-        let (start, before, input) = (
-            origin("San Francisco"),
-            origin("San Francisco"),
-            json!({ "text": "Lahore" }),
-        );
-        let seen = |after: &State| {
-            d.stepped(
-                "origin",
-                "type",
-                None,
-                &Seen {
-                    start: &start,
-                    before: &before,
-                    after,
-                    input: &input,
-                },
-            )
-        };
-        assert_eq!(seen(&origin("Lahore")), None);
-        assert_eq!(
-            seen(&origin("Lahor")),
-            Some(vec![
-                r#"on "type" value=(input)"text""#.to_string(),
-                r#"origin.value = "Lahor", not "Lahore""#.to_string(),
-            ])
-        );
-        let term = |text: &str| built(BASE, "value=(input)\"text\"", &format!("value={text}"));
-        assert_eq!(term("\"Lahore\""), Ok(()));
-        assert_eq!(term("\"history.snapshot\""), Ok(()));
-        assert_eq!(term("(next)\"origin.value\""), Ok(()));
-        assert_eq!(term("(start)\"origin.value\""), Ok(()));
-        assert_eq!(
-            term("(next)\"value\""),
-            Err(format!(
-                "element origin: `value=(next)\"value\"` names `\"<object>.<key>\"`: {ON}"
-            ))
-        );
-        assert_eq!(
-            term("(later)\"origin.value\""),
-            Err(format!(
-                "element origin: `value=(later)\"origin.value\"` is not a term: {ON}"
-            ))
-        );
-        assert_eq!(
-            built(BASE, "on \"type\" value=", "on \"type\" value=1 value="),
-            Err("element origin: `on \"type\"` sets `value` twice".to_string())
-        );
-    }
-
-    #[test]
-    fn a_key_with_no_term_has_its_value_from_before_the_step() {
-        let d = parse(POOL, &config(CONFIG).unwrap()).unwrap();
-        let d = Diagram {
-            objects: d
-                .objects
-                .into_iter()
-                .map(|mut o| {
-                    o.rules.iter_mut().for_each(|r| r.next.truncate(1));
-                    o
-                })
-                .collect(),
-            ..d
-        };
-        let page = |count: i64, opened: i64| {
-            state(
-                "page",
-                &[("count", json!(count)), ("opened", json!(opened))],
-            )
-        };
-        let (start, before, input) = (page(0, 0), page(0, 0), Json::Null);
-        let seen = |after: &State| {
-            d.stepped(
-                "page",
-                "open",
-                None,
-                &Seen {
-                    start: &start,
-                    before: &before,
-                    after,
-                    input: &input,
-                },
-            )
-        };
-        assert_eq!(seen(&page(3, 0)), None);
-        assert_eq!(
-            seen(&page(3, 1)),
-            Some(vec![
-                r#"on "open" count=(next)"page.count""#.to_string(),
-                "page.opened = 1, not 0".to_string(),
-            ])
-        );
-    }
-
-    #[test]
-    fn a_state_block_has_the_on_lines_of_its_state() {
-        let d = parse(BASE, &config(CONFIG).unwrap()).unwrap();
-        let history = |snapshot: &str| {
-            let mut all = state("history", &[("snapshot", json!(snapshot))]);
-            all.extend(state("origin", &[("value", json!("San Francisco"))]));
-            all
-        };
-        assert!(d.enabled("history", "leave", &history("snap_0")));
-        assert!(!d.enabled("history", "back", &history("snap_0")));
-        assert!(d.enabled("history", "back", &history("snap_1")));
-        assert_eq!(
-            d.rules("history", "back")[0].source(),
-            r#"state snapshot="snap_1" { on "back" snapshot="snap_0" }"#
-        );
-        assert_eq!(d.started(&history("snap_0")), None);
-        assert_eq!(
-            d.started(&history("snap_1")),
-            Some(vec![
-                r#"browser "history" snapshot="snap_0""#.to_string(),
-                r#"history.snapshot = "snap_1", not "snap_0""#.to_string(),
-            ])
-        );
     }
 
     #[test]
@@ -2150,13 +1746,6 @@ impl "bun" {
                     "browser page: `opened` is the count of the values of `pool \"opened\"`, and a count is an integer",
                 ),
             ),
-            (
-                "verb=\"close\"",
-                "verb=\"shut\"",
-                Err(
-                    r#"`run "opened" verb="shut" consume="opened"` names the verb `shut`, and no object of `setup` has `on "shut"`"#,
-                ),
-            ),
         ];
         for (from, to, want) in cases {
             assert_eq!(built(POOL, from, to), want.map_err(String::from), "{to}");
@@ -2176,9 +1765,9 @@ impl "bun" {
                 Err(value("user", "person")),
             ),
             (
-                "type from=\"user\"",
-                "type from=user",
-                Err(value("from=user", "type")),
+                "start \"origin.clear\"",
+                "start origin.clear",
+                Err(value("origin.clear", "start")),
             ),
             (
                 "person \"user\"",
@@ -2227,8 +1816,8 @@ impl "bun" {
                 Err(line("person")),
             ),
             (
-                "type from=\"user\" to=\"origin\"",
-                "type from=\"user\" \\\n    to=\"origin\"",
+                "run \"origin.type\" input=\"origin.typeSchema\"",
+                "run \"origin.type\" \\\n    input=\"origin.typeSchema\"",
                 Ok(()),
             ),
         ];

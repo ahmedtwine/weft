@@ -8,9 +8,7 @@ const Parcel = z
 const parcels: z.infer<typeof Parcel>[] = [];
 state("courier.parcels", () => parcels, z.array(Parcel));
 
-export const shipSchema = z
-  .strictObject({ order: z.literal("o-ana") })
-  .meta({ weft: { verb: "ship" } });
+export const shipSchema = z.strictObject({ order: z.literal("o-ana") });
 
 const get = async (base: string, path: string) => {
   const response = await fetch(`${Bun.env[base]}${path}`, { headers: { "x-service": "courier" } });

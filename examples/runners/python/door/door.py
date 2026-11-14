@@ -13,36 +13,26 @@ door = Door()
 weft.state("door", lambda: door)
 
 
-def verb(name):
-    return {"type": "object", "properties": {}, "additionalProperties": False, "weft": {"verb": name}}
-
-
-openSchema = verb("open")
-closeSchema = verb("close")
-lockSchema = verb("lock")
-unlockSchema = verb("unlock")
-
-
 def reset():
     global door
     door = Door()
 
 
-def open(_):
+def open():
     global door
     door = Door("locked", "the door is locked") if door.state == "locked" else Door("open")
 
 
-def close(_):
+def close():
     global door
     door = Door("closed")
 
 
-def lock(_):
+def lock():
     global door
     door = Door("locked")
 
 
-def unlock(_):
+def unlock():
     global door
     door = Door("closed")

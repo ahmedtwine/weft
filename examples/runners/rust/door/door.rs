@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use schemars::JsonSchema;
 use serde::Serialize;
-use weft_sdk::{self as weft, Json, Module, json};
+use weft_sdk::{self as weft, Module};
 
 #[derive(Clone, Serialize, JsonSchema)]
 struct Door {
@@ -47,17 +47,9 @@ pub fn unlock() -> Result<(), String> {
     set("closed", "")
 }
 
-fn verb(verb: &str) -> Json {
-    json!({ "type": "object", "properties": {}, "additionalProperties": false, "weft": { "verb": verb } })
-}
-
 pub fn module() -> Module {
     weft::state("door", now);
     weft::module!()
-        .schema("openSchema", verb("open"))
-        .schema("closeSchema", verb("close"))
-        .schema("lockSchema", verb("lock"))
-        .schema("unlockSchema", verb("unlock"))
         .function("reset", reset)
         .function("open", open)
         .function("close", close)

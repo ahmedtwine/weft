@@ -1,17 +1,6 @@
 setup {
   person "user"
-  device "door" state="closed" error="" {
-    state state="closed" {
-      on "open" state="open"
-      on "lock" state="locked"
-    }
-    state state="open" {
-      on "close" state="closed"
-    }
-    state state="locked" {
-      on "open" error="the door is locked"
-      on "unlock" state="closed" error=""
-    }
+  device "door" {
     invariant "an error only when locked" {
       implies {
         neq "door.error" ""
@@ -20,18 +9,11 @@ setup {
     }
   }
 }
-action {
-  open from="user" to="door"
-  close from="user" to="door"
-  lock from="user" to="door"
-  open from="user" to="door"
-  unlock from="user" to="door"
-}
 impl "rust" {
   module "door" "../runners/rust/door/door.rs"
   start "door.reset"
-  run "door.open" input="door.openSchema"
-  run "door.close" input="door.closeSchema"
-  run "door.lock" input="door.lockSchema"
-  run "door.unlock" input="door.unlockSchema"
+  run "door.open"
+  run "door.close"
+  run "door.lock"
+  run "door.unlock"
 }

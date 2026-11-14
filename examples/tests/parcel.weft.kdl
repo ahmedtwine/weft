@@ -1,11 +1,8 @@
 setup {
   person "ana"
   person "dispatcher"
-  api "shop" address_id="addr-ana" {
-    on "choose_address" address_id=(input)"address_id"
-  }
+  api "shop"
   api "courier" {
-    on "ship"
     invariant "a parcel goes only to the address of its own customer" {
       forall "p" in="courier.parcels" {
         eq "p.customer" "p.recipient"
@@ -14,10 +11,6 @@ setup {
   }
   api "orders"
   api "addresses"
-}
-action {
-  choose_address from="ana" to="shop"
-  ship from="dispatcher" to="courier"
 }
 impl "go" {
   module "orders" "../runners/go/parcel/orders.go"
@@ -32,10 +25,10 @@ impl "rust" {
 impl "python" {
   module "shop" "../runners/python/parcel/shop.py"
   start "shop.open_shop"
-  run "shop.choose_address" input="shop.chooseAddressSchema"
+  run "shop.choose_address" input="shop.chooseAddressSchema" by="ana"
 }
 impl "bun" {
   module "courier" "../runners/bun/parcel/courier.ts"
   start "courier.reset"
-  run "courier.ship" input="courier.shipSchema"
+  run "courier.ship" input="courier.shipSchema" by="dispatcher"
 }

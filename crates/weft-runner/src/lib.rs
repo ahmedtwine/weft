@@ -204,13 +204,10 @@ mod tests {
 setup {
   person "user"
   browser "page" count=0 {DRAW
-    on "send" count=(input)"n"
-    on "reload"
+    invariant "counted" {
+      igte "page.count" 0
+    }
   }
-}
-action {
-  send from="user" to="page"
-  reload from="user" to="page"
 }
 impl "bun" {
   module "page" "../src/page.ts"
@@ -227,8 +224,6 @@ setup {
   person "user"
   browser "page" count=0 opened=0 {
     pool "opened"
-    on "open" count=(next)"page.count" opened=(next)"page.opened"
-    on "close" count=(next)"page.count" opened=(next)"page.opened"
     invariant "closed" {
       implies {
         eq "page.opened" 0
@@ -236,10 +231,6 @@ setup {
       }
     }
   }
-}
-action {
-  open from="user" to="page"
-  close from="user" to="page"
 }
 impl "bun" {
   module "page" "../src/page.ts"
@@ -423,7 +414,7 @@ impl "bun" {
 
     fn reloader(app: &App, turn: &Json) -> Json {
         if turn["step"] == "reload" {
-            set(app, |n| if n > 5 { 0 } else { n });
+            set(app, |n| if n > 5 { -1 } else { n });
         }
         json!({ "states": {}, "added": [] })
     }
@@ -536,7 +527,7 @@ impl "bun" {
         assert!(
             o.trace
                 .iter()
-                .any(|l| view(&l.state).contains("opened = 2")),
+                .any(|l| view(&l.state).contains("opened = 1")),
             "the state has the count of the pool"
         );
         Ok(())
@@ -593,20 +584,6 @@ impl "bun" {
             "{error}"
         );
         Ok(())
-    }
-
-    #[test]
-    fn weft_refuses_a_run_schema_with_no_verb() {
-        let hello = json!({ "uses": [input(None, NONE), input(None, NUMBER), null], "states": { "page.count": { "type": "integer" } } });
-        let error = two(&socket("refuse"), "", hello, reloader)
-            .err()
-            .unwrap_or_default();
-        assert!(
-            error.contains(
-                r#"`run "page.send" input="page.sendSchema"` is a `run`, and its schema has no `verb` annotation"#
-            ),
-            "{error}"
-        );
     }
 
     #[test]

@@ -25,7 +25,6 @@ chooseAddressSchema = {
     "properties": {"address_id": {"type": "string", "enum": ["addr-ana", "addr-ben"]}},
     "required": ["address_id"],
     "additionalProperties": False,
-    "weft": {"verb": "choose_address"},
 }
 
 

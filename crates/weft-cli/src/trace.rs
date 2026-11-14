@@ -1,8 +1,8 @@
-use std::{cmp::Reverse, collections::BTreeSet, ffi::OsStr, fs, iter, path::Path};
+use std::{collections::BTreeSet, iter};
 
 use serde_json::{Value as Json, json};
-use weft_draw::{Call, Card, Code, Row, guessed, summary};
-use weft_parse::{Diagram, Ran, Span, State};
+use weft_draw::{Call, Code, Row, Step, guessed, summary};
+use weft_parse::{Diagram, Pairs, Ran, Span, State};
 use weft_simulator::{Hop, Outcome};
 
 use crate::escape;
@@ -10,10 +10,6 @@ use crate::escape;
 const START: &str = "start";
 const PASS: &str = "circle-check";
 const FAIL: &str = "circle-x";
-const GUTTER: usize = 8;
-const NARROWEST: usize = 24;
-const WIDEST: usize = 52;
-const LINES: usize = 6;
 const SHORT: usize = 32;
 
 pub fn kinds(ran: &Ran) -> Vec<(&str, &[Span])> {
@@ -26,160 +22,46 @@ pub fn size(s: &Span) -> usize {
     s.to + 1 - s.from
 }
 
-fn place(s: &Span) -> String {
-    match size(s) {
-        1 => format!("{}:{}", s.file, s.from),
-        _ => format!("{}:{}-{}", s.file, s.from, s.to),
-    }
+fn row(o: &Outcome, object: &str, key: &str, value: &Json) -> Row {
+    [
+        o.types
+            .get(&format!("{object}.{key}"))
+            .cloned()
+            .unwrap_or_else(|| guessed(value).to_string()),
+        key.to_string(),
+        summary(value),
+    ]
 }
 
-fn far(file: &str, path: &str) -> usize {
-    let dirs = |p: &str| -> Vec<String> {
-        Path::new(p)
-            .parent()
-            .into_iter()
-            .flat_map(Path::components)
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect()
-    };
-    let (a, b) = (dirs(file), dirs(path));
-    let same = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    a.len() + b.len() - 2 * same
-}
-
-fn ranked<'a>(spans: &'a [Span], ran: &Ran, path: &str) -> Vec<&'a Span> {
-    let all = kinds(ran);
-    let shared = |s: &Span| {
-        all.iter()
-            .filter(|(_, other)| {
-                other
-                    .iter()
-                    .any(|o| o.file == s.file && o.from <= s.to && s.from <= o.to)
-            })
-            .count()
-    };
-    let mut out: Vec<&Span> = spans.iter().collect();
-    out.sort_by_cached_key(|s| {
-        (
-            shared(s),
-            far(&s.file, path),
-            Reverse(size(s)),
-            s.file.clone(),
-            s.from,
-        )
-    });
-    out
-}
-
-fn fit(line: &str) -> String {
-    let room = WIDEST - GUTTER;
-    match line.chars().count() > room {
-        true => line.chars().take(room - 1).chain(['…']).collect(),
-        false => line.to_string(),
-    }
-}
-
-fn snippet(s: &Span) -> Result<Option<(usize, String)>, String> {
-    let text = fs::read_to_string(&s.file).map_err(|e| format!("`ran` names `{}`: {e}", s.file))?;
-    let lines: Vec<&str> = text.lines().skip(s.from - 1).take(size(s)).collect();
-    if lines.len() != size(s) {
-        return Err(format!(
-            "`ran` names `{}`, and the file has {} lines",
-            place(s),
-            text.lines().count()
-        ));
-    }
-    let indent = |l: &&str| l.len() - l.trim_start().len();
-    let first = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| l.chars().any(char::is_alphabetic))
-        .min_by_key(|(_, l)| indent(l))
-        .map(|(i, _)| i);
-    Ok(first.map(|first| {
-        let shown = &lines[first..lines.len().min(first + LINES)];
-        let shown = &shown[..shown
-            .iter()
-            .rposition(|l| !l.trim().is_empty())
-            .map_or(0, |i| i + 1)];
-        let cut = shown
-            .iter()
-            .filter(|l| !l.trim().is_empty())
-            .map(indent)
-            .min()
-            .unwrap_or(0);
-        let code: Vec<String> = shown
-            .iter()
-            .map(|l| fit(&l.get(cut..).unwrap_or_default().replace('\t', "  ")))
-            .collect();
-        (s.from + first, code.join("\n"))
-    }))
-}
-
-fn wrapped(path: &str, cols: usize) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    for part in path.split_inclusive('/') {
-        match lines.last_mut() {
-            Some(last) if last.chars().count() + part.chars().count() <= cols => {
-                last.push_str(part)
-            }
-            _ => lines.push(part.to_string()),
-        }
-    }
-    lines
-}
-
-fn card(spans: &[Span], ran: &Ran, path: &str) -> Result<Option<Card>, String> {
-    ranked(spans, ran, path)
-        .into_iter()
-        .find_map(|s| snippet(s).map(|found| found.map(|f| (s, f))).transpose())
-        .transpose()
-        .map(|found| {
-            found.map(|(s, (from, code))| {
-                let cols = code
-                    .lines()
-                    .map(|l| l.chars().count() + GUTTER)
-                    .max()
-                    .unwrap_or(0)
-                    .clamp(NARROWEST, WIDEST);
-                let caption = wrapped(&s.file, cols);
-                Card {
-                    rows: code.lines().count() + caption.len() + 1,
-                    cols,
-                    html: format!(
-                        r#"<figure><figcaption>{}</figcaption><pre data-lang="{}" data-from="{from}">{}</pre></figure>"#,
-                        caption
-                            .iter()
-                            .map(|l| escape(l))
-                            .collect::<Vec<_>>()
-                            .join("<br>"),
-                        Path::new(&s.file)
-                            .extension()
-                            .and_then(OsStr::to_str)
-                            .filter(|e| e.chars().all(char::is_alphanumeric))
-                            .unwrap_or("text"),
-                        escape(&code)
-                    ),
-                }
+pub fn code(d: &Diagram, o: &Outcome) -> Code {
+    let steps: Vec<Step> = o
+        .trace
+        .windows(2)
+        .filter_map(|pair| {
+            let (before, after) = (&pair[0], &pair[1]);
+            let (verb, to) = after.action.clone()?;
+            let empty = Pairs::new();
+            let then = before.state.get(&to).unwrap_or(&empty);
+            let changed = after
+                .state
+                .get(&to)
+                .unwrap_or(&empty)
+                .iter()
+                .filter(|(k, v)| then.get(*k) != Some(*v))
+                .map(|(k, v)| row(o, &to, k, v))
+                .collect();
+            Some(Step {
+                from: d.caller(&verb).unwrap_or(&to).to_string(),
+                calls: calls(&after.hops),
+                changed,
+                verb,
+                to,
             })
         })
-}
-
-pub fn code(d: &Diagram, o: &Outcome, path: &str) -> Result<Code, String> {
-    let ran = &o.ran;
-    let mut action_calls: Vec<(String, Vec<Call>)> = Vec::new();
-    for l in o.trace.iter().skip(1) {
-        if let Some((verb, _)) = &l.action
-            && !action_calls.iter().any(|(v, _)| v == verb)
-        {
-            action_calls.push((verb.clone(), calls(&l.hops)));
-        }
-    }
+        .collect();
     let failed = o.failed.then(|| o.trace.last()).flatten().map(|l| {
         (
-            l.action
-                .as_ref()
-                .map_or(START.to_string(), |(verb, _)| verb.clone()),
+            l.action.as_ref().map(|_| steps.len().saturating_sub(1)),
             brief(&l.evidence).pop().into_iter().collect(),
         )
     });
@@ -193,37 +75,19 @@ pub fn code(d: &Diagram, o: &Outcome, path: &str) -> Result<Code, String> {
                     let keys = l.state.get(&object.name)?;
                     let rows: Vec<Row> = keys
                         .iter()
-                        .map(|(k, v)| {
-                            [
-                                o.types
-                                    .get(&format!("{}.{k}", object.name))
-                                    .cloned()
-                                    .unwrap_or_else(|| guessed(v).to_string()),
-                                k.clone(),
-                                summary(v),
-                            ]
-                        })
+                        .map(|(k, v)| row(o, &object.name, k, v))
                         .collect();
                     (!rows.is_empty()).then(|| (object.name.clone(), rows))
                 })
                 .collect()
         })
         .unwrap_or_default();
-    Ok(Code {
+    Code {
         initial,
         failed,
         start_calls: o.trace.first().map_or(Vec::new(), |l| calls(&l.hops)),
-        action_calls,
-        start: card(&ran.start, ran, path)?,
-        actions: ran
-            .actions
-            .iter()
-            .map(|(verb, spans)| Ok(card(spans, ran, path)?.map(|c| (verb.clone(), c))))
-            .collect::<Result<Vec<_>, String>>()?
-            .into_iter()
-            .flatten()
-            .collect(),
-    })
+        steps,
+    }
 }
 
 fn at<'a>(state: &'a State, object: &str, key: &str) -> Option<&'a Json> {
@@ -368,11 +232,6 @@ pub fn brief(evidence: &[String]) -> Vec<String> {
 
 pub fn checked(d: &Diagram) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
-    for o in &d.objects {
-        for r in o.rules.iter().filter(|r| r.checks(&o.name)) {
-            out.extend(r.next.iter().map(|(k, _)| (o.name.clone(), k.clone())));
-        }
-    }
     let sources: Vec<String> = d.invariants().iter().map(|i| i.source()).collect();
     for (object, key) in d.keys() {
         if sources

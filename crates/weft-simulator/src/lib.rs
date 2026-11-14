@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value as Json, json};
 use weft_hegel::{Case, Engine, Halt, INTERESTING, INVALID, OVERRUN, VALID};
-use weft_parse::{Diagram, Ran, Seen, Span, State, shown};
+use weft_parse::{Diagram, Ran, Span, State, shown};
 
 use crate::shape::{Field, field, item, kind};
 
@@ -28,7 +28,6 @@ pub use weft_hegel::Generator;
 
 const STEPS: i64 = 20;
 const TRIES: usize = 4;
-const PATH: f64 = 0.25;
 const ORIGIN: &str = "weft";
 const START: &str = "start";
 
@@ -148,7 +147,7 @@ struct Run<'a> {
     tally: Vec<Tally>,
     found: Option<Vec<Line>>,
     trace: Vec<Line>,
-    longest: Vec<Line>,
+    story: Vec<Line>,
     refused: BTreeSet<String>,
 }
 
@@ -197,6 +196,22 @@ fn written(input: &Json) -> String {
             .join(" "),
         other => other.to_string(),
     }
+}
+
+fn covered(trace: &[Line]) -> usize {
+    trace
+        .iter()
+        .filter_map(|l| l.action.as_ref().map(|(verb, _)| verb))
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn telling(trace: &[Line]) -> Vec<Line> {
+    let all = covered(trace);
+    let end = (1..=trace.len())
+        .find(|n| covered(&trace[..*n]) == all)
+        .unwrap_or(trace.len());
+    trace[..end].to_vec()
 }
 
 fn merged(mut state: State, part: State) -> State {
@@ -370,9 +385,6 @@ impl Run<'_> {
             action,
         } = &self.steps[rule];
         let (verb, object, owner, action) = (verb.clone(), object.clone(), *owner, *action);
-        if !self.d.enabled(&object, &verb, real) {
-            return Ok(Stepped::Refused);
-        }
         let mut line = Line {
             action: Some((verb.clone(), object.clone())),
             input: Vec::new(),
@@ -444,22 +456,10 @@ impl Run<'_> {
         let next = self.sized(case, next);
         self.tally[rule].steps += 1;
         self.tally[rule].checks += 1;
-        let judged = self.d.stepped(
-            &object,
-            &verb,
-            None,
-            &Seen {
-                start: &self.first,
-                before: real,
-                after: &next,
-                input: line.input.last().unwrap_or(&Json::Null),
-            },
-        );
         line.state = next.clone();
-        line.evidence = judged.clone().unwrap_or_default();
         self.trace.push(line);
         *real = next;
-        Ok(judged.map_or(Stepped::Next, Stepped::Failed))
+        Ok(Stepped::Next)
     }
 
     fn stepped(
@@ -472,29 +472,6 @@ impl Run<'_> {
             Ok(real) => real,
             Err(evidence) => return Ok(Some(evidence)),
         };
-        if case.chance(PATH)? {
-            let path: Vec<usize> = self
-                .d
-                .path
-                .iter()
-                .filter_map(|s| {
-                    self.steps
-                        .iter()
-                        .position(|step| step.verb == s.verb && step.object == s.to)
-                })
-                .collect();
-            for rule in path {
-                let failed = match self.step(case, members, rule, &mut real)? {
-                    Stepped::Next => self.judged(case, Some(rule), &real)?,
-                    Stepped::Refused => return Err(Halt::Invalid),
-                    Stepped::Failed(evidence) => Some(evidence),
-                };
-                if failed.is_some() {
-                    return Ok(failed);
-                }
-            }
-            return Ok(None);
-        }
         let rules: Vec<String> = self.tally.iter().map(|t| t.step.clone()).collect();
         let invariants: Vec<String> = self
             .d
@@ -540,8 +517,15 @@ impl Run<'_> {
         };
         match status == INTERESTING {
             true => self.found = Some(self.trace.clone()),
-            false if self.trace.len() > self.longest.len() => self.longest = self.trace.clone(),
-            false => {}
+            false => {
+                let found = telling(&self.trace);
+                if covered(&found) > covered(&self.story)
+                    || (covered(&found) == covered(&self.story) && found.len() < self.story.len())
+                    || self.story.is_empty()
+                {
+                    self.story = found;
+                }
+            }
         }
         case.complete(status, (status == INTERESTING).then_some(ORIGIN))
     }
@@ -717,7 +701,7 @@ pub fn simulate(
         first: State::new(),
         found: None,
         trace: Vec::new(),
-        longest: Vec::new(),
+        story: Vec::new(),
         refused: BTreeSet::new(),
     };
     let mut engine = Engine::start(cases, key)?;
@@ -732,7 +716,7 @@ pub fn simulate(
     let verb = |t: &Tally| t.step.split(' ').next().unwrap_or_default().to_string();
     if let Some(refused) = [START.to_string()]
         .into_iter()
-        .filter(|_| run.longest.is_empty())
+        .filter(|_| run.story.is_empty())
         .chain(run.tally.iter().filter(|t| t.steps == 0).map(verb))
         .filter(|_| !ended.failed)
         .find(|v| run.refused.contains(v))
@@ -749,7 +733,7 @@ pub fn simulate(
         .next()
     {
         return Err(format!(
-            "each `on` line runs in one case or more, and `on \"{unrun}\"` runs in none"
+            "each `run` line runs in one case or more, and `{unrun}` runs in none"
         ));
     }
     let ran = Ran {
@@ -760,7 +744,7 @@ pub fn simulate(
     let trace = match (ended.failed, run.found) {
         (true, Some(found)) => found,
         (true, None) => return Err("Hegel fails the run with no failing case".into()),
-        (false, _) => run.longest,
+        (false, _) => run.story,
     };
     let types = types(
         members,

@@ -107,10 +107,14 @@ fn checks(o: &Outcome) -> u64 {
     o.tally.iter().map(|t| t.checks).sum()
 }
 
-fn headline(config: &Config, o: &Outcome, took: Duration) -> String {
+fn headline(d: &Diagram, config: &Config, o: &Outcome, took: Duration) -> String {
     format!(
-        "adapter {}{} · {} cases · {} runs · {} steps · {} checks{}{} [{:.2}s]",
-        config.adapter,
+        "{}{} · {} cases · {} runs · {} steps · {} checks{}{} [{:.2}s]",
+        d.impls
+            .iter()
+            .map(|i| i.adapter.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
         config
             .transport
             .as_ref()
@@ -250,7 +254,7 @@ fn summary(path: &str, d: &Diagram, config: &Config, o: &Outcome, took: Duration
             _ => String::new(),
         }
     );
-    [head, format!("  {}", headline(config, o, took))]
+    [head, format!("  {}", headline(d, config, o, took))]
         .into_iter()
         .chain(invariants(d).into_iter().map(|rule| format!("  {rule}")))
         .chain(tables(d, o).iter().flat_map(Table::text))
@@ -266,7 +270,7 @@ fn section(path: &str, src: &str, d: &Diagram, o: &Outcome) -> Result<String, St
     Ok(format!(
         r#"<section><h2>{}</h2><ul class="unstyled">{rules}</ul><div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true">Diagram</button><button type="button" role="tab" aria-selected="false">Run</button></div><div class="d" role="tabpanel">{}</div><div role="tabpanel" hidden>{}<details><summary>{}</summary><pre>{}</pre></details></div></section>"#,
         escape(path),
-        weft_draw::svg(d, None, &trace::code(d, o, path)?)?,
+        weft_draw::svg(d, None, &trace::code(d, o))?,
         trace::panel(d, o)?,
         escape(path),
         escape(src)
