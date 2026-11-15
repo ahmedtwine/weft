@@ -1748,7 +1748,7 @@ dependencies = [
 
 [[package]]
 name = "weft-c"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cbindgen",
  "weft-draw",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "weft-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "globset",
  "ignore",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "weft-draw"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "merman",
  "serde_json",
@@ -1780,7 +1780,7 @@ dependencies = [
 
 [[package]]
 name = "weft-hegel"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "hegeltest-c",
  "serde_json",
@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "weft-parse"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "kdl",
  "miette",
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "weft-runner"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde_json",
  "ureq",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "weft-sdk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "proc-macro2",
  "schemars",
@@ -1820,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "weft-simulator"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde_json",
  "weft-hegel",
@@ -1830,7 +1830,7 @@ dependencies = [
 
 [[package]]
 name = "weft-wire"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ureq",
 ]
