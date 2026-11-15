@@ -2,6 +2,15 @@
 
 A distributed runner for property tests, built on [Hegel](https://hegel.dev) and [KDL](https://kdl.dev). A test names its objects, the invariants that hold over their state, and the module of each object. Hegel draws every sequence of the functions of those modules with inputs from their native types, checks each invariant after each step, and shrinks a failing case to the fewest steps and the least values, as `quint run --invariant` does for a Quint spec.
 
+## Install
+
+```sh
+bun add -d git+ssh://git@github.com/ahmedtwine/weft.git#v0.4.0
+GH_TOKEN=<token> bunx weft tests/*.weft.kdl
+```
+
+The `weft` command downloads the binary and libweft of its release on the first run. `GH_TOKEN` gives read access to `ahmedtwine/weft`.
+
 ## Run the examples
 
 ```sh
