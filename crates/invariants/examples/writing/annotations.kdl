@@ -1,0 +1,7 @@
+annotate "for people who don't want to think about backups" note="talking in negatives"
+annotate "It quietly watches the folders you care about" note="ugh"
+annotate "with no daemon to babysit and no dashboard to check" note="what it does not do, again"
+annotate "Each change is split into chunks" note="passive voice crawls my blood"
+annotate "The shape of your data lives in a small index" note="vague, what does this even mean"
+annotate "This matters because" note="verbose"
+annotate "a restore isn't a special mode" note="talking in negatives"

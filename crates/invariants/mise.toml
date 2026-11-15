@@ -1,0 +1,4 @@
+[tasks.examples]
+description = "Narrow each annotation of the writing and code examples"
+raw = true
+run = ["cargo run -q -p invariants -- narrow examples/writing", "cargo run -q -p invariants -- narrow examples/code"]
