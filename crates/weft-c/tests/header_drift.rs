@@ -20,6 +20,6 @@ fn header_matches_source() {
     let existing = fs::read_to_string(&path).unwrap_or_default();
     assert!(
         existing == generated,
-        "include/weft.h is out of date. Run `WEFT_C_HEADER_WRITE=1 cargo test -p weft-c`."
+        "include/weft.h is out of date. Run `WEFT_C_HEADER_WRITE=1 cargo nextest run -p weft-c`."
     );
 }

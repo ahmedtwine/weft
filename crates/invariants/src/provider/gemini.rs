@@ -8,7 +8,7 @@ use crate::Result;
 use crate::provider::{cached, secret};
 
 pub const MODEL: &str = "gcp.gemini/gemini-flash-latest";
-const INSTRUCTIONS: &str = "You get an artifact, the part of it that a person rejects, the marked text in that part, the note of that person, and a size. First find that many possible reasons for the note. Each reason is one property of the marked text, stated in general words that apply to any artifact of the same medium. The reasons compete: each one is a different explanation of the note, from a different kind of property, such as the form, the words, the actor, the claim, or what the reader can do with the part. Two reasons that differ only in wording are one reason. List the reasons in `reasons` before you write any alternate. Then write one alternate for each reason, in the same order. The alternate keeps the topic, each fact and each other property of the part, and removes only the property of its reason. When the person accepts the alternate, the reason is part of the note. When the person rejects it, the reason is not. In `change`, state the property that the alternate removes, in ten words or fewer.";
+const INSTRUCTIONS: &str = "You get an artifact, a part that a person rejects, the marked text in it, the note of the person, and a size. Write that many invariants that the part violates and that can explain the note, each in one general sentence of ten words or fewer, with a one-word name. For each invariant, write one alternate of the part that keeps each fact, satisfies that invariant, and violates each other invariant.";
 
 pub struct Gemini {
     runtime: tokio::runtime::Runtime,
@@ -18,21 +18,21 @@ fn schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "reasons": {"type": "array", "items": {"type": "string"}},
-            "alternates": {
+            "invariants": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "text": {"type": "string"},
-                        "change": {"type": "string"}
+                        "name": {"type": "string"},
+                        "measure": {"type": "string"}
                     },
-                    "required": ["text", "change"],
+                    "required": ["name", "measure"],
                     "additionalProperties": false
                 }
-            }
+            },
+            "alternates": {"type": "array", "items": {"type": "string"}}
         },
-        "required": ["reasons", "alternates"],
+        "required": ["invariants", "alternates"],
         "additionalProperties": false
     })
 }
@@ -68,6 +68,16 @@ impl Gemini {
             (model, INSTRUCTIONS, context.to_string()),
             ask(model, context),
         ))?;
-        Ok(answer["alternates"].as_array().cloned().unwrap_or_default())
+        let invariants = answer["invariants"].as_array().cloned().unwrap_or_default();
+        Ok(answer["alternates"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .zip(invariants)
+            .map(|(text, invariant)| {
+                json!({"text": text, "name": invariant["name"], "measure": invariant["measure"]})
+            })
+            .collect())
     }
 }

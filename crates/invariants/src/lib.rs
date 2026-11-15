@@ -1,3 +1,4 @@
+pub mod artifact;
 pub mod machine;
 pub mod medium;
 

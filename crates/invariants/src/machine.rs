@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde_json::json;
 
 use crate::provider::gemini::{Gemini, MODEL};
@@ -19,7 +17,7 @@ pub struct Alternate {
 pub struct Machine {
     pub alternates: Vec<Alternate>,
     reactions: Vec<Option<bool>>,
-    invariants: Vec<(String, String)>,
+    pub invariants: Vec<(String, String)>,
 }
 
 impl Machine {
@@ -28,7 +26,6 @@ impl Machine {
         medium: &dyn Medium,
         artifact: &str,
         (marked, note): (&str, &str),
-        invariants: &BTreeMap<String, String>,
     ) -> Result<Self> {
         let at = artifact
             .find(marked)
@@ -53,6 +50,10 @@ impl Machine {
             ),
         };
         let mut drawn = vec![(part.text.clone(), "annotation", note.to_string())];
+        let mut candidates = vec![(
+            marked.to_string(),
+            format!("Each part is free of the text {marked:?}."),
+        )];
         for rule in std::iter::once(model).chain(medium.rules(
             artifact,
             part,
@@ -61,8 +62,14 @@ impl Machine {
             let kind = rule.drawn.kind();
             for value in rule.drawn.values(gemini)? {
                 if let Some(text) = value["text"].as_str() {
-                    let change = value["change"].as_str().unwrap_or_default();
+                    let change = value["measure"].as_str().unwrap_or_default();
                     drawn.push((text.to_string(), kind, change.to_string()));
+                    if let (Some(name), Some(measure)) =
+                        (value["name"].as_str(), value["measure"].as_str())
+                        && !candidates.iter().any(|(known, _)| known == name)
+                    {
+                        candidates.push((name.to_string(), measure.to_string()));
+                    }
                     continue;
                 }
                 let input = value
@@ -91,12 +98,7 @@ impl Machine {
                 unique.push(alternate);
             }
         }
-        let literal = (
-            marked.to_string(),
-            format!("Each part is free of the text {marked:?}."),
-        );
-        let invariants: Vec<(String, String)> =
-            std::iter::once(literal).chain(invariants.clone()).collect();
+        let invariants = candidates;
         let texts: Vec<&str> = unique.iter().map(|(text, ..)| text.as_str()).collect();
         let alternates: Vec<Alternate> =
             scores(jev, &invariants.iter().cloned().collect(), &texts)?

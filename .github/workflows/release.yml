@@ -23,7 +23,7 @@ jobs:
           components: clippy
       - uses: taiki-e/install-action@nextest
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo nextest run --locked
+      - run: cargo nextest run --workspace --locked
 
   build:
     name: Build ${{ matrix.target }}

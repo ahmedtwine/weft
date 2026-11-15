@@ -25,7 +25,7 @@ run = ["bun install --frozen-lockfile", "bun link"]
 description = "Run the tests and clippy of the Cargo workspace"
 run = [
   "cargo clippy --workspace --all-targets --locked -- -D warnings",
-  "cargo test --workspace --locked",
+  "cargo nextest run --workspace --locked",
 ]
 
 [tasks.notices]
