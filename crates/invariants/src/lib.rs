@@ -64,7 +64,7 @@ use serde_json::{Value, json};
 use crate::provider::gemini::Gemini;
 use crate::provider::jev::Jev;
 
-pub const THRESHOLD: f64 = 0.9;
+pub const THRESHOLD: f64 = 0.82;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -127,20 +127,32 @@ pub fn scores(
     invariants: &BTreeMap<String, String>,
     texts: &[&str],
 ) -> Result<Vec<BTreeMap<String, f64>>> {
-    let instructions: BTreeMap<String, Value> = invariants
-        .keys()
-        .map(|name| {
-            (
-                name.clone(),
-                json!(format!("`line` violates `invariants.{name}`.")),
-            )
-        })
-        .collect();
+    if invariants.is_empty() {
+        return Ok(vec![BTreeMap::new(); texts.len()]);
+    }
     let states: Vec<Value> = texts
         .iter()
-        .map(|text| json!({"line": text, "invariants": invariants}))
+        .flat_map(|part| {
+            invariants
+                .values()
+                .map(move |invariant| json!({"part": part, "invariant": invariant}))
+        })
         .collect();
-    jev.nouls(&states, &instructions)
+    let instructions = BTreeMap::from([(
+        "violation".to_string(),
+        json!("`part` violates `invariant`."),
+    )]);
+    Ok(jev
+        .nouls(&states, &instructions)?
+        .chunks(invariants.len())
+        .map(|nouls| {
+            invariants
+                .keys()
+                .cloned()
+                .zip(nouls.iter().flat_map(|noul| noul.values().copied()))
+                .collect()
+        })
+        .collect())
 }
 
 pub fn lint(

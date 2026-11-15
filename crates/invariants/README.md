@@ -22,7 +22,7 @@ You mark a part of any artifact with a note. A model writes the invariants that 
 5. Keep each invariant that reports each alternate you reject and passes each alternate you accept.
 6. Take the invariant with the fewest violations.
 
-Each request to Jev holds one alternate and each invariant as one question under its name. A score of 0.9 or more is a violation.
+Each request to Jev holds one alternate and one invariant. A score of 0.82 or more is a violation.
 
 ## weft-hegel format
 

@@ -28,8 +28,7 @@
   "invariants": {
     "negation": "Each negated clause is the only statement of a condition.",
     "passive": "Each verb is in the active voice.",
-    "vague": "Each noun is a concrete object, person or number.",
-    "meta": "Each sentence states a fact about the topic of the text."
+    "vague": "Each noun is a concrete object, person or number."
   },
   "violations": {
     "negation": [
@@ -44,11 +43,6 @@
       "Nothing was changed in the restore command.",
       "The changelog lists no fixes yet.",
       "This is a first release, not a finished product."
-    ],
-    "meta": [
-      "Here's where it gets interesting: Tidepool never stores a full copy of your files.",
-      "The point is simple: your backups should hold up when you need them, and they should stay yours.",
-      "This matters because restores are where most backup tools fall apart."
     ],
     "vague": [
       "In practice, the overall experience of managing backups becomes significantly smoother for everyone involved.",
