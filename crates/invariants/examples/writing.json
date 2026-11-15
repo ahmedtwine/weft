@@ -1,0 +1,60 @@
+{
+  "annotations": [
+    [
+      "for people who don't want to think about backups",
+      "talking in negatives"
+    ],
+    [
+      "It quietly watches the folders you care about",
+      "ugh"
+    ],
+    [
+      "Each change is split into chunks",
+      "passive voice crawls my blood"
+    ],
+    [
+      "The shape of your data lives in a small index",
+      "vague, what does this even mean"
+    ],
+    [
+      "This matters because",
+      "verbose"
+    ],
+    [
+      "a restore isn't a special mode",
+      "talking in negatives"
+    ]
+  ],
+  "invariants": {
+    "negation": "Each negated clause is the only statement of a condition.",
+    "passive": "Each verb is in the active voice.",
+    "vague": "Each noun is a concrete object, person or number.",
+    "meta": "Each sentence states a fact about the topic of the text."
+  },
+  "violations": {
+    "negation": [
+      "Tidepool never loses a file, and nothing leaves your laptop unencrypted.",
+      "It's not just a copy of your files—it's peace of mind.",
+      "Here's where it gets interesting: Tidepool never stores a full copy of your files.",
+      "With Tidepool, a restore isn't a special mode, it's just a sync in the other direction.",
+      "The real issue isn't speed—it's trust.",
+      "You need a second key for buckets over 1 TB, not just the owner key.",
+      "Duplicate chunks are removed on your laptop, not in the bucket.",
+      "It's not a bug — it's a design choice.",
+      "Nothing was changed in the restore command.",
+      "The changelog lists no fixes yet.",
+      "This is a first release, not a finished product."
+    ],
+    "meta": [
+      "Here's where it gets interesting: Tidepool never stores a full copy of your files.",
+      "The point is simple: your backups should hold up when you need them, and they should stay yours.",
+      "This matters because restores are where most backup tools fall apart."
+    ],
+    "vague": [
+      "In practice, the overall experience of managing backups becomes significantly smoother for everyone involved.",
+      "It's not just a copy of your files—it's peace of mind.",
+      "The real issue isn't speed—it's trust.",
+      "The shape of your data lives in a small index, and that index is the engine of the whole system."
+    ]
+  }
+}

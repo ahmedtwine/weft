@@ -147,7 +147,7 @@ The `reset` functions run in the order of the `impl` blocks.
 | `weft-draw`      | Draws a test and its failing case as a sequence diagram                                      |
 | `weft-c`         | libweft, the C ABI that each SDK loads                                                       |
 | `weft-cli`       | The `weft` command and its report                                                            |
-| `invariants`     | The frontend that generates invariants: turns a free-form annotation on any artifact into a rule that a machine checks; see [its README](crates/invariants/README.md) |
+| `invariants`     | Narrows your annotation on any artifact to the weakest rule that agrees with your reactions, and reports each part that violates a rule; see [its README](crates/invariants/README.md) |
 
 ## License
 

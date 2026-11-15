@@ -1,4 +1,3 @@
 [tasks.examples]
-description = "Narrow each annotation of the writing and code examples"
-raw = true
-run = ["cargo run -q -p invariants -- narrow examples/writing", "cargo run -q -p invariants -- narrow examples/code"]
+description = "Narrow each annotation of each example to a rule and compare the violations with the expected violations"
+run = ["cargo run -q -p invariants -- test examples/writing.md", "cargo run -q -p invariants -- test examples/code.rs"]

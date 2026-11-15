@@ -3165,7 +3165,6 @@ name = "invariants"
 version = "0.4.0"
 dependencies = [
  "futures",
- "kdl",
  "rig",
  "serde",
  "serde_json",
@@ -3419,7 +3418,6 @@ checksum = "082ddf81b2acd76fe04412655d17befedfff1837db772f8e74c38050d25ed670"
 dependencies = [
  "miette",
  "num-traits",
- "serde",
  "winnow 0.7.15",
 ]
 
@@ -5817,6 +5815,8 @@ version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc9eff465db44a1c3fa8e1950e54d18e9f1b6721a59cddd44aaeb150a5838e63"
 dependencies = [
+ "rig-agent",
+ "rig-cassette",
  "rig-core",
  "rig-fastembed",
  "rig-harness-protocol",
@@ -5827,6 +5827,40 @@ dependencies = [
  "rig-tungstenite",
  "rig-typesafeai",
  "rig-vectorize",
+]
+
+[[package]]
+name = "rig-agent"
+version = "0.46.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0175c1087b491593f47de7639fb349665b4a6caceb4f65e549e9dc42dc02b7ae"
+dependencies = [
+ "async-stream",
+ "futures",
+ "http",
+ "indexmap 2.14.2",
+ "rig-core",
+ "rig-memory",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "tracing-futures",
+]
+
+[[package]]
+name = "rig-cassette"
+version = "0.46.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca25973567a393cc57f8627e50b8bc4dee4421affbd15609ca6675eb660c8f2"
+dependencies = [
+ "base64 0.22.1",
+ "futures",
+ "rig-agent",
+ "rig-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5920,6 +5954,21 @@ dependencies = [
  "rig-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rig-memory"
+version = "0.46.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d4423dfa0337714345615cdfefee141605f166be1c174211139bdcbbe25403c"
+dependencies = [
+ "base64 0.22.1",
+ "memchr",
+ "rig-core",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
 ]
 
 [[package]]
@@ -7247,6 +7296,18 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
+]
+
+[[package]]
+name = "tracing-futures"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97d095ae15e245a057c8e8451bab9b3ee1e1f68e9ba2b4fbc18d0ac5237835f2"
+dependencies = [
+ "futures",
+ "futures-task",
+ "pin-project",
+ "tracing",
 ]
 
 [[package]]

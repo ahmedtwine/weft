@@ -1,0 +1,11 @@
+{
+  "annotations": [
+    ["Finding", "vague"]
+  ],
+  "invariants": {
+    "ing": "Each name is free of the -ing form."
+  },
+  "violations": {
+    "ing": ["pub struct Finding", "pub struct Matching"]
+  }
+}

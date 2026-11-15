@@ -1,7 +1,0 @@
-flag "struct Manager" rule="vague"
-flag "fn process" rule="vague"
-flag "fn get_subtotal" rule="layer"
-flag "const MAX_ITEMS" rule="alias"
-flag "const ITEM_LIMIT" rule="alias"
-flag "let basket = items;" rule="alias"
-flag "// add up the cents" rule="comment"

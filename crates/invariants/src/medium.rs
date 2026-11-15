@@ -1,6 +1,8 @@
 use std::ops::Range;
 
-use crate::{Action, Generator, Medium, Part};
+use serde_json::Value;
+
+use crate::{Generator, Medium, Part, Rule};
 
 pub struct Prose;
 
@@ -16,8 +18,6 @@ pub fn of(path: &str) -> Box<dyn Medium + Send + Sync> {
 const STD: [&str; 11] = [
     "Vec", "String", "Option", "Result", "Ok", "Err", "Some", "None", "Self", "self", "format",
 ];
-
-const ITEMS: &str = "id: item\nlanguage: rust\nrule:\n  any:\n    - kind: mod_item\n    - kind: struct_item\n    - kind: enum_item\n    - kind: trait_item\n    - kind: const_item\n    - kind: function_item\n    - kind: field_declaration\n    - kind: let_declaration\n    - kind: parameter\n    - kind: line_comment";
 
 fn tidy(text: &str) -> String {
     let joined = text
@@ -73,14 +73,14 @@ fn local(name: &str) -> String {
     )
 }
 
-fn start(m: &serde_json::Value) -> usize {
+fn start(m: &Value) -> usize {
     m["range"]["byteOffset"]["start"]
         .as_u64()
         .and_then(|n| usize::try_from(n).ok())
         .unwrap_or_default()
 }
 
-fn span(m: &serde_json::Value) -> Range<usize> {
+fn span(m: &Value) -> Range<usize> {
     start(m)
         ..m["range"]["byteOffset"]["end"]
             .as_u64()
@@ -88,7 +88,7 @@ fn span(m: &serde_json::Value) -> Range<usize> {
             .unwrap_or_default()
 }
 
-fn apply(text: &str, mut matches: Vec<serde_json::Value>) -> String {
+fn apply(text: &str, mut matches: Vec<Value>) -> String {
     matches.sort_by_key(|m| std::cmp::Reverse(start(m)));
     matches.iter().fold(text.to_string(), |out, m| {
         let at = m["replacementOffsets"]["start"]
@@ -232,8 +232,17 @@ impl Code {
         ))
     }
 
+    fn home(artifact: &str, part: &Part) -> Range<usize> {
+        Self::functions(artifact)
+            .into_iter()
+            .filter(|r| r.contains(&part.span.start))
+            .min_by_key(Range::len)
+            .unwrap_or(part.span.clone())
+    }
+
     fn inline(artifact: &str, part: &Part, name: &str) -> Option<String> {
-        let found = grep(WRAPPER, &part.text)
+        let home = Self::home(artifact, part);
+        let found = grep(WRAPPER, &artifact[home.clone()])
             .into_iter()
             .find(|m| m["metaVariables"]["single"]["NAME"]["text"] == name)?;
         let params: Vec<String> = found["metaVariables"]["multi"]["PARAMS"]
@@ -263,17 +272,17 @@ impl Code {
                 .join(", ")
         );
         let rule = format!("id: inline\nlanguage: rust\nrule:\n  pattern: {call}\nfix: {body:?}");
-        let calls: Vec<serde_json::Value> = grep(&rule, artifact)
+        let calls: Vec<Value> = grep(&rule, artifact)
             .into_iter()
-            .filter(|m| !part.span.contains(&start(m)))
+            .filter(|m| !home.contains(&start(m)))
             .collect();
         let edited = apply(artifact, calls);
-        let at = edited.find(&part.text)?;
-        Some(cut_out(&edited, at..at + part.text.len()))
+        let at = edited.find(&artifact[home.clone()])?;
+        Some(cut_out(&edited, at..at + home.len()))
     }
 }
 
-fn grep(rules: &str, text: &str) -> Vec<serde_json::Value> {
+fn grep(rules: &str, text: &str) -> Vec<Value> {
     let Ok(mut child) = std::process::Command::new("ast-grep")
         .args(["scan", "--inline-rules", rules, "--json=stream", "--stdin"])
         .stdin(std::process::Stdio::piped())
@@ -343,23 +352,24 @@ impl Medium for Prose {
         out
     }
 
-    fn actions(&self, _artifact: &str, part: &Part, marked: Range<usize>) -> Vec<Action> {
+    fn rules(&self, _artifact: &str, part: &Part, marked: Range<usize>) -> Vec<Rule> {
         let pieces = clauses(&part.text);
         let first = part.text[marked].to_string();
-        let removable: Vec<String> = std::iter::once(first.clone())
+        let removable = std::iter::once(first.clone())
             .chain(pieces.iter().map(|c| c.to_string()).filter(|c| *c != first))
+            .map(Value::from)
             .collect();
         let last = i64::try_from(pieces.len()).unwrap_or(1) - 1;
-        let mut out = vec![Action {
+        let mut out = vec![Rule {
             verb: "remove".into(),
             drawn: Generator::SampledFrom(removable),
         }];
         if last > 0 {
-            out.push(Action {
+            out.push(Rule {
                 verb: "keep".into(),
                 drawn: Generator::Integer(0, last),
             });
-            out.push(Action {
+            out.push(Rule {
                 verb: "split".into(),
                 drawn: Generator::SampledFrom(vec![", ".into()]),
             });
@@ -389,29 +399,26 @@ impl Medium for Prose {
             )
         })
     }
-
-    fn cut(&self, text: &str, cut: &[String]) -> bool {
-        text.replace('\u{2019}', "'")
-            .to_lowercase()
-            .split(|c: char| !c.is_alphanumeric() && c != '\'')
-            .any(|word| cut.iter().any(|c| c == word))
-    }
 }
 
 impl Medium for Code {
     fn parts(&self, artifact: &str) -> Vec<Part> {
-        let mut parts: Vec<Part> = grep(ITEMS, artifact)
-            .iter()
-            .map(|m| Part {
-                span: span(m),
-                text: m["text"].as_str().unwrap_or_default().to_string(),
+        let mut at = 0;
+        artifact
+            .split_inclusive('\n')
+            .filter_map(|line| {
+                let start = at + line.len() - line.trim_start().len();
+                at += line.len();
+                let text = line.trim();
+                (!text.is_empty()).then(|| Part {
+                    span: start..start + text.len(),
+                    text: text.to_string(),
+                })
             })
-            .collect();
-        parts.sort_by_key(|p| p.span.start);
-        parts
+            .collect()
     }
 
-    fn actions(&self, artifact: &str, part: &Part, marked: Range<usize>) -> Vec<Action> {
+    fn rules(&self, artifact: &str, part: &Part, marked: Range<usize>) -> Vec<Rule> {
         let name = &part.text[marked];
         let functions: Vec<String> = grep(&kinds(&["function_item".into()]), artifact)
             .iter()
@@ -435,33 +442,33 @@ impl Medium for Code {
             .cloned()
             .chain(plurals)
             .filter(|w| w != name && style(w) == style(name))
-            .map(|w| format!("{name} {w}"))
+            .map(|w| Value::from(format!("{name} {w}")))
             .collect();
         let mut out = vec![
-            Action {
+            Rule {
                 verb: "rename".into(),
                 drawn: Generator::SampledFrom(renames),
             },
-            Action {
+            Rule {
                 verb: "remove".into(),
                 drawn: Generator::SampledFrom(
-                    std::iter::once(name.to_string())
+                    std::iter::once(Value::from(name))
                         .chain(
                             grep(&kinds(&["line_comment".into()]), &part.text)
                                 .iter()
-                                .filter_map(|m| m["text"].as_str().map(str::to_string)),
+                                .filter_map(|m| m["text"].as_str().map(Value::from)),
                         )
                         .collect(),
                 ),
             },
         ];
-        if grep(WRAPPER, &part.text)
+        if grep(WRAPPER, &artifact[Self::home(artifact, part)])
             .iter()
             .any(|m| m["metaVariables"]["single"]["NAME"]["text"] == name)
         {
-            out.push(Action {
+            out.push(Rule {
                 verb: "inline".into(),
-                drawn: Generator::SampledFrom(vec![name.to_string()]),
+                drawn: Generator::SampledFrom(vec![name.into()]),
             });
         }
         out
@@ -482,10 +489,5 @@ impl Medium for Code {
             _ => return None,
         };
         (edited != artifact && valid(&edited)).then_some(edited)
-    }
-
-    fn cut(&self, text: &str, cut: &[String]) -> bool {
-        let whole = text.len() - text.trim_start().len()..text.trim_end().len();
-        grep(&kinds(cut), text).iter().any(|m| span(m) == whole)
     }
 }
