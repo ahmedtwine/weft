@@ -236,7 +236,7 @@ flowchart TB
 | `impl "<lang>"`               | The label `<object> · <lang>` of the section        |
 | Each action of the module     | A node from the state of its section                |
 | `invariant "<name>"`          | A box in the section of its object                  |
-| The first `person`            | The caller in the Sequence tab                      |
+| The first `person`            | The caller in the sequence diagram below            |
 
 A run adds the test cases and the trace. Each step highlights its action, writes the state values into the section, and turns a broken invariant red. A hover on an action lists its steps.
 

@@ -459,6 +459,7 @@ const select = async (file, test) => {
 };
 
 const drawing = (plugin, title, rest) => ({ title, plugin, theme: theme(), ...rest });
+const diagrams = () => ({ type: "split-layout", orientation: "vertical", sizes: [0.55, 0.45], children: [cell(["machine"]), cell(["sequence"])] });
 const stacked = (sizes, children) => ({ type: "split-layout", orientation: "vertical", sizes, children });
 const started = (file, wait) => first("tests", { columns: [TEST_CASE], filter: [[FILE, "==", file], ["weft.steps", ">", 0]] }, wait);
 
@@ -467,7 +468,7 @@ const drawn = async (file) => {
   const plan = { table: "files", columns: [DIAGRAM, MACHINE], filter: [[FILE, "==", file]] };
   await viewer.restoreWorkspace({
     panels: { machine: drawing("Machine", `${file} · states`, plan), sequence: drawing("Sequence", `${file} · sequence`, plan) },
-    layout: cell(["machine", "sequence"]),
+    layout: diagrams(),
   });
   await started(file, true);
   if (history.state === file) await trace(file);
@@ -501,7 +502,7 @@ const trace = async (file) => {
       type: "split-layout",
       orientation: "horizontal",
       sizes: [0.32, 0.68],
-      children: [stacked([0.3, 0.7], [cell(["cases"]), cell(["trace"])]), cell(["machine", "sequence"])],
+      children: [stacked([0.3, 0.7], [cell(["cases"]), cell(["trace"])]), diagrams()],
     },
   });
   await retire();
