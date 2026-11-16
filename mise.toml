@@ -1,11 +1,7 @@
 monorepo_root = true
 
 [monorepo]
-config_roots = [
-  "crates/weft-samples",
-  "examples",
-  "examples/runners/*",
-]
+config_roots = ["examples"]
 
 [tools]
 rust = { version = "1.98.1", components = "clippy" }

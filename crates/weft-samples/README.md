@@ -1,27 +1,27 @@
 # weft-samples
 
-You mark a part of any artifact with a note. A model writes the invariants that can explain your note, with one alternate of the part for each invariant. Your reactions to the alternates leave the weakest invariant that the part violates, and you lint new content with it.
+An annotation marks a part of any artifact with a note. A model writes the invariants that can explain the note, with one alternate of the part for each invariant. The reactions to the alternates leave the weakest invariant that the part violates, and `weft-samples check` lints new content with it.
 
 ## Types
 
 | Type | Meaning |
 |---|---|
-| Annotation | A part that you reject, with your note |
+| Annotation | A rejected part, with its note |
 | Generator | The source of the values of a rule |
 | Rule | An edit that a medium allows on a part, with its generator |
 | Alternate | A variant of the annotated part, or another part |
-| Reaction | Your reject or accept of an alternate |
+| Reaction | The reject or accept of an alternate |
 | Example | A text and what a person says about it; an annotation is one example |
 | Candidate | A name and one measure; each source of invariants gives this format |
 | Invariant | A name and one sentence that states what must be true |
 
 ## Machine
 
-1. Start with your annotation as the first rejected alternate.
-2. Draw from the `Model` generator: invariants that can explain your note, and one alternate for each invariant that satisfies it.
+1. Start with the annotation as the first rejected alternate.
+2. Draw from the `Model` generator: invariants that can explain the note, and one alternate for each invariant that satisfies it.
 3. Add the marked text as a literal invariant, the alternates from each rule of the medium, and each other part.
 4. In each round, react to the alternate that splits the invariants nearest to half.
-5. Keep each invariant that reports each alternate you reject and passes each alternate you accept.
+5. Keep each invariant that reports each rejected alternate and passes each accepted alternate.
 6. Take the invariant with the fewest violations.
 
 Each request to Jev holds one alternate and one invariant. A score of 0.82 or more is a violation.
@@ -42,7 +42,7 @@ The generator and the machine use the names of `weft-hegel`, but the two machine
 | `Machine::react` with reject | `case.rejected` |
 | `Machine::invariant` | `case.complete` with `INTERESTING` |
 
-`Generator::Model` sends the artifact, the part, the marked text, your note and a size to the model. Each value is one alternate with the name and the sentence of the invariant that it satisfies.
+`Generator::Model` sends the artifact, the part, the marked text, the note and a size to the model. Each value is one alternate with the name and the sentence of the invariant that it satisfies.
 
 ## Model
 
@@ -71,7 +71,7 @@ A `Source` gives examples and a context. `Given` is the plain source.
 
 | Source | Text of an example | Note | Context |
 |---|---|---|---|
-| An annotation | The marked text | Your note | The artifact and the part |
+| An annotation | The marked text | The note | The artifact and the part |
 | The tests of a system | One test file | Its path | The keys of the state, the actions and the grammar of a condition |
 
 ## Mediums
@@ -88,7 +88,7 @@ To add a medium, implement `parts`, `rules` and `run` of the `Medium` trait. To 
 | Command | Result |
 |---|---|
 | `weft-samples check <file> <invariants.json>` | Each violation, with its place and invariant name |
-| `weft-samples narrow <file>` | Your reactions for each annotation in `<file>.json`, then each invariant and its violations |
+| `weft-samples narrow <file>` | The reactions for each annotation in `<file>.json`, then each invariant and its violations |
 
 ## To do
 

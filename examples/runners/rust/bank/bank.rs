@@ -26,15 +26,15 @@ fn change(by: impl FnOnce(&mut Bank)) -> Result<(), String> {
     Ok(())
 }
 
-pub fn reset() -> Result<(), String> {
+fn reset() -> Result<(), String> {
     change(|b| b.balance = 0)
 }
 
-pub fn deposit(given: Amount) -> Result<(), String> {
+fn deposit(given: Amount) -> Result<(), String> {
     change(|b| b.balance += given.amount)
 }
 
-pub fn withdraw(given: Amount) -> Result<(), String> {
+fn withdraw(given: Amount) -> Result<(), String> {
     change(|b| {
         if given.amount <= b.balance {
             b.balance -= given.amount;

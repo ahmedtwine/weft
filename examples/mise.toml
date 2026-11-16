@@ -8,12 +8,27 @@ description = "Install the packages of the examples"
 depends = ["//:install"]
 run = "bun install"
 
+[tasks."build:rust"]
+description = "Build the Rust runner of the bank and the addresses app"
+dir = "runners/rust"
+run = "cargo build --release"
+
+[tasks."build:go"]
+description = "Build the Go runner of the bank and the orders app"
+dir = "runners/go"
+run = "go build -o bin/runner ."
+
+[tasks."build:python"]
+description = "Make the virtual environment of the Python runner of the bank and the shop app"
+dir = "runners/python"
+run = "uv sync --quiet"
+
 [tasks.build]
 description = "Build weft and every runner of the examples"
-depends = ["//:build", ":install", "//examples/runners/...:build"]
+depends = ["//:build", ":install", ":build:*"]
 
 [tasks.test]
-description = "Run every weft diagram of the examples"
+description = "Run every weft test of the examples"
 depends = [":build"]
 run = "../target/release/weft"
 

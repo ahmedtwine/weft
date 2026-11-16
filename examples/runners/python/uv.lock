@@ -15,5 +15,5 @@ requires-dist = [{ name = "weft-sdk", editable = "../../../sdk/python" }]
 
 [[package]]
 name = "weft-sdk"
-version = "0.3.0"
+version = "0.7.0"
 source = { editable = "../../../sdk/python" }
