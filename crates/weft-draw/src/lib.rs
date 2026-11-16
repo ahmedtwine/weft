@@ -7,7 +7,7 @@ use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Render
 use sealmap_mermaid::{Ident, escape_text};
 use serde_json::Value;
 use vendor::lucide::ICONS;
-use weft_parse::{Diagram, Now, Op, Quant, State};
+use weft_parse::{Diagram, Invariant, Now, Op, State};
 
 const WRAP: usize = 24;
 const PAD: f64 = 10.0;
@@ -624,6 +624,8 @@ const DONE: &str = "done";
 pub const LAYOUTS: &str = "\n%% layout\n";
 const RUNNERS: [usize; 7] = [1, 2, 3, 5, 6, 7, 8];
 
+const FAILED_SERIES: usize = 4;
+
 fn series(n: usize) -> usize {
     RUNNERS[n % RUNNERS.len()]
 }
@@ -639,26 +641,6 @@ fn fixed(text: &str) -> String {
     escape_text(&cut)
 }
 
-struct Term {
-    id: String,
-    object: Option<String>,
-    shape: &'static str,
-    label: String,
-}
-
-struct Check {
-    rule: String,
-    sign: &'static str,
-    terms: [Term; 2],
-}
-
-struct Bound {
-    name: String,
-    object: String,
-    key: String,
-    each: bool,
-}
-
 fn sign(op: Op) -> Option<&'static str> {
     match op {
         Op::Eq => Some("="),
@@ -672,94 +654,29 @@ fn sign(op: Op) -> Option<&'static str> {
     }
 }
 
-fn term(now: &Now, bound: &[Bound], literal: &str) -> Term {
-    let field = |object: &str, label: String, each: bool| Term {
-        id: Ident::new(&format!("f_{object}_{label}")).to_string(),
-        object: Some(object.to_string()),
-        shape: if each { "st-rect" } else { "rect" },
-        label,
-    };
+fn read<'a>(now: &'a Now, keys: &mut Vec<(&'a str, &'a str)>, signs: &mut Vec<&'static str>) {
     match now {
-        Now::Key(object, key) | Now::Start(object, key) => field(object, key.clone(), false),
-        Now::Var(name, path) => match bound.iter().rev().find(|b| b.name == *name) {
-            Some(b) => field(
-                &b.object,
-                [b.key.clone()]
-                    .into_iter()
-                    .chain(path.iter().cloned())
-                    .collect::<Vec<_>>()
-                    .join("."),
-                b.each,
-            ),
-            None => Term {
-                id: Ident::new(literal).to_string(),
-                object: None,
-                shape: "text",
-                label: name.clone(),
-            },
-        },
-        other => Term {
-            id: Ident::new(literal).to_string(),
-            object: None,
-            shape: "text",
-            label: other.quint(),
-        },
-    }
-}
-
-fn checks(rule: &str, now: &Now, bound: &mut Vec<Bound>, out: &mut Vec<Check>) {
-    match now {
-        Now::Each(quant, name, set, body, _) => {
-            let pushed = match set.as_ref() {
-                Now::Key(object, key) | Now::Start(object, key) => {
-                    bound.push(Bound {
-                        name: name.clone(),
-                        object: object.clone(),
-                        key: key.clone(),
-                        each: *quant == Quant::Forall,
-                    });
-                    true
-                }
-                _ => false,
-            };
-            checks(rule, body, bound, out);
-            if pushed {
-                bound.pop();
+        Now::Key(object, key) | Now::Start(object, key) => {
+            if !keys.contains(&(object.as_str(), key.as_str())) {
+                keys.push((object, key));
             }
         }
-        Now::App(op, args, _) => match (sign(*op), args.as_slice()) {
-            (Some(sign), [left, right, ..]) => {
-                let n = out.len();
-                out.push(Check {
-                    rule: rule.to_string(),
-                    sign,
-                    terms: [
-                        term(left, bound, &format!("l_{n}_0")),
-                        term(right, bound, &format!("l_{n}_1")),
-                    ],
-                });
-            }
-            _ => args.iter().for_each(|a| checks(rule, a, bound, out)),
-        },
+        Now::App(op, args, _) => {
+            signs.extend(sign(*op).filter(|s| !signs.contains(s)));
+            args.iter().for_each(|a| read(a, keys, signs));
+        }
+        Now::Each(_, _, set, body, _) => {
+            read(set, keys, signs);
+            read(body, keys, signs);
+        }
         _ => {}
     }
 }
 
-fn node(t: &Term) -> String {
-    format!(
-        "{}@{{ shape: {}, label: \"{}\" }}",
-        t.id,
-        t.shape,
-        escape_text(&t.label)
-    )
-}
-
-fn checks_of(d: &Diagram) -> Vec<Check> {
-    let mut out = Vec::new();
-    for i in d.invariants() {
-        checks(&i.place(), &i.body, &mut Vec::new(), &mut out);
-    }
-    out
+fn reads(i: &Invariant) -> (Vec<(&str, &str)>, Vec<&'static str>) {
+    let (mut keys, mut signs) = (Vec::new(), Vec::new());
+    read(&i.body, &mut keys, &mut signs);
+    (keys, signs)
 }
 
 pub struct Moment<'a> {
@@ -863,6 +780,15 @@ impl Moment<'_> {
         ];
         let mut lines = self.lines(object);
         if lines.is_empty() {
+            for i in d.invariants() {
+                for (_, key) in reads(i).0.into_iter().filter(|(o, _)| *o == object) {
+                    if !lines.contains(&fixed(key)) {
+                        lines.push(fixed(key));
+                    }
+                }
+            }
+        }
+        if lines.is_empty() {
             lines.push(fixed("state"));
         }
         out.push(format!("    {state}(\"{}\")", lines.join(BREAK)));
@@ -875,21 +801,6 @@ impl Moment<'_> {
             ));
             if self.done(verb) {
                 marked.push(format!("  class {action} {DONE}"));
-            }
-        }
-        let mut placed = Vec::new();
-        for c in checks_of(d) {
-            for t in &c.terms {
-                let here = t.object.as_deref() == Some(object)
-                    || (t.object.is_none()
-                        && c.terms.iter().find_map(|o| o.object.as_deref()) == Some(object));
-                if here && !placed.contains(&t.id) {
-                    placed.push(t.id.clone());
-                    out.push(format!("    {}", node(t)));
-                }
-                if here && self.broken == Some(c.rule.as_str()) {
-                    marked.push(format!("  class {} {FAILS}", t.id));
-                }
             }
         }
         out.push("  end".into());
@@ -915,11 +826,32 @@ impl Moment<'_> {
                 marked.extend(marks);
             }
         }
-        body.extend(
-            checks_of(d)
-                .iter()
-                .map(|c| format!("  {} ---|\"{}\"| {}", c.terms[0].id, c.sign, c.terms[1].id)),
-        );
+        for (n, i) in d.invariants().into_iter().enumerate() {
+            let broken = self.broken == Some(i.place().as_str());
+            let color = if broken { FAILED_SERIES } else { series(n) };
+            let (keys, signs) = reads(i);
+            let mut objects: Vec<&str> = Vec::new();
+            for (object, key) in &keys {
+                let state = Ident::new(&format!("s_{object}"));
+                body.push(format!("  %% check {state} {key} {color}"));
+                if !objects.contains(object) {
+                    objects.push(object);
+                    if broken {
+                        marked.push(format!("  class {state} {FAILS}"));
+                    }
+                }
+            }
+            for (j, pair) in objects.windows(2).enumerate() {
+                let link = format!("c_{n}_{j}");
+                body.push(format!(
+                    "  {} {link}@---|\"{}\"| {}",
+                    Ident::new(&format!("s_{}", pair[0])),
+                    signs.join(" "),
+                    Ident::new(&format!("s_{}", pair[1]))
+                ));
+                body.push(format!("  %% link {link} {color}"));
+            }
+        }
         body.extend(marked);
         (1..=groups.len().max(1))
             .map(|columns| {

@@ -84,6 +84,22 @@ weft-sequence.failed .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fil
 :is(weft-sequence, weft-machine) .pele-edge-label.done text { fill: var(--pele-accent); font-weight: bold; }
 :is(weft-sequence, weft-machine) .pele-node.done :is(rect, path, polygon) { stroke: var(--pele-accent); stroke-width: 2px; }
 :is(weft-sequence, weft-machine) .pele-node.done text { fill: var(--pele-accent); }
+weft-machine :is(tspan, text).check-1, weft-machine .pele-edge-label.check-1 text { fill: var(--pele-series-1); font-weight: bold; }
+weft-machine .pele-edge.check-1 path { stroke: var(--pele-series-1); stroke-width: 2px; }
+weft-machine :is(tspan, text).check-2, weft-machine .pele-edge-label.check-2 text { fill: var(--pele-series-2); font-weight: bold; }
+weft-machine .pele-edge.check-2 path { stroke: var(--pele-series-2); stroke-width: 2px; }
+weft-machine :is(tspan, text).check-3, weft-machine .pele-edge-label.check-3 text { fill: var(--pele-series-3); font-weight: bold; }
+weft-machine .pele-edge.check-3 path { stroke: var(--pele-series-3); stroke-width: 2px; }
+weft-machine :is(tspan, text).check-4, weft-machine .pele-edge-label.check-4 text { fill: var(--pele-series-4); font-weight: bold; }
+weft-machine .pele-edge.check-4 path { stroke: var(--pele-series-4); stroke-width: 2px; }
+weft-machine :is(tspan, text).check-5, weft-machine .pele-edge-label.check-5 text { fill: var(--pele-series-5); font-weight: bold; }
+weft-machine .pele-edge.check-5 path { stroke: var(--pele-series-5); stroke-width: 2px; }
+weft-machine :is(tspan, text).check-6, weft-machine .pele-edge-label.check-6 text { fill: var(--pele-series-6); font-weight: bold; }
+weft-machine .pele-edge.check-6 path { stroke: var(--pele-series-6); stroke-width: 2px; }
+weft-machine :is(tspan, text).check-7, weft-machine .pele-edge-label.check-7 text { fill: var(--pele-series-7); font-weight: bold; }
+weft-machine .pele-edge.check-7 path { stroke: var(--pele-series-7); stroke-width: 2px; }
+weft-machine :is(tspan, text).check-8, weft-machine .pele-edge-label.check-8 text { fill: var(--pele-series-8); font-weight: bold; }
+weft-machine .pele-edge.check-8 path { stroke: var(--pele-series-8); stroke-width: 2px; }
 :is(weft-sequence, weft-machine) :is(.failed, .fails) :is(rect, path) { stroke: var(--pele-critical); stroke-width: 2px; }
 :is(weft-sequence, weft-machine) :is(.failed, .fails) text { fill: var(--pele-critical); }
 :is(weft-sequence, weft-machine) .acted { cursor: pointer; }
@@ -167,6 +183,9 @@ const FAILED = "weft.failed";
 const FAILS = "«fails»";
 const LAYOUTS = "\n%% layout\n";
 const RUNNERS = /^\s*%% runner (\S+) (\d+)$/gm;
+const CHECKS = /^\s*%% check (\S+) (\S+) (\d+)$/gm;
+const LINKS = /^\s*%% link (\S+) (\d+)$/gm;
+const unchecked = (part) => part.classList.remove(...[...part.classList].filter((c) => c.startsWith("check-")));
 const SHOWN = { fontSize: 13, monospace: ["messages"], autoDirection: false };
 
 const WIDTH = 28;
@@ -275,6 +294,13 @@ class Machine extends Drawing {
       if (spans.length) spans.forEach((span, at) => (span.textContent = lines[at] ?? ""));
       else text.textContent = lines[0] ?? "";
     }
+    for (const part of this.querySelectorAll("[class*='check-']")) unchecked(part);
+    for (const [, id, key, n] of this.text.matchAll(CHECKS)) {
+      const label = this.querySelector(`.pele-node[data-id="${CSS.escape(id)}"] .pele-label`);
+      const lines = label?.querySelectorAll("tspan").length ? label.querySelectorAll("tspan") : label ? [label] : [];
+      for (const line of lines) if (line.textContent.trim() === key || line.textContent.startsWith(`${key} =`)) line.classList.add(`check-${n}`);
+    }
+    for (const [, link, n] of this.text.matchAll(LINKS)) for (const part of this.querySelectorAll(`[data-id="${CSS.escape(link)}"]`)) part.classList.add(`check-${n}`);
     for (const node of this.querySelectorAll(".pele-node.done, .pele-node.fails")) node.classList.remove("done", "fails");
     for (const [, id, mark] of this.text.matchAll(MARKS)) this.querySelector(`.pele-node[data-id="${CSS.escape(id)}"]`)?.classList.add(mark);
   }
