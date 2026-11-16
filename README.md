@@ -46,10 +46,10 @@ runner "python" command="uv run --quiet --project runners/python python -m weft"
 | `runner "<lang>" command="<command>"` | The command that starts the runner of a language |
 | `run cases= steps= check=`            | The values of each run; each value is required   |
 
-| Key     | Value                                                                                                                                                         |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cases` | The count of test cases for each test                                                                                                                         |
-| `steps` | The largest count of steps in a test case                                                                                                                     |
+| Key     | Value                                                                                                                                                          |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cases` | The count of test cases for each test                                                                                                                          |
+| `steps` | The largest count of steps in a test case                                                                                                                      |
 | `check` | `"sampled"` checks an invariant after a step with the probability 1/`steps`, and `"always"` checks it after each step. Both check the first and the last state |
 
 A test changes a value with its own `run` line, and an invariant changes `check` with its `check` key:
@@ -83,11 +83,11 @@ impl "bun" {
 }
 ```
 
-| Line                                 | Gives                                                                      |
-| ------------------------------------ | -------------------------------------------------------------------------- |
-| `<kind> "<object>"`                  | An object; the first person calls each action in the diagram               |
-| `invariant { <condition> }` | A Quint builtin over the state: `eq`, `igte`, `implies`, `forall` and more; the condition is the check, and a name is an error |
-| `impl "<lang>" { module … }`         | The runner of a language and the module of each of its objects            |
+| Line                         | Gives                                                                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `<kind> "<object>"`          | An object; the first person calls each action in the diagram                                                                   |
+| `invariant { <condition> }`  | A Quint builtin over the state: `eq`, `igte`, `implies`, `forall` and more; the condition is the check, and a name is an error |
+| `impl "<lang>" { module … }` | The runner of a language and the module of each of its objects                                                                 |
 
 An `impl` block holds `module` lines only. The module gives the rest:
 
@@ -146,12 +146,12 @@ A module gives its state to weft with one call, under `"<object>"` or `"<object>
 
 `tests/parcel.weft.kdl` runs four apps, one in each runner:
 
-| App         | Runner     | Does                                                                                     |
-| ----------- | ---------- | ---------------------------------------------------------------------------------------- |
-| `orders`    | Go         | Keeps each order in Redis in a testcontainer                                             |
-| `addresses` | Rust       | Keeps the address book                                                                   |
-| `shop`      | Python     | Signs up customers, adds addresses, places orders, and changes the address of an order  |
-| `courier`   | TypeScript | Ships an order to its address                                                            |
+| App         | Runner     | Does                                                                                   |
+| ----------- | ---------- | -------------------------------------------------------------------------------------- |
+| `orders`    | Go         | Keeps each order in Redis in a testcontainer                                           |
+| `addresses` | Rust       | Keeps the address book                                                                 |
+| `shop`      | Python     | Signs up customers, adds addresses, places orders, and changes the address of an order |
+| `courier`   | TypeScript | Ships an order to its address                                                          |
 
 Each app reaches another app at `WEFT_<MODULE>_URL`. weft forwards each request and records it as a hop. The shop keeps the customers, the addresses and the orders in Hegel pools, so Hegel builds the data of each case.
 
@@ -184,11 +184,11 @@ Each runner reads one variable, `WEFT`: JSON with the diagram, the transport, th
 
 Each SDK has a test entry that joins the run as its own runner. The Go and Python entries use the process mode:
 
-| Language   | Entry                                     | Command                                                                     |
-| ---------- | ----------------------------------------- | --------------------------------------------------------------------------- |
-| TypeScript | `examples/tests/parcel.test.ts`           | `bun test tests/parcel.test.ts` in `examples`                               |
-| Go         | `examples/runners/go/parcel_test.go`      | `WEFT_BIN=<weft> go test .` in `examples/runners/go`                        |
-| Python     | `examples/runners/python/test_parcel.py`  | `WEFT_BIN=<weft> uv run --with pytest pytest` in `examples/runners/python`  |
+| Language   | Entry                                    | Command                                                                    |
+| ---------- | ---------------------------------------- | -------------------------------------------------------------------------- |
+| TypeScript | `examples/tests/parcel.test.ts`          | `bun test tests/parcel.test.ts` in `examples`                              |
+| Go         | `examples/runners/go/parcel_test.go`     | `WEFT_BIN=<weft> go test .` in `examples/runners/go`                       |
+| Python     | `examples/runners/python/test_parcel.py` | `WEFT_BIN=<weft> uv run --with pytest pytest` in `examples/runners/python` |
 
 ```mermaid
 flowchart TB
@@ -230,13 +230,13 @@ flowchart TB
 
 `weft --ui [<file>…]` serves the dashboard at http://127.0.0.1:7357 and runs each test again when a file changes. A second `weft --ui` takes the port over from the first one, and the reaper of the first one stops its runners. Each test draws from its file before any run:
 
-| In the test                   | In the diagram                                      |
-| ----------------------------- | --------------------------------------------------- |
-| `api "<object>"`              | A section                                           |
-| `impl "<lang>"`               | The label `<object> · <lang>` of the section        |
-| Each action of the module     | A node from the state of its section                |
-| `invariant { … }`             | Its keys and each comparison, such as `customer = recipient`, in one color in the state box of the object; a link with the sign between two state boxes it compares; red with the sign of the failing values, such as `customer ≠ recipient`, when it fails |
-| The first `person`            | The caller in the sequence diagram below            |
+| In the test               | In the diagram                                                                                                                                                                                                                                              |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api "<object>"`          | A section                                                                                                                                                                                                                                                   |
+| `impl "<lang>"`           | The label `<object> · <lang>` of the section                                                                                                                                                                                                                |
+| Each action of the module | A node from the state of its section                                                                                                                                                                                                                        |
+| `invariant { … }`         | Its keys and each comparison, such as `customer = recipient`, in one color in the state box of the object; a link with the sign between two state boxes it compares; red with the sign of the failing values, such as `customer ≠ recipient`, when it fails |
+| The first `person`        | The caller in the sequence diagram below                                                                                                                                                                                                                    |
 
 The sequence diagram shows the lines of each state box in a note over its object, in the same colors. A run adds the test cases and the trace. Each step highlights its action, writes the state values into the section, and turns a broken invariant red. A hover on an action lists its steps.
 
@@ -247,8 +247,8 @@ The sequence diagram shows the lines of each state box in a note over its object
 | `weft-parse`        | Reads `weft.kdl` and each test into objects, invariants and modules, and evaluates invariants                                                                                            |
 | `weft-hegel`        | Drives Hegel through its C ABI: cases, the state machine, generators, pools and shrinking                                                                                                |
 | `weft-orchestrator` | Starts the runners and the reaper, turns the schemas of each runner into generators, runs the rounds of each case, checks the invariants, forwards the HTTP calls, and writes the report |
-| `weft-wire`         | The framing of each message between weft and a runner                                                                                                                                   |
-| `weft-draw`         | Draws a test as a sequence diagram, and each step as a sequence diagram or a flowchart                                                                                                   |
+| `weft-wire`         | The framing of each message between weft and a runner                                                                                                                                    |
+| `weft-draw`         | Draws a test as a sequence diagram, and each step as a state diagram and a sequence diagram                                                                                              |
 | `weft-c`            | libweft, the C ABI that each SDK loads, and the thread mode of `weft/test`                                                                                                               |
 | `weft-dashboard`    | Turns the spans of each run into Perspective tables and serves the dashboard                                                                                                             |
 | `weft-cli`          | The `weft` command and the spans of each run                                                                                                                                             |
