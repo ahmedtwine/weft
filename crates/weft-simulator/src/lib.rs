@@ -27,7 +27,6 @@ pub struct Hop {
 }
 pub use weft_hegel::Generator;
 
-const STEPS: i64 = 50;
 const TRIES: usize = 4;
 const START: &str = "start";
 
@@ -178,6 +177,7 @@ struct Step {
 struct Run<'a> {
     d: &'a Diagram,
     steps: Vec<Step>,
+    limit: i64,
     machine: bool,
     runs: u64,
     first: State,
@@ -559,7 +559,7 @@ impl Run<'_> {
             .into_iter()
             .map(|i| i.name.clone())
             .collect();
-        case.machine(&rules, &invariants, STEPS)?;
+        case.machine(&rules, &invariants, self.limit)?;
         self.machine = true;
         while case.round()? {
             let mut rejected = false;
@@ -762,6 +762,7 @@ pub fn simulate<'a>(
     d: &'a Diagram,
     members: &mut Members,
     cases: u64,
+    limit: u64,
     key: Option<&str>,
     stream: &'a mut Stream<'a>,
 ) -> Result<Outcome, String> {
@@ -780,6 +781,7 @@ pub fn simulate<'a>(
             })
             .collect(),
         steps,
+        limit: i64::try_from(limit).map_err(|e| e.to_string())?,
         machine: false,
         runs: 0,
         first: State::new(),

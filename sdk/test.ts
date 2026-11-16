@@ -21,17 +21,21 @@ export const weft = async (file: string) => {
   while (!said.includes("\n") && (await more()));
   const [first] = said.split("\n", 1);
   const joins = first.startsWith("{");
+  let thrown: unknown;
   if (joins) {
     const { cwd, env } = JSON.parse(first);
     process.chdir(cwd);
     setenv(env);
     const { run } = await import("./runner");
-    await run();
+    await run().catch((error: unknown) => {
+      thrown = error;
+    });
   }
   while (await more());
   const report = joins ? said.slice(first.length + 1) : said;
   const code = await exited;
   stdin.end();
   if (code !== 0) throw new Error(report || `weft ends with ${code}`);
+  if (thrown) throw thrown;
   console.log(report);
 };

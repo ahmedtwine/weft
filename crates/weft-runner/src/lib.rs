@@ -143,7 +143,14 @@ pub fn run<'a>(
                 .into_iter()
                 .map(|remote| Box::new(remote) as Box<dyn Member>)
                 .collect();
-            Ok(simulate(d, &mut members, config.cases, key, stream))
+            Ok(simulate(
+                d,
+                &mut members,
+                config.cases,
+                config.steps,
+                key,
+                stream,
+            ))
         }
         Err(e) => Err(e),
     };

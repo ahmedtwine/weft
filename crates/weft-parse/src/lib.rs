@@ -1091,6 +1091,7 @@ pub struct Config {
     pub adapter: Adapter,
     pub transport: Option<Transport>,
     pub cases: u64,
+    pub steps: u64,
     pub runners: Vec<(String, Start)>,
 }
 
@@ -1108,6 +1109,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
         adapter: Adapter::Default,
         transport: None,
         cases: 100,
+        steps: 50,
         runners: Vec::new(),
     };
     let mut set = false;
@@ -1150,18 +1152,26 @@ pub fn config(src: &str) -> Result<Config, Error> {
                     Some("bun") => Adapter::Bun,
                     _ => return Err(Error("`adapter` is `\"default\"` or `\"bun\"`".into())),
                 };
-                let name = shape(n, 1, &["cases"], false).map_err(Error)?.remove(0);
-                let cases = match n.get("cases") {
-                    Some(KdlValue::Integer(k)) => u64::try_from(*k).ok().filter(|k| *k > 0),
-                    _ => None,
-                }
-                .ok_or_else(|| {
-                    Error(format!(
-                        "`adapter \"{name}\"` takes `cases=<count>`, a count above 0"
-                    ))
-                })?;
+                let name = shape(n, 1, &["cases", "steps"], false)
+                    .map_err(Error)?
+                    .remove(0);
+                let count = |key: &str, default: Option<u64>| {
+                    match (n.get(key), default) {
+                        (Some(KdlValue::Integer(k)), _) => {
+                            u64::try_from(*k).ok().filter(|k| *k > 0)
+                        }
+                        (None, default) => default,
+                        _ => None,
+                    }
+                    .ok_or_else(|| {
+                        Error(format!(
+                            "`adapter \"{name}\"` takes `{key}=<count>`, a count above 0"
+                        ))
+                    })
+                };
                 c.adapter = adapter;
-                c.cases = cases;
+                c.cases = count("cases", None)?;
+                c.steps = count("steps", Some(c.steps))?;
                 set = true;
             }
             "runner" => {
@@ -1255,6 +1265,18 @@ impl "bun" {
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect(),
         )])
+    }
+
+    #[test]
+    fn an_adapter_takes_the_count_of_cases_and_steps() {
+        let steps = |line: &str| config(&format!("{CONFIG}\n{line}")).map(|c| (c.cases, c.steps));
+        assert_eq!(steps(r#"adapter "bun" cases=5"#).ok(), Some((5, 50)));
+        assert_eq!(
+            steps(r#"adapter "bun" cases=5 steps=20"#).ok(),
+            Some((5, 20))
+        );
+        assert!(steps(r#"adapter "bun" cases=5 steps=0"#).is_err());
+        assert!(steps(r#"adapter "bun" steps=20"#).is_err());
     }
 
     #[test]
