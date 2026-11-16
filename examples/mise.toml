@@ -15,8 +15,7 @@ run = "cargo build --release"
 
 [tasks."build:go"]
 description = "Build the Go runner of the bank and the orders app"
-dir = "runners/go"
-run = "go build -o bin/runner ."
+run = "go build -o runners/go/bin/runner ./runners/go"
 
 [tasks."build:python"]
 description = "Make the virtual environment of the Python runner of the bank and the shop app"

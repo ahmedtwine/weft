@@ -8,25 +8,12 @@ import os
 import subprocess
 import sys
 import traceback
-import types
 import typing
 from pathlib import Path
 
 ADAPTER = "python"
 START = "start"
-RESET = "reset"
-URL = "url"
 PARENT = "--parent"
-STOP_TEST = -5
-ASSUME = -6
-
-
-class StopTest(Exception):
-    cause = "stop_test"
-
-
-class AssumeFailed(Exception):
-    cause = "assume"
 
 
 class _Text(ctypes.Structure):
@@ -47,19 +34,12 @@ class _Weft:
         self.lib.weft_context_last_error.restype = _Text
         self.lib.weft_context_last_error.argtypes = [ctypes.c_void_p]
         self.lib.weft_owned_string_free.argtypes = [ctypes.c_void_p, ctypes.POINTER(_Text)]
-        for name in ("weft_diagram_join", "weft_diagram_turn", "weft_generate"):
+        for name in ("weft_diagram_join", "weft_diagram_turn"):
             getattr(self.lib, name).argtypes = [ctypes.c_void_p, _Text, ctypes.POINTER(_Text)]
         self.lib.weft_diagram_done.argtypes = [ctypes.c_void_p, _Text]
-        self.lib.weft_pool_add.argtypes = [ctypes.c_void_p, _Text, _Text]
-        self.lib.weft_pool_generate.argtypes = [ctypes.c_void_p, _Text, ctypes.c_bool, ctypes.POINTER(_Text)]
-        self.lib.weft_target.argtypes = [ctypes.c_void_p, ctypes.c_double, _Text]
         self.ctx = self.lib.weft_context_new()
 
     def _checked(self, code):
-        if code == STOP_TEST:
-            raise StopTest()
-        if code == ASSUME:
-            raise AssumeFailed()
         if code != 0:
             said = self.lib.weft_context_last_error(self.ctx)
             raise RuntimeError(ctypes.string_at(said.data, said.len).decode())
@@ -80,19 +60,6 @@ class _Weft:
     def done(self, said):
         self._checked(self.lib.weft_diagram_done(self.ctx, _text(json.dumps(said))))
 
-    def generate(self, schema):
-        return self._asked(self.lib.weft_generate, _text(json.dumps(schema)))
-
-    def pool_add(self, pool, value):
-        self._checked(self.lib.weft_pool_add(self.ctx, _text(pool), _text(json.dumps(value, default=_native))))
-
-    def pool_generate(self, pool, consume):
-        return self._asked(self.lib.weft_pool_generate, _text(pool), consume)
-
-    def target(self, value, label):
-        self._checked(self.lib.weft_target(self.ctx, value, _text(label)))
-
-
 @functools.cache
 def _setup():
     return json.loads(os.environ["WEFT"])
@@ -103,113 +70,6 @@ def _weft():
     return _Weft(_setup()["lib"])
 
 
-class Generator:
-    def __init__(self, do_draw):
-        self.do_draw = do_draw
-
-
-class TestCase:
-    def draw(self, generator):
-        if isinstance(generator, Generator):
-            return generator.do_draw(self)
-        return _given(generator, _weft().generate(_shape(generator)))
-
-    def assume(self, condition):
-        if not condition:
-            raise AssumeFailed()
-
-    def target(self, score, label):
-        _weft().target(score, label)
-
-
-class Pool:
-    def __init__(self, tc, name):
-        self.name = name
-
-    def add(self, value):
-        _weft().pool_add(self.name, value)
-
-    def values_reusable(self):
-        return Generator(lambda tc: _weft().pool_generate(self.name, False))
-
-    def values_consumed(self):
-        return Generator(lambda tc: _weft().pool_generate(self.name, True))
-
-
-_STATES = {}
-
-
-def state(key, read):
-    try:
-        hint = typing.get_type_hints(read).get("return") if callable(read) else None
-    except Exception:
-        hint = None
-    _STATES[key] = (read if callable(read) else (lambda: read), hint)
-
-
-def _shape(kind):
-    origin, args = typing.get_origin(kind), typing.get_args(kind)
-    if origin is typing.Annotated:
-        shape = _shape(args[0])
-        for bound in args[1:]:
-            if isinstance(bound, range):
-                shape |= {"minimum": bound.start, "maximum": bound.stop - 1}
-        return shape
-    if origin is typing.Literal:
-        return {"enum": list(args)}
-    if origin in (typing.Union, types.UnionType):
-        return next((_shape(a) for a in args if a is not type(None)), {})
-    if kind is bool:
-        return {"type": "boolean"}
-    if kind is int:
-        return {"type": "integer"}
-    if kind is float:
-        return {"type": "number"}
-    if kind is str:
-        return {"type": "string"}
-    if hasattr(kind, "model_json_schema"):
-        return kind.model_json_schema()
-    if dataclasses.is_dataclass(kind) or typing.is_typeddict(kind):
-        hints = typing.get_type_hints(kind, include_extras=True)
-        needed = (
-            [f.name for f in dataclasses.fields(kind) if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING]
-            if dataclasses.is_dataclass(kind)
-            else sorted(kind.__required_keys__)
-        )
-        return {
-            "type": "object",
-            "title": kind.__name__,
-            "properties": {k: _shape(v) for k, v in hints.items()},
-            "required": needed,
-            "additionalProperties": False,
-        }
-    if kind in (list, set, frozenset, tuple) or origin in (list, set, frozenset, tuple):
-        return {"type": "array", "items": _shape(args[0]) if args else {}}
-    if kind is dict or origin is dict:
-        return {"type": "object", "additionalProperties": _shape(args[1]) if len(args) > 1 else {}}
-    return {}
-
-
-def _guessed(value):
-    if dataclasses.is_dataclass(value) or hasattr(value, "model_json_schema"):
-        return _shape(type(value))
-    if isinstance(value, dict):
-        return {"type": "object", "properties": {k: _guessed(v) for k, v in value.items()}}
-    if isinstance(value, (list, set, frozenset, tuple)):
-        return {"type": "array", "items": _guessed(next(iter(value))) if value else {}}
-    return _shape(type(value))
-
-
-def _schemas():
-    out = {}
-    for key, (read, hint) in _STATES.items():
-        try:
-            out[key] = _shape(hint) if hint is not None else _guessed(read())
-        except Exception:
-            out[key] = {}
-    return out
-
-
 def _native(value):
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return dataclasses.asdict(value)
@@ -217,11 +77,11 @@ def _native(value):
         return value.model_dump(mode="json")
     if isinstance(value, (set, frozenset, tuple)):
         return list(value)
-    raise TypeError(f"weft.state reads a {type(value).__name__}, and JSON has no such value")
+    raise TypeError(f"a function gives a {type(value).__name__}, and JSON has no such value")
 
 
-def _states():
-    return {key: json.loads(json.dumps(read(), default=_native)) for key, (read, _) in _STATES.items()}
+def _json(value):
+    return json.loads(json.dumps(value, default=_native))
 
 
 class _Lines:
@@ -299,14 +159,6 @@ def _fault(error):
     return f"{type(error).__name__}: {error}{at}"
 
 
-def _kinds(function):
-    hints = typing.get_type_hints(function)
-    names = list(inspect.signature(function).parameters)
-    if any(name not in hints for name in names):
-        raise RuntimeError(f"`{function.__name__}` names the type of its input")
-    return [hints[name] for name in names]
-
-
 def _given(kind, value):
     if dataclasses.is_dataclass(kind):
         return kind(**value)
@@ -315,55 +167,57 @@ def _given(kind, value):
     return value
 
 
-def _functions(module):
-    found = [
-        value
-        for name, value in vars(module).items()
-        if inspect.isfunction(value) and value.__module__ == module.__name__ and not name.startswith("_")
-    ]
-    return sorted(found, key=lambda f: f.__code__.co_firstlineno)
+def _kind(function):
+    names = list(inspect.signature(function).parameters)
+    if len(names) > 1:
+        raise RuntimeError(f"`{function.__name__}` takes at most one input")
+    if not names:
+        return None
+    hints = typing.get_type_hints(function)
+    if names[0] not in hints:
+        raise RuntimeError(f"`{function.__name__}` names the type of its input")
+    return hints[names[0]]
 
 
 class _Runner:
     def __init__(self, code, adapter, lines):
         self.lines = lines
-        self.tc = TestCase()
-        self.reset = []
-        self.actions = []
-        self.said_reset = []
-        self.said_actions = []
+        self.calls = {}
+        self.states = []
         self.serves = None
         for block in code:
             if block["adapter"] != adapter:
                 continue
-            for name, place in block["modules"].items():
-                module = _imported(place)
+            for name, m in block["modules"].items():
+                module = _imported(m["path"])
                 lines.watch(module)
-                for function in _functions(module):
-                    kinds = _kinds(function)
-                    kind = next((kind for kind in kinds if kind is not TestCase), None)
-                    said = {"function": [name, function.__name__], "input": None if kind is None else _shape(kind)}
-                    if function.__name__ == URL:
-                        self.serves = str(function())
-                    elif function.__name__ == RESET:
-                        self.reset.append((function, kinds))
-                        self.said_reset.append(said)
-                    else:
-                        self.actions.append((function, kinds))
-                        self.said_actions.append(said)
+
+                def found(id, name=name, module=module):
+                    function = getattr(module, id, None)
+                    if not inspect.isfunction(function):
+                        raise RuntimeError(f'`module "{name}"` maps `{id}`, and `{m["path"]}` has no function `{id}`')
+                    return function
+
+                for id in [m["reset"], *m["actions"].values()]:
+                    if id is not None:
+                        function = found(id)
+                        self.calls[id] = (function, _kind(function))
+                if m["state"] is not None:
+                    self.states.append((name, found(m["state"])))
+                if m["url"] is not None:
+                    self.serves = str(found(m["url"])())
         self.start = {}
         self.covered = {}
 
-    def _reported(self, calls, step):
+    def _called(self, calls):
+        result = None
         for call in calls:
-            function, kinds = (self.reset if step == START else self.actions)[call["use"]]
+            function, kind = self.calls[call["function"]]
             try:
-                function(*(self.tc if kind is TestCase else _given(kind, call["input"]) for kind in kinds))
-            except (StopTest, AssumeFailed) as stop:
-                return {"refused": stop.cause}
+                result = function() if kind is None else function(_given(kind, call["input"]))
             except Exception as error:
-                return {"thrown": _fault(error)}
-        return None
+                return None, {"thrown": _fault(error)}
+        return result, None
 
     def play(self, turn):
         step = turn.get("step")
@@ -372,7 +226,7 @@ class _Runner:
             known = self.start if step == START else self.covered.setdefault(step, {})
         self.lines.now = {} if known is not None else None
         try:
-            thrown = self._reported(turn["calls"], step)
+            result, thrown = self._called(turn["calls"])
         finally:
             for file, hit in (self.lines.now or {}).items():
                 known.setdefault(file, set()).update(hit)
@@ -380,7 +234,8 @@ class _Runner:
         if thrown is not None:
             return thrown
         try:
-            return {"states": _states()}
+            states = {name: _json(read()) for name, read in self.states}
+            return {"states": states, "result": _json(result)}
         except Exception as error:
             return {"thrown": _fault(error)}
 
@@ -399,13 +254,7 @@ def run():
             _setup()["adapter"],
             _Lines(),
         )
-        report = {
-            "adapter": _setup()["adapter"],
-            "start": runner.said_reset,
-            "actions": runner.said_actions,
-            "serves": runner.serves,
-            "states": _schemas(),
-        }
+        report = {"adapter": _setup()["adapter"], "serves": runner.serves}
         while not (turn := weft.turn(report)).get("done"):
             report = runner.play(turn)
         said = {"ran": runner.ran()}

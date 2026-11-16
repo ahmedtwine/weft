@@ -1,11 +1,27 @@
 setup {
   person "owner"
   api "bank" {
+    state {
+      balance "int"
+    }
+    action "deposit" {
+      input "amount" "1..100"
+      writes "bank.balance"
+    }
+    action "withdraw" {
+      input "amount" "1..100"
+      writes "bank.balance"
+    }
     invariant {
       igte "bank.balance" 0
     }
   }
 }
 impl "rust" {
-  module "bank" "../runners/rust/bank/bank.rs"
+  module "bank" "../services/rust/bank.rs" {
+    reset "bank::reset"
+    state "bank::state"
+    action "deposit" "bank::deposit"
+    action "withdraw" "bank::withdraw"
+  }
 }

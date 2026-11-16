@@ -242,8 +242,27 @@ mod tests {
     use super::*;
 
     const CONFIG: &str = "include \"*.weft.kdl\"\nrun cases=100 steps=50 check=\"sampled\"\nstyle \"api\" icon=\"server\"\n";
-    const TEST: &str =
-        "setup {\n  api \"door\"\n}\nimpl \"bun\" {\n  module \"door\" \"../door.ts\"\n}\n";
+    const TEST: &str = r#"
+setup {
+  api "door" {
+    state {
+      event "string"
+      previous "string"
+      state "string"
+    }
+    action "open" {
+      writes "door.state"
+    }
+  }
+}
+impl "bun" {
+  module "door" "../door.ts" {
+    reset "reset"
+    state "door"
+    action "open" "open"
+  }
+}
+"#;
 
     fn door(event: &str, previous: &str, state: &str) -> State {
         State::from([(

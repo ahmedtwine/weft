@@ -2,20 +2,30 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
-use weft_sdk::{self as weft, Json, Module, TestCase, json};
+use weft_sdk::{Json, json};
 
-#[derive(Clone, Serialize, Deserialize, JsonSchema)]
-struct Address {
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Address {
     owner: String,
     street: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize)]
+pub struct Made {
+    id: String,
+}
+
+#[derive(Deserialize)]
 pub struct Correction {
+    address: Made,
     street: String,
+}
+
+#[derive(Serialize)]
+pub struct Book {
+    book: BTreeMap<String, Address>,
 }
 
 const OWNER: &str = "?owner=";
@@ -98,22 +108,19 @@ pub fn reset() -> Result<(), String> {
     Ok(())
 }
 
-pub fn correct(correction: Correction, tc: TestCase) -> Result<(), String> {
-    let id = tc.draw(weft::pool::<String>(&tc, "addresses").values_reusable());
-    if let Some(address) = BOOK.lock().map_err(|e| e.to_string())?.get_mut(&id) {
+pub fn correct(correction: Correction) -> Result<(), String> {
+    if let Some(address) = BOOK
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get_mut(&correction.address.id)
+    {
         address.street = correction.street;
     }
     Ok(())
 }
 
-fn book() -> BTreeMap<String, Address> {
-    BOOK.lock().map(|b| b.clone()).unwrap_or_default()
-}
-
-pub fn module() -> Module {
-    weft::state("addresses.book", book);
-    weft::module!()
-        .function("url", url)
-        .function("reset", reset)
-        .function("correct", correct)
+pub fn state() -> Result<Book, String> {
+    BOOK.lock()
+        .map(|b| Book { book: b.clone() })
+        .map_err(|e| e.to_string())
 }

@@ -73,23 +73,14 @@ impl World {
     }
 
     pub fn invariants(&self, candidates: &[Candidate]) -> Result<Vec<Invariant>> {
-        let lines: Vec<String> = candidates.iter().map(written).collect();
-        let objects =
-            self.diagram
-                .objects
-                .iter()
-                .enumerate()
-                .fold(String::new(), |out, (at, object)| {
-                    let body = if at == 0 {
-                        lines.join("\n")
-                    } else {
-                        String::new()
-                    };
-                    format!("{out}{} {:?} {{\n{body}\n}}\n", object.kind, object.name)
-                });
-        weft_parse::parse(&format!("setup {{\n{objects}}}\n"), &self.config)
-            .map(|diagram| diagram.invariants().into_iter().cloned().collect())
-            .map_err(|e| e.to_string())
+        candidates
+            .iter()
+            .map(|c| {
+                self.diagram
+                    .invariant(&written(c))
+                    .map_err(|e| e.to_string())
+            })
+            .collect()
     }
 }
 

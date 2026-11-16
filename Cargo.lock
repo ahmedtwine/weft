@@ -7949,7 +7949,6 @@ name = "weft-sdk"
 version = "0.7.0"
 dependencies = [
  "proc-macro2",
- "schemars 1.2.3",
  "serde",
  "serde_json",
  "syn 2.0.119",

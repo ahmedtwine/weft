@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Value as Json, json};
-use weft_hegel::{Case, Engine, Halt, INTERESTING, INVALID, OVERRUN, VALID};
-use weft_parse::{Diagram, Ran, Span, State, shown};
+use serde_json::Value as Json;
+use weft_hegel::{Case, Engine, Generator, Halt, INTERESTING, INVALID, OVERRUN, VALID};
+use weft_parse::{Diagram, Draw, Ran, Source, Span, State, Take, shown};
 
 use crate::hub::Remote;
 use crate::invariant::{Invariants, Moment};
-use crate::protocol::{Ask, Call, Report, START, Turn};
+use crate::protocol::{Call, Report, START, Turn};
 use crate::proxy::Hop;
-use crate::shape::shaped;
+use crate::schema::{live, narrowed, whole};
 
 const TRIES: usize = 4;
 
@@ -101,6 +101,8 @@ struct Step {
     object: String,
     owner: usize,
     action: usize,
+    function: String,
+    drawn: Generator,
 }
 
 struct Machine<'a> {
@@ -170,57 +172,30 @@ fn origin(error: &str) -> String {
         .to_string()
 }
 
-#[derive(Default)]
-struct Asked {
-    input: Vec<Json>,
-    empty: Option<String>,
-}
-
-fn answered(
-    case: &Case,
-    pools: &mut BTreeMap<String, Pooled>,
-    asked: &mut Asked,
-    ask: Ask,
-) -> Result<Option<Json>, Halt> {
-    match ask {
-        Ask::Generate(generator) => {
-            let value = case.draw(&generator)?;
-            asked.input.push(value.clone());
-            Ok(Some(value))
-        }
-        Ask::PoolGenerate(pool, consume) => {
-            let value = case.generate(&pool, consume)?;
-            let pooled = pools.entry(pool.clone()).or_default();
-            match (&value, consume) {
-                (None, _) => {
-                    pooled.empty += 1;
-                    asked.empty = Some(format!("pool {pool}"));
-                }
-                (Some(_), true) => pooled.consume += 1,
-                (Some(_), false) => pooled.generate += 1,
-            }
-            asked
-                .input
-                .extend(value.iter().map(|value| json!({ pool.as_str(): value })));
-            Ok(value)
-        }
-        Ask::PoolAdd(pool, value) => {
-            case.add(&pool, value)?;
-            pools.entry(pool).or_default().add += 1;
-            Ok(Some(Json::Null))
-        }
-        Ask::Target(value, label) => {
-            case.target(value, &label);
-            Ok(Some(Json::Null))
-        }
-    }
-}
-
 fn merged(mut state: State, part: State) -> State {
     for (object, pairs) in part {
         state.entry(object).or_default().extend(pairs);
     }
     state
+}
+
+fn read(members: &mut Members, but: Option<usize>) -> Result<State, Halt> {
+    let mut real = State::new();
+    for (_, m) in members
+        .iter_mut()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != but)
+    {
+        match m.turn(&Turn::Read)? {
+            Report::State(part, _) => real = merged(real, part),
+            _ => {
+                return Err(Halt::Fatal(
+                    "the runner answers `read` with no state".into(),
+                ));
+            }
+        }
+    }
+    Ok(real)
 }
 
 impl Machine<'_> {
@@ -239,32 +214,6 @@ impl Machine<'_> {
         if let Some(line) = self.trace.last() {
             (self.stream)(Event::Step(line));
         }
-    }
-
-    fn read(
-        &mut self,
-        case: &Case,
-        members: &mut Members,
-        but: Option<usize>,
-    ) -> Result<State, Halt> {
-        let mut real = State::new();
-        for (_, m) in members
-            .iter_mut()
-            .enumerate()
-            .filter(|(i, _)| Some(*i) != but)
-        {
-            match m.turn(&Turn::Read, &mut |ask| {
-                answered(case, &mut self.counts.pools, &mut Asked::default(), ask)
-            })? {
-                Report::State(part) => real = merged(real, part),
-                _ => {
-                    return Err(Halt::Fatal(
-                        "the runner answers `read` with no state".into(),
-                    ));
-                }
-            }
-        }
-        Ok(real)
     }
 
     fn thrown(&mut self, mut line: Line, error: &str) -> String {
@@ -289,45 +238,35 @@ impl Machine<'_> {
         };
         self.trace.clear();
         self.order.clear();
+        let null = Json::Null;
         for at in 0..members.len() {
-            let m = &mut members[at];
-            let inputs = m
-                .hello()
-                .start
+            let resets: Vec<&str> = self
+                .d
+                .impls
                 .iter()
-                .map(|s| s.input.as_ref().map_or(Ok(Json::Null), |g| case.draw(g)))
-                .collect::<Result<Vec<Json>, Halt>>()?;
-            let mut asked = Asked {
-                input: inputs.clone(),
-                empty: None,
-            };
-            let calls: Vec<Call> = m
-                .hello()
-                .start
+                .filter(|i| i.adapter == members[at].adapter())
+                .flat_map(|i| &i.modules)
+                .filter_map(|m| m.reset.as_deref())
+                .collect();
+            let calls: Vec<Call> = resets
                 .iter()
-                .zip(&inputs)
-                .map(|(s, input)| Call {
-                    line: s.line,
-                    input,
+                .map(|function| Call {
+                    function,
+                    input: &null,
                 })
                 .collect();
             let turn = match calls.is_empty() {
                 true => Turn::Read,
                 false => Turn::Start(&calls),
             };
-            let report = m.turn(&turn, &mut |ask| {
-                answered(case, &mut self.counts.pools, &mut asked, ask)
-            })?;
-            line.input = asked.input;
-            match report {
-                Report::State(part) => real = merged(real, part),
+            match members[at].turn(&turn)? {
+                Report::State(part, _) => real = merged(real, part),
                 Report::Thrown(error) => {
                     line.hops = self.heard(case, members)?;
                     return Ok(Err(self.thrown(line, &error)));
                 }
                 Report::Refused(cause) => {
                     line.hops = self.heard(case, members)?;
-                    let cause = asked.empty.unwrap_or(cause);
                     (self.stream)(Event::Refused(&line, &cause));
                     self.refused.entry(START.into()).or_default().insert(cause);
                     return Err(Halt::Invalid);
@@ -335,9 +274,13 @@ impl Machine<'_> {
             };
         }
         if members.len() > 1 {
-            real = merged(real, self.read(case, members, None)?);
+            real = merged(real, read(members, None)?);
         }
         line.hops = self.heard(case, members)?;
+        if let Err(e) = self.d.conforms(&real) {
+            line.state = real;
+            return Ok(Err(self.thrown(line, &e)));
+        }
         let started = self.d.started(&real);
         line.state = real.clone();
         line.evidence = started.clone().unwrap_or_default();
@@ -372,6 +315,82 @@ impl Machine<'_> {
         }))
     }
 
+    fn input(&mut self, case: &Case, rule: usize) -> Result<(Json, Option<String>), Halt> {
+        let a = &self.d.actions[self.steps[rule].action];
+        let mut input = case.draw(&self.steps[rule].drawn)?;
+        for i in &a.inputs {
+            let Source::Pool(pool, take) = &i.source else {
+                continue;
+            };
+            let pooled = self.counts.pools.entry(pool.clone()).or_default();
+            let value = match take {
+                Take::Maybe => match case.draw(&Generator::Boolean)?.as_bool() {
+                    Some(true) => case
+                        .generate(pool, false)?
+                        .inspect(|_| pooled.generate += 1),
+                    _ => Some(Json::Null),
+                }
+                .or(Some(Json::Null)),
+                Take::Reuse | Take::Consume => {
+                    let consume = *take == Take::Consume;
+                    let found = case.generate(pool, consume)?;
+                    match (&found, consume) {
+                        (None, _) => pooled.empty += 1,
+                        (Some(_), true) => pooled.consume += 1,
+                        (Some(_), false) => pooled.generate += 1,
+                    }
+                    found
+                }
+            };
+            let Some(value) = value else {
+                return Ok((input, Some(format!("pool {pool}"))));
+            };
+            if let Json::Object(all) = &mut input {
+                all.insert(i.name.clone(), value);
+            }
+        }
+        let refused = (!self.d.admits(a, &input)).then(|| format!("where of {}", a.verb));
+        Ok((input, refused))
+    }
+
+    fn after(
+        &mut self,
+        case: &Case,
+        rule: usize,
+        input: &Json,
+        result: &Json,
+    ) -> Result<Option<String>, Halt> {
+        let a = &self.d.actions[self.steps[rule].action];
+        if let Some((name, t)) = &a.returns
+            && let Err(e) = self.d.fit(t, result, &format!("{} returns {name}", a.verb))
+        {
+            return Ok(Some(e));
+        }
+        for (pool, from) in &a.adds {
+            let value = match &a.returns {
+                Some((name, _)) if name == from => result.clone(),
+                _ => input.get(from).cloned().unwrap_or(Json::Null),
+            };
+            case.add(pool, value)?;
+            self.counts.pools.entry(pool.clone()).or_default().add += 1;
+        }
+        Ok(None)
+    }
+
+    fn aimed(&self, case: &Case, real: &State) {
+        for (o, k) in &self.d.targets {
+            let score = match real.get(o).and_then(|p| p.get(k)) {
+                Some(Json::Number(n)) => n.as_f64(),
+                Some(Json::Array(all)) => Some(all.len() as f64),
+                Some(Json::Object(all)) => Some(all.len() as f64),
+                _ => None,
+            };
+            if let Some(score) = score {
+                case.target(score, &format!("{o}.{k}"));
+            }
+        }
+    }
+
     fn step(
         &mut self,
         case: &Case,
@@ -379,13 +398,15 @@ impl Machine<'_> {
         rule: usize,
         real: &mut State,
     ) -> Result<Stepped, Halt> {
-        let Step {
-            verb,
-            object,
-            owner,
-            action,
-        } = &self.steps[rule];
-        let (verb, object, owner, action) = (verb.clone(), object.clone(), *owner, *action);
+        let (verb, object, owner, function) = {
+            let s = &self.steps[rule];
+            (
+                s.verb.clone(),
+                s.object.clone(),
+                s.owner,
+                s.function.clone(),
+            )
+        };
         let mut line = Line {
             action: Some((verb.clone(), object.clone())),
             input: Vec::new(),
@@ -393,43 +414,61 @@ impl Machine<'_> {
             evidence: Vec::new(),
             hops: Vec::new(),
         };
-        let mut report = Report::Refused(String::new());
+        let mut done = None;
         for _ in 0..TRIES {
-            if !matches!(report, Report::Refused(_)) {
-                break;
-            }
-            let drawn = case.draw(&members[owner].hello().actions[action].drawn)?;
-            let mut asked = Asked {
-                input: vec![drawn.clone()],
-                empty: None,
+            let (input, refused) = self.input(case, rule)?;
+            line.input = vec![input.clone()];
+            let report = match refused {
+                Some(cause) => Report::Refused(cause),
+                None => members[owner].turn(&Turn::Run(
+                    &verb,
+                    Call {
+                        function: &function,
+                        input: &input,
+                    },
+                ))?,
             };
-            let call = Call {
-                line: members[owner].hello().actions[action].line,
-                input: &drawn,
-            };
-            report = members[owner].turn(&Turn::Run(&verb, call), &mut |ask| {
-                answered(case, &mut self.counts.pools, &mut asked, ask)
-            })?;
-            line.input = asked.input;
             if let Report::Refused(cause) = &report {
-                let cause = asked.empty.unwrap_or_else(|| cause.clone());
                 line.hops = self.heard(case, members)?;
                 case.event(&format!("refused {verb}: {cause}"))?;
-                (self.stream)(Event::Refused(&line, &cause));
+                (self.stream)(Event::Refused(&line, cause));
                 *self.tally[rule].refused.entry(cause.clone()).or_default() += 1;
-                self.refused.entry(verb.clone()).or_default().insert(cause);
+                self.refused
+                    .entry(verb.clone())
+                    .or_default()
+                    .insert(cause.clone());
+                if cause.starts_with("pool ") {
+                    break;
+                }
+                continue;
             }
+            done = Some((input, report));
+            break;
         }
+        let Some((input, report)) = done else {
+            return Ok(Stepped::Refused);
+        };
         let next = match report {
-            Report::State(part) => merged(real.clone(), part),
+            Report::State(part, result) => {
+                if let Some(e) = self.after(case, rule, &input, &result)? {
+                    line.hops = self.heard(case, members)?;
+                    return Ok(Stepped::Failed(self.thrown(line, &e)));
+                }
+                merged(real.clone(), part)
+            }
             Report::Refused(_) => return Ok(Stepped::Refused),
             Report::Thrown(error) => {
                 line.hops = self.heard(case, members)?;
                 return Ok(Stepped::Failed(self.thrown(line, &error)));
             }
         };
-        let next = merged(next, self.read(case, members, Some(owner))?);
+        let next = merged(next, read(members, Some(owner))?);
         line.hops = self.heard(case, members)?;
+        if let Err(e) = self.d.conforms(&next) {
+            line.state = next;
+            return Ok(Stepped::Failed(self.thrown(line, &e)));
+        }
+        self.aimed(case, &next);
         case.event(&format!("step {verb}"))?;
         self.order.push(rule);
         self.tally[rule].steps += 1;
@@ -564,37 +603,52 @@ pub(crate) fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
 }
 
 fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
-    shaped(d, members)?;
-    if members.iter().all(|m| m.hello().start.is_empty()) {
-        return Err("no module exports a `reset`".into());
+    let draws: Vec<Draw> = d.objects.iter().flat_map(|o| o.draws.clone()).collect();
+    let mut found = vec![0; draws.len()];
+    let mut steps = Vec::new();
+    for (at, a) in d.actions.iter().enumerate() {
+        let (i, m) = d
+            .module(&a.object)
+            .ok_or_else(|| format!("`{}` has no module", a.object))?;
+        let function = m
+            .actions
+            .iter()
+            .find(|(v, _)| *v == a.verb)
+            .map(|(_, f)| f.clone())
+            .ok_or_else(|| format!("`module \"{}\"` maps no `{}`", a.object, a.verb))?;
+        let owner = members
+            .iter()
+            .position(|r| r.adapter() == i.adapter)
+            .ok_or_else(|| format!("no runner of `impl \"{}\"` joins", i.adapter))?;
+        let named = format!("`action \"{}\"`", a.verb);
+        let mut drawn = live(whole(&named, &d.drawn(a))?)
+            .ok_or_else(|| format!("{named} has an input with no value that weft draws"))?;
+        for (draw, count) in draws.iter().zip(&mut found) {
+            let (narrow, n) = narrowed(drawn, draw);
+            *count += n;
+            drawn = narrow;
+        }
+        steps.push(Step {
+            verb: a.verb.clone(),
+            object: a.object.clone(),
+            owner,
+            action: at,
+            function,
+            drawn,
+        });
     }
-    let steps: Vec<Step> = members
+    if let Some((draw, _)) = draws
         .iter()
-        .enumerate()
-        .flat_map(|(owner, member)| {
-            member
-                .hello()
-                .actions
-                .iter()
-                .enumerate()
-                .map(move |(action, a)| Step {
-                    verb: a.verb.clone(),
-                    object: a.object.clone(),
-                    owner,
-                    action,
-                })
-        })
-        .collect();
-    if let Some(twice) = steps
-        .iter()
-        .enumerate()
-        .find(|(at, s)| steps[..*at].iter().any(|t| t.verb == s.verb))
-        .map(|(_, s)| &s.verb)
+        .zip(&found)
+        .find(|(draw, n)| !draw.keys && **n == 0)
     {
-        return Err(format!("two modules export the action `{twice}`"));
+        return Err(format!(
+            "the line `{}` of `draw` names a field of no input, or no value of the line is a value of the field",
+            draw.path.join(".")
+        ));
     }
     match steps.is_empty() {
-        true => Err("no module exports an action".into()),
+        true => Err("the test declares no `action`".into()),
         false => Ok(steps),
     }
 }
@@ -604,31 +658,10 @@ pub(crate) fn run<'a>(
     file: &str,
     members: &mut Members,
     key: Option<&str>,
-    declared: &[(String, String)],
     stream: &'a mut Stream<'a>,
 ) -> Result<Outcome, String> {
     let steps = owners(d, members)?;
-    let given: BTreeSet<(&str, &str)> = steps
-        .iter()
-        .map(|s| (s.verb.as_str(), s.object.as_str()))
-        .collect();
-    let read: BTreeSet<(&str, &str)> = declared
-        .iter()
-        .map(|(verb, object)| (verb.as_str(), object.as_str()))
-        .collect();
-    if given != read {
-        let shown = |all: &BTreeSet<(&str, &str)>| {
-            all.iter()
-                .map(|(verb, object)| format!("{object}.{verb}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        return Err(format!(
-            "the runners give the actions {}, and the modules of the test export {}",
-            shown(&given),
-            shown(&read)
-        ));
-    }
+    let declared = d.actions();
     let mut run = Machine {
         d,
         tally: steps
@@ -655,7 +688,7 @@ pub(crate) fn run<'a>(
         order: Vec::new(),
         stream,
     };
-    (run.stream)(Event::Actions(declared));
+    (run.stream)(Event::Actions(&declared));
     let mut engine = Engine::start(d.run.cases, key)?;
     loop {
         let case = engine.case()?;

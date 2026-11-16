@@ -1,25 +1,124 @@
+run cases=30
 setup {
   person "customer"
-  api "shop"
+  entity "customer"
+  entity "address" {
+    owner "customer"
+    street "string"
+  }
+  entity "order" {
+    customer "customer"
+    address_id "address"
+  }
+  record "parcel" {
+    order "order"
+    customer "customer"
+    recipient "customer"
+    street "string"
+  }
+  api "shop" {
+    state {
+      customers "list" of="customer"
+    }
+    pool "customers" of="customer"
+    pool "addresses" of="made"
+    pool "orders" of="placed"
+    draw {
+      street "Main" "Elm"
+    }
+    action "sign_up" {
+      returns "customer" "customer"
+      adds "customers" "customer"
+      writes "shop.customers"
+    }
+    action "add_address" {
+      input "owner" from="customers"
+      input "street" "string"
+      returns "made" id="address" owner="customer"
+      adds "addresses" "made"
+      writes "addresses.book"
+    }
+    action "place_order" {
+      input "customer" from="customers"
+      input "address" from="addresses"
+      where {
+        eq "address.owner" "customer"
+      }
+      returns "placed" id="order" customer="customer"
+      adds "orders" "placed"
+      writes "orders.orders"
+    }
+    action "choose_address" {
+      input "order" from="orders"
+      input "address" from="addresses"
+      writes "orders.orders"
+    }
+  }
   api "courier" {
+    state {
+      parcels "list" of="parcel"
+    }
+    target "courier.parcels"
+    action "ship" {
+      input "order" from="orders" take="consume"
+      writes "courier.parcels"
+    }
     invariant {
       forall "p" in="courier.parcels" {
         eq "p.customer" "p.recipient"
       }
     }
   }
-  api "orders"
-  api "addresses"
+  api "orders" {
+    state {
+      orders "map" of="order"
+    }
+    action "cancel" {
+      input "order" from="orders" take="consume"
+      writes "orders.orders"
+    }
+  }
+  api "addresses" {
+    state {
+      book "map" of="address"
+    }
+    action "correct" {
+      input "address" from="addresses"
+      input "street" "string"
+      writes "addresses.book"
+    }
+  }
 }
 impl "go" {
-  module "orders" "../runners/go/parcel/orders.go"
+  module "orders" "../services/go/orders/orders.go" {
+    url "orders.URL"
+    reset "orders.Reset"
+    state "orders.State"
+    action "cancel" "orders.Cancel"
+  }
 }
 impl "rust" {
-  module "addresses" "../runners/rust/parcel/addresses.rs"
+  module "addresses" "../services/rust/addresses.rs" {
+    url "addresses::url"
+    reset "addresses::reset"
+    state "addresses::state"
+    action "correct" "addresses::correct"
+  }
 }
 impl "python" {
-  module "shop" "../runners/python/parcel/shop.py"
+  module "shop" "../services/python/shop.py" {
+    reset "reset"
+    state "state"
+    action "sign_up" "sign_up"
+    action "add_address" "add_address"
+    action "place_order" "place_order"
+    action "choose_address" "choose_address"
+  }
 }
 impl "bun" {
-  module "courier" "../runners/bun/parcel/courier.ts"
+  module "courier" "../services/bun/courier.ts" {
+    reset "reset"
+    state "state"
+    action "ship" "ship"
+  }
 }

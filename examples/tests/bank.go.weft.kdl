@@ -1,11 +1,27 @@
 setup {
   person "owner"
   api "bank" {
+    state {
+      balance "int"
+    }
+    action "deposit" {
+      input "amount" "1..100"
+      writes "bank.balance"
+    }
+    action "withdraw" {
+      input "amount" "1..100"
+      writes "bank.balance"
+    }
     invariant {
       igte "bank.balance" 0
     }
   }
 }
 impl "go" {
-  module "bank" "../runners/go/bank/bank.go"
+  module "bank" "../services/go/bank/bank.go" {
+    reset "bank.Reset"
+    state "bank.State"
+    action "deposit" "bank.Deposit"
+    action "withdraw" "bank.Withdraw"
+  }
 }

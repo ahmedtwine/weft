@@ -6,13 +6,10 @@
       "name": "weft-examples",
       "dependencies": {
         "weft": "link:weft",
-        "zod": "^4.0.0",
       },
     },
   },
   "packages": {
     "weft": ["weft@link:weft", { "bin": { "weft": "./sdk/bin.ts" } }],
-
-    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
   }
 }

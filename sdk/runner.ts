@@ -1,19 +1,11 @@
 import { plugin } from "bun";
 import inspector from "node:inspector";
-import { dirname, relative, resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { schemas, states } from "./state";
-import { TestCase } from "./testcase";
-import { AssumeFailed, type Call, done, join, type Report, setup, StopTest, type Turn, turn } from "./weft";
+import { type Call, done, join, type Report, setup, type Turn, turn } from "./weft";
 
-type Schema = {
-  _zod: unknown;
-  parse: (value: unknown) => unknown;
-  safeParse: (value: unknown) => { success: boolean; data?: unknown };
-};
-type Run = (input: unknown, tc: TestCase) => unknown;
-type Used = { run: Run; input?: Schema };
-type Called = { result: unknown } | { thrown: string } | { refused: string };
+type Run = (input?: unknown) => unknown;
+type Called = { result: unknown } | { thrown: string };
 type Served = { file: string; counts: Int32Array; marks: [number, number][]; starts: number[] };
 type Range = { startOffset: number; endOffset: number; count: number };
 type Taken = { result: { url: string; functions: { ranges: Range[] }[] }[] };
@@ -21,8 +13,6 @@ type Code = Map<string, Set<number>>;
 
 const { adapter: ADAPTER, diagram } = setup();
 const START = "start";
-const RESET = "reset";
-const URL = "url";
 const SAMPLES = 8;
 const SOURCE = new RegExp(
   `^${process.cwd().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?!.*node_modules/).*\\.[cm]?[jt]sx?$`
@@ -161,52 +151,25 @@ const code = join(diagram);
 const placed = (place: string) => (place.startsWith(".") ? resolve(place) : place);
 
 const loaded = async () => {
-  const [first] = code.flatMap(({ adapter, modules }) =>
-    adapter === ADAPTER ? Object.values(modules) : []
-  );
-  if (!first) throw new Error(`the diagram has no \`impl "${ADAPTER}"\` with a \`module\``);
-  const { z } = await import(Bun.resolveSync("zod", dirname(Bun.resolveSync(placed(first), process.cwd()))));
-  const json = (schema: Schema | undefined, io: "input" | "output") =>
-    schema && z.toJSONSchema(schema, { io, unrepresentable: () => ({ not: {} }) });
-  const start: Used[] = [];
-  const actions: Used[] = [];
-  const said = { start: [] as unknown[], actions: [] as unknown[] };
+  const calls = new Map<string, Run>();
+  const reads: [string, Run][] = [];
   let serves: string | undefined;
-  for (const { adapter, modules: places } of code) {
+  for (const { adapter, modules } of code) {
     if (adapter !== ADAPTER) continue;
-    for (const [module, place] of Object.entries(places)) {
-      const exports: Record<string, unknown> = await import(placed(place));
-      for (const [name, run] of Object.entries(exports)) {
-        if (typeof run !== "function") continue;
-        const input = exports[`${name}Schema`] as Schema | undefined;
-        const each = { function: [module, name], input: json(input, "input") ?? null };
-        if (name === URL) serves = String(await (run as () => unknown)());
-        else if (name === RESET) {
-          start.push({ run: run as Run, input });
-          said.start.push(each);
-        } else {
-          actions.push({ run: run as Run, input });
-          said.actions.push(each);
-        }
-      }
+    for (const [object, m] of Object.entries(modules)) {
+      const exports: Record<string, unknown> = await import(placed(m.path));
+      const found = (id: string) => {
+        const run = exports[id];
+        if (typeof run !== "function")
+          throw new Error(`\`module "${object}"\` maps \`${id}\`, and \`${m.path}\` exports no function \`${id}\``);
+        return run as Run;
+      };
+      for (const id of [m.reset, ...Object.values(m.actions)]) if (id) calls.set(id, found(id));
+      if (m.state) reads.push([object, found(m.state)]);
+      if (m.url) serves = String(await found(m.url)());
     }
   }
-  const hello = {
-    adapter: ADAPTER,
-    serves,
-    states: schemas((type) => json(type as Schema, "output")),
-    ...said,
-  };
-  return { start, actions, hello, tc: new TestCase((schema) => json(schema as Schema, "input")) };
-};
-
-const accepted = (schema: Schema, value: unknown): [unknown] | [] => {
-  try {
-    const result = schema.safeParse(value);
-    return result.success ? [result.data] : [];
-  } catch {
-    return [];
-  }
+  return { calls, reads, hello: { adapter: ADAPTER, serves } };
 };
 
 const thrower = (error: Error) => {
@@ -224,55 +187,39 @@ const thrower = (error: Error) => {
 const ran = { start: new Map() as Code, actions: new Map<string, Code>() };
 
 const played = async () => {
-  const { start, actions, hello, tc } = await loaded();
-  const called = async (use: Used, input: unknown): Promise<Called> => {
-    const [result, ...thrown] = await Promise.resolve()
-      .then(() => use.run(input, tc))
+  const { calls, reads, hello } = await loaded();
+  const thrown = (error: unknown) =>
+    error instanceof Error ? `${error.name}: ${error.message}${thrower(error)}` : String(error);
+  const called = async (run: Run, input: unknown): Promise<Called> =>
+    Promise.resolve()
+      .then(() => run(input))
       .then(
-        (result) => [result],
-        (error: unknown) => [undefined, error]
+        (result) => ({ result }),
+        (error: unknown) => ({ thrown: thrown(error) })
       );
-    if (thrown.length === 0) return { result };
-    const [error] = thrown;
-    if (error instanceof StopTest) return { refused: "stop_test" };
-    if (error instanceof AssumeFailed) return { refused: "assume" };
-    if (!(error instanceof Error)) return { thrown: String(error) };
-    return { thrown: `${error.name}: ${error.message}${thrower(error)}` };
-  };
-  let uses = actions;
-  const reported = async (calls: Call[], inputs: unknown[][]): Promise<Report> => {
-    for (const [at, call] of calls.entries()) {
-      const use = uses[call.use];
-      if (!use) throw new Error(`the runner has no function ${call.use}`);
-      const [input] = inputs[at];
-      const ended = await called(use, input);
+  const reported = async (given: Call[]): Promise<Report> => {
+    let result: unknown = null;
+    for (const call of given) {
+      const run = calls.get(call.function);
+      if (!run) return { thrown: `the runner has no function \`${call.function}\`` };
+      const ended = await called(run, call.input);
       if (!("result" in ended)) return ended;
+      result = ended.result ?? null;
     }
-    return { states: {} };
-  };
-  const stepped = async (calls: Call[], known?: Code): Promise<Report> => {
-    const inputs = calls.map(({ use, input }) => {
-      const schema = uses[use]?.input;
-      return schema ? accepted(schema, input) : [undefined];
-    });
-    if (inputs.some((input) => input.length === 0)) return { refused: "schema" };
-    const report = await (known
-      ? measured(known, () => reported(calls, inputs))
-      : reported(calls, inputs));
-    if (!("states" in report)) return report;
     try {
-      return { ...report, states: states() };
+      const states: Record<string, unknown> = {};
+      for (const [object, read] of reads) states[object] = JSON.parse(JSON.stringify((await read()) ?? null));
+      return { states, result: JSON.parse(JSON.stringify(result)) };
     } catch (error: unknown) {
-      return { thrown: error instanceof Error ? `${error.name}: ${error.message}${thrower(error)}` : String(error) };
+      return { thrown: thrown(error) };
     }
   };
-  const play = ({ step, calls }: Turn): Promise<Report> => {
-    uses = step === START ? start : actions;
-    if (step === undefined) return stepped(calls);
-    if (step === START) return stepped(calls, ran.start);
+  const play = ({ step, calls: given }: Turn): Promise<Report> => {
+    if (step === undefined) return reported(given);
+    if (step === START) return measured(ran.start, () => reported(given));
     const known = ran.actions.get(step) ?? new Map();
     ran.actions.set(step, known);
-    return stepped(calls, known);
+    return measured(known, () => reported(given));
   };
   let now = turn(hello);
   while (!now.done) now = turn(await play(now));

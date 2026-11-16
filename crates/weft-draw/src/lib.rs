@@ -7,7 +7,7 @@ use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Render
 use sealmap_mermaid::{Ident, escape_text};
 use serde_json::Value;
 use vendor::lucide::ICONS;
-use weft_parse::{Diagram, Invariant, Now, Op, State};
+use weft_parse::{Diagram, Invariant, Now, Op, Source, State, Take};
 
 const WRAP: usize = 24;
 const PAD: f64 = 10.0;
@@ -764,13 +764,13 @@ impl Moment<'_> {
         let ran: Vec<&str> = d
             .impls
             .iter()
-            .flat_map(|i| i.modules.iter().map(|(object, _)| object.as_str()))
+            .flat_map(|i| i.modules.iter().map(|m| m.object.as_str()))
             .collect();
         for o in d.objects.iter().filter(|o| !ran.contains(&o.name.as_str())) {
             out.push(format!("  participant {}", Ident::new(&o.name)));
         }
         for (n, i) in d.impls.iter().enumerate() {
-            for (object, _) in &i.modules {
+            for object in i.modules.iter().map(|m| &m.object) {
                 out.push(format!("  participant {}", Ident::new(object)));
                 out.push(format!("  %% runner {} {}", Ident::new(object), series(n)));
             }
@@ -798,7 +798,11 @@ impl Moment<'_> {
             }
         }
         for c in self.checked(d).into_iter().filter(|c| c.objects.len() > 1) {
-            let over: Vec<String> = c.objects.iter().map(|o| Ident::new(o).to_string()).collect();
+            let over: Vec<String> = c
+                .objects
+                .iter()
+                .map(|o| Ident::new(o).to_string())
+                .collect();
             out.push(format!("  Note over {}: {}", over.join(","), c.line));
         }
         for (object, color, text) in self.checks(d) {
@@ -842,7 +846,7 @@ impl Moment<'_> {
         let groups: Vec<&str> = d
             .impls
             .iter()
-            .flat_map(|i| i.modules.iter().map(|(object, _)| object.as_str()))
+            .flat_map(|i| i.modules.iter().map(|m| m.object.as_str()))
             .collect();
         let mut body = vec![
             "flowchart TB".to_string(),
@@ -851,21 +855,62 @@ impl Moment<'_> {
         ];
         let mut marked = Vec::new();
         for i in &d.impls {
-            for (object, _) in &i.modules {
+            for object in i.modules.iter().map(|m| &m.object) {
                 let (lines, marks) = self.group(d, object, &i.adapter);
                 body.extend(lines);
                 marked.extend(marks);
             }
         }
+        for p in &d.pools {
+            body.push(format!(
+                "  {}[(\"{}\")]",
+                Ident::new(&format!("p_{}", p.name)),
+                escape_text(&format!("pool {} of {}", p.name, p.of))
+            ));
+        }
+        for a in &d.actions {
+            let action = Ident::new(&format!("a_{}_{}", a.object, a.verb));
+            for i in &a.inputs {
+                if let Source::Pool(pool, take) = &i.source {
+                    let how = match take {
+                        Take::Reuse => "reuse",
+                        Take::Consume => "consume",
+                        Take::Maybe => "maybe",
+                    };
+                    body.push(format!(
+                        "  {} -.->|{how}| {action}",
+                        Ident::new(&format!("p_{pool}"))
+                    ));
+                }
+            }
+            for (pool, _) in &a.adds {
+                body.push(format!(
+                    "  {action} -.->|adds| {}",
+                    Ident::new(&format!("p_{pool}"))
+                ));
+            }
+            for w in a.writes.iter().filter(|w| w[0] != a.object) {
+                body.push(format!(
+                    "  {action} -.->|writes| {}",
+                    Ident::new(&format!("s_{}", w[0]))
+                ));
+            }
+        }
         for i in d.invariants() {
             if self.broken == Some(i.place().as_str()) {
                 for (object, _) in reads(i) {
-                    marked.push(format!("  class {} {FAILS}", Ident::new(&format!("s_{object}"))));
+                    marked.push(format!(
+                        "  class {} {FAILS}",
+                        Ident::new(&format!("s_{object}"))
+                    ));
                 }
             }
         }
         for (object, color, text) in self.checks(d) {
-            body.push(format!("  %% check {} {color} {text}", Ident::new(&format!("s_{object}"))));
+            body.push(format!(
+                "  %% check {} {color} {text}",
+                Ident::new(&format!("s_{object}"))
+            ));
         }
         for (j, c) in self.checked(d).into_iter().enumerate() {
             if let [from, to, ..] = c.objects.as_slice() {
@@ -1149,16 +1194,38 @@ mod tests {
     const DIAGRAM: &str = r#"
 setup {
   person "agent"
-  browser "page" snapshot="snap_0"
+  browser "page" snapshot="snap_0" {
+    state {
+      snapshot "string"
+    }
+    action "load" {
+      input "snapshot" "string"
+      writes "page.snapshot"
+    }
+  }
   element "origin" value="San Diego" {
+    state {
+      value "string"
+    }
+    action "type" {
+      input "text" "string"
+      writes "origin.value"
+    }
     invariant {
       neq "origin.value" ""
     }
   }
 }
 impl "bun" {
-  module "origin" "../src/origin.ts"
-  module "page" "../src/page.ts"
+  module "origin" "../src/origin.ts" {
+    reset "reset"
+    state "origin"
+    action "type" "type"
+  }
+  module "page" "../src/page.ts" {
+    state "page"
+    action "load" "load"
+  }
 }
 "#;
 

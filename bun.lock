@@ -7,9 +7,6 @@
       "dependencies": {
         "koffi": "^3.0.2",
       },
-      "peerDependencies": {
-        "zod": "^4.0.0",
-      },
     },
   },
   "packages": {
@@ -53,8 +50,6 @@
 
     "@koromix/koffi-win32-x64": ["@koromix/koffi-win32-x64@3.3.7", "", { "os": "win32", "cpu": "x64" }, "sha512-yVrh4Yzyjm+fH7CGIa8Ts+DSGeU8QrwEtECXxNswh3i86hwZTOKkqojaDFAYJov0B3w4BFcjR4TOKkPOB0ZpZA=="],
 
-    "koffi": ["koffi@3.3.7", "", { "optionalDependencies": { "@koromix/koffi-android-arm64": "3.3.7", "@koromix/koffi-android-x64": "3.3.7", "@koromix/koffi-darwin-arm64": "3.3.7", "@koromix/koffi-darwin-x64": "3.3.7", "@koromix/koffi-freebsd-arm64": "3.3.7", "@koromix/koffi-freebsd-ia32": "3.3.7", "@koromix/koffi-freebsd-x64": "3.3.7", "@koromix/koffi-linux-arm": "3.3.7", "@koromix/koffi-linux-arm64": "3.3.7", "@koromix/koffi-linux-ia32": "3.3.7", "@koromix/koffi-linux-loong64": "3.3.7", "@koromix/koffi-linux-ppc64": "3.3.7", "@koromix/koffi-linux-riscv64": "3.3.7", "@koromix/koffi-linux-x64": "3.3.7", "@koromix/koffi-openbsd-arm64": "3.3.7", "@koromix/koffi-openbsd-ia32": "3.3.7", "@koromix/koffi-openbsd-x64": "3.3.7", "@koromix/koffi-win32-arm64": "3.3.7", "@koromix/koffi-win32-ia32": "3.3.7", "@koromix/koffi-win32-x64": "3.3.7" }, "hasInstallScript": true }, "sha512-Vrq4UwAE19HPLMou8m7HGCELiTE3l9D+r1nA7XwVHUTNaRdymPM+kzkkD2VGxlyjI2qZTb9tMDaFn7kfZ72v3Q=="],
-
-    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
+    "koffi": ["koffi@3.3.7", "", { "optionalDependencies": { "@koromix/koffi-android-arm64": "3.3.7", "@koromix/koffi-android-x64": "3.3.7", "@koromix/koffi-darwin-arm64": "3.3.7", "@koromix/koffi-darwin-x64": "3.3.7", "@koromix/koffi-freebsd-arm64": "3.3.7", "@koromix/koffi-freebsd-ia32": "3.3.7", "@koromix/koffi-freebsd-x64": "3.3.7", "@koromix/koffi-linux-arm": "3.3.7", "@koromix/koffi-linux-arm64": "3.3.7", "@koromix/koffi-linux-ia32": "3.3.7", "@koromix/koffi-linux-loong64": "3.3.7", "@koromix/koffi-linux-ppc64": "3.3.7", "@koromix/koffi-linux-riscv64": "3.3.7", "@koromix/koffi-linux-x64": "3.3.7", "@koromix/koffi-openbsd-arm64": "3.3.7", "@koromix/koffi-openbsd-ia32": "3.3.7", "@koromix/koffi-openbsd-x64": "3.3.7", "@koromix/koffi-win32-arm64": "3.3.7", "@koromix/koffi-win32-ia32": "3.3.7", "@koromix/koffi-win32-x64": "3.3.7" } }, "sha512-Vrq4UwAE19HPLMou8m7HGCELiTE3l9D+r1nA7XwVHUTNaRdymPM+kzkkD2VGxlyjI2qZTb9tMDaFn7kfZ72v3Q=="],
   }
 }

@@ -1,7 +1,4 @@
 from dataclasses import dataclass
-from typing import Annotated
-
-import weft
 
 
 @dataclass
@@ -11,11 +8,14 @@ class Bank:
 
 @dataclass
 class Amount:
-    amount: Annotated[int, range(1, 101)]
+    amount: int
 
 
 bank = Bank()
-weft.state("bank", lambda: bank)
+
+
+def state():
+    return bank
 
 
 def reset():

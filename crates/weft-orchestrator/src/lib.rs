@@ -6,7 +6,6 @@ mod proxy;
 mod reaper;
 mod report;
 mod schema;
-mod shape;
 mod stateful;
 mod transport;
 
@@ -95,7 +94,18 @@ fn code(d: &Diagram, file: &Path) -> String {
     Json::from_iter(d.impls.iter().map(|i| {
         json!({
             "adapter": i.adapter,
-            "modules": Json::from_iter(i.modules.iter().map(|(module, at)| (module.clone(), place(at)))),
+            "modules": Json::from_iter(i.modules.iter().map(|m| {
+                (
+                    m.object.clone(),
+                    json!({
+                        "path": place(&m.path),
+                        "reset": m.reset,
+                        "state": m.state,
+                        "url": m.url,
+                        "actions": Json::from_iter(m.actions.iter().map(|(verb, f)| (verb.clone(), json!(f)))),
+                    }),
+                )
+            })),
         })
     }))
     .to_string()
@@ -115,17 +125,15 @@ pub fn run<'a>(
     }
     let name = file.display().to_string();
     let at = listen(config.transport.as_ref())?;
-    let draws = d.objects.iter().flat_map(|o| o.draws.clone()).collect();
     let impls = d.impls.iter().map(|i| i.adapter.clone()).collect();
-    let objects = d.objects.iter().map(|o| o.name.clone()).collect();
-    let session = HUB.open(&name, code(d, file), impls, objects, draws);
+    let session = HUB.open(&name, code(d, file), impls);
     let routes: proxy::Routes = Arc::new(
         d.impls
             .iter()
             .flat_map(|i| {
                 i.modules
                     .iter()
-                    .map(|(m, _)| (m.clone(), i.adapter.clone()))
+                    .map(|m| (m.object.clone(), i.adapter.clone()))
             })
             .collect(),
     );
@@ -148,7 +156,7 @@ pub fn run<'a>(
         let app = i
             .modules
             .first()
-            .map_or(i.adapter.as_str(), |(m, _)| m.as_str());
+            .map_or(i.adapter.as_str(), |m| m.object.as_str());
         let proxy = match proxy::open(app, session.clone(), routes.clone()) {
             Ok(proxy) => proxy,
             Err(e) => {
@@ -196,9 +204,7 @@ pub fn run<'a>(
     }
     let joined = session.members(WAIT);
     let outcome = match joined {
-        Ok(mut members) => Ok(d
-            .actions(file.parent().unwrap_or(Path::new("")))
-            .and_then(|declared| stateful::run(d, &name, &mut members, key, &declared, stream))),
+        Ok(mut members) => Ok(stateful::run(d, &name, &mut members, key, stream)),
         Err(e) => Err(e),
     };
     HUB.close(&name);
@@ -221,10 +227,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
-    use weft_wire::{
-        ASSUME, DONE, JOIN, OK, POOL_ADD, POOL_GENERATE, REFUSED, Reader, STOP_TEST, TARGET, TURN,
-        Writer, receive, send,
-    };
+    use weft_wire::{DONE, JOIN, OK, REFUSED, Reader, TURN, Writer, receive, send};
 
     static FILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -239,21 +242,40 @@ mod tests {
 setup {
   person "user"
   browser "page" count=0 {DRAW
+    state {
+      count "int"
+    }
+    pool "numbers" of="0..1000"
+    target "page.count"
+    action "send" {
+      input "n" "0..1000"
+      ADDS
+      writes "page.count"
+    }
     invariant {
       igte "page.count" 0
     }
   }
-  browser "tab"
+  browser "tab" {
+    action "reload" {
+      TAKES
+      writes "page.count"
+    }
+  }
 }
 impl "bun" {
-  module "page" "../fixtures/page.ts"
+  module "page" "../fixtures/page.ts" {
+    reset "clear"
+    state "page"
+    action "send" "send"
+  }
 }
 impl "other" {
-  module "tab" "../fixtures/tab.ts"
+  module "tab" "../fixtures/tab.ts" {
+    action "reload" "reload"
+  }
 }
 "#;
-    const NONE: &str = r#"{"type":"object","properties":{},"additionalProperties":false}"#;
-    const NUMBER: &str = r#"{"type":"object","properties":{"n":{"type":"integer","minimum":0,"maximum":1000}},"required":["n"],"additionalProperties":false}"#;
 
     #[derive(Default)]
     struct Page {
@@ -324,7 +346,7 @@ impl "other" {
 
     fn state(app: &App) -> Json {
         let count = app.lock().map_or(0, |page| page.count);
-        json!({ "states": { "page.count": count } })
+        json!({ "states": { "page": { "count": count } } })
     }
 
     fn runner(
@@ -348,7 +370,8 @@ impl "other" {
             .ok_or("weft opens no diagram")?;
         let code: Json = serde_json::from_str(&joined).map_err(|e| e.to_string())?;
         assert_eq!(code[0]["adapter"], "bun");
-        assert_eq!(code[0]["modules"]["page"], "./fixtures/page.ts");
+        assert_eq!(code[0]["modules"]["page"]["path"], "./fixtures/page.ts");
+        assert_eq!(code[0]["modules"]["page"]["actions"]["send"], "send");
         let mut report = hello.to_string();
         loop {
             let turn: Json =
@@ -375,10 +398,10 @@ impl "other" {
 
     fn sender(app: &App, turn: &Json, _: &mut Link) -> Json {
         match (
-            turn["step"].as_str(),
+            turn["calls"][0]["function"].as_str(),
             turn["calls"][0]["input"]["n"].as_i64(),
         ) {
-            (Some("start"), _) => set(app, |_| 0),
+            (Some("clear"), _) => set(app, |_| 0),
             (_, Some(n)) => set(app, |_| n),
             _ => {}
         }
@@ -396,80 +419,42 @@ impl "other" {
         json!({ "states": {} })
     }
 
-    fn ended(asked: Result<String, (i32, String)>, state: Json) -> Json {
-        match asked {
-            Ok(_) => state,
-            Err((ASSUME, _)) => json!({ "refused": "assume" }),
-            Err((STOP_TEST, _)) => json!({ "refused": "stop_test" }),
-            Err((_, e)) => json!({ "thrown": e }),
+    fn consumer(app: &App, turn: &Json, _: &mut Link) -> Json {
+        if let Some(m) = turn["calls"][0]["input"]["m"].as_i64() {
+            set(app, |_| if m > 5 { -1 } else { 0 });
         }
-    }
-
-    fn adder(app: &App, turn: &Json, link: &mut Link) -> Json {
-        let Some(n) = turn["calls"][0]["input"]["n"].as_i64() else {
-            if turn["step"] == "start" {
-                set(app, |_| 0);
-            }
-            return state(app);
-        };
-        let added = link
-            .asked(
-                POOL_ADD,
-                &json!({ "pool": "numbers", "value": n }).to_string(),
-            )
-            .and_then(|_| link.asked(TARGET, &json!({ "value": n, "label": "n" }).to_string()));
-        ended(added, state(app))
-    }
-
-    fn consumer(app: &App, turn: &Json, link: &mut Link) -> Json {
-        if turn["step"] != "reload" {
-            return json!({ "states": {} });
-        }
-        let generated = link.asked(
-            POOL_GENERATE,
-            &json!({ "pool": "numbers", "consume": true }).to_string(),
-        );
-        if let Ok(n) = &generated {
-            set(app, |_| match n.parse::<i64>() {
-                Ok(n) if n > 5 => -1,
-                _ => 0,
-            });
-        }
-        ended(generated, json!({ "states": {} }))
-    }
-
-    fn schema(text: &str) -> Json {
-        serde_json::from_str(text).unwrap_or_default()
-    }
-
-    fn function(name: &str, text: &str) -> Json {
-        json!({ "function": ["page", name], "input": schema(text) })
+        json!({ "states": {} })
     }
 
     fn sends() -> Json {
-        json!({
-            "adapter": "bun",
-            "start": [function("clear", NONE)],
-            "actions": [function("send", NUMBER)],
-            "states": { "page.count": { "type": "integer" } },
-        })
+        json!({ "adapter": "bun" })
     }
 
     fn reloads() -> Json {
-        json!({ "adapter": "other", "actions": [{ "function": ["tab", "reload"], "input": schema(NONE) }] })
+        json!({ "adapter": "other" })
     }
 
-    fn two(transport: &str, draw: &str, sends: Json, plays: [Play; 2]) -> Result<Outcome, String> {
+    fn two(transport: &str, draw: &str, pooled: bool, plays: [Play; 2]) -> Result<Outcome, String> {
         let config = weft_parse::config(&format!(
             "{CONFIG}{transport}\nrun cases=100 steps=50 check=\"sampled\"\n"
         ))
         .map_err(|e| e.to_string())?;
-        let d =
-            weft_parse::parse(&PAGE.replace("DRAW", draw), &config).map_err(|e| e.to_string())?;
+        let (adds, takes) = match pooled {
+            true => (
+                "adds \"numbers\" \"n\"",
+                "input \"m\" from=\"numbers\" take=\"consume\"",
+            ),
+            false => ("", ""),
+        };
+        let page = PAGE
+            .replace("DRAW", draw)
+            .replace("ADDS", adds)
+            .replace("TAKES", takes);
+        let d = weft_parse::parse(&page, &config).map_err(|e| e.to_string())?;
         let at = listen(config.transport.as_ref())?;
         let app = App::default();
         let name = file();
-        let runners: Vec<_> = [sends, reloads()]
+        let runners: Vec<_> = [sends(), reloads()]
             .into_iter()
             .zip(plays)
             .map(|(hello, play)| {
@@ -502,7 +487,7 @@ impl "other" {
         let o = two(
             &socket("pass"),
             "",
-            sends(),
+            false,
             [sender, reloader_with_no_change],
         )?;
         assert!(!o.failed);
@@ -512,11 +497,11 @@ impl "other" {
 
     #[test]
     fn a_failing_case_of_two_runners_shrinks_to_the_least_value_and_steps() -> Result<(), String> {
-        let o = two(&socket("shrink"), "", sends(), [sender, reloader])?;
+        let o = two(&socket("shrink"), "", false, [sender, reloader])?;
         assert!(o.failed);
         assert!(
             o.origin.as_deref().is_some_and(|origin| {
-                origin.starts_with("igte at invariants/page-") && origin.ends_with(".weft.kdl:6:7")
+                origin.starts_with("igte at invariants/page-") && origin.ends_with(".weft.kdl:16:7")
             }),
             "{:?}",
             o.origin
@@ -534,14 +519,14 @@ impl "other" {
 
     #[test]
     fn a_value_that_one_runner_adds_to_a_pool_is_generated_for_the_other() -> Result<(), String> {
-        let o = two(&socket("pool"), "", sends(), [adder, consumer])?;
+        let o = two(&socket("pool"), "", true, [sender, consumer])?;
         assert!(o.failed);
         assert_eq!(
             steps(&o),
             [
                 ("start".to_string(), String::new()),
                 ("send to=page".to_string(), "n=6".to_string()),
-                ("reload to=tab".to_string(), "numbers=6".to_string()),
+                ("reload to=tab".to_string(), "m=6".to_string()),
             ]
         );
         Ok(())
@@ -552,14 +537,14 @@ impl "other" {
         let o = two(
             &socket("low"),
             "\n    draw {\n      n 1 2\n    }",
-            sends(),
+            false,
             [sender, reloader],
         )?;
         assert!(!o.failed);
         let o = two(
             &socket("high"),
             "\n    draw {\n      n 7 9\n    }",
-            sends(),
+            false,
             [sender, reloader],
         )?;
         assert_eq!(steps(&o)[1].1, "n=7");
@@ -571,7 +556,7 @@ impl "other" {
         let o = two(
             "transport \"http\" url=\"http://127.0.0.1:7413\"",
             "",
-            sends(),
+            false,
             [sender, reloader_with_no_change],
         )?;
         assert!(!o.failed);
@@ -586,6 +571,8 @@ impl "other" {
         .map_err(|e| e.to_string())?;
         let page = PAGE
             .replace("DRAW", "")
+            .replace("ADDS", "")
+            .replace("TAKES", "")
             .replace("../fixtures/page.ts", "./page.ts");
         let error = weft_parse::parse(&page, &config)
             .err()
@@ -603,7 +590,7 @@ impl "other" {
         let error = two(
             &socket("field"),
             "\n    draw {\n      m 1\n    }",
-            sends(),
+            false,
             [sender, reloader],
         )
         .err()

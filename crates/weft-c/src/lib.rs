@@ -8,13 +8,10 @@ use std::sync::{Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use serde_json::{Value as Json, json};
 use weft_draw::{Code, Theme};
 use weft_orchestrator::{Event, checks, summary, totals};
 use weft_parse::Diagram;
-use weft_wire::{
-    ASSUME, DONE, GENERATE, JOIN, POOL_ADD, POOL_GENERATE, STOP_TEST, TARGET, TURN, client,
-};
+use weft_wire::{ASSUME, DONE, JOIN, STOP_TEST, TURN, client};
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct weft_string_t {
@@ -216,12 +213,6 @@ unsafe fn sent(
     })
 }
 
-fn given(said: &str) -> weft_string_t {
-    weft_string_t {
-        data: said.as_ptr().cast(),
-        len: said.len(),
-    }
-}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_diagram_join(
     ctx: *mut WeftContext,
@@ -256,68 +247,6 @@ pub unsafe extern "C" fn weft_diagram_done(
         Err(rc) => rc,
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn weft_generate(
-    ctx: *mut WeftContext,
-    schema: weft_string_t,
-    out_value: *mut weft_owned_string_t,
-) -> weft_result_t {
-    let call = "weft_generate";
-    match unsafe { sent(ctx, call, GENERATE, schema) } {
-        Ok(value) => unsafe { give(ctx, call, out_value, value) },
-        Err(rc) => rc,
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn weft_pool_add(
-    ctx: *mut WeftContext,
-    pool: weft_string_t,
-    value: weft_string_t,
-) -> weft_result_t {
-    let call = "weft_pool_add";
-    let said = unsafe { text(ctx, call, "pool", pool) }.and_then(|pool| {
-        let value = unsafe { text(ctx, call, "value", value) }?;
-        let value: Json = serde_json::from_str(value).map_err(|e| {
-            set_error(ctx, &format!("{call}: value: {e}"));
-            WEFT_E_INVALID_ARG
-        })?;
-        Ok(json!({ "pool": pool, "value": value }).to_string())
-    });
-    match said.and_then(|said| unsafe { sent(ctx, call, POOL_ADD, given(&said)) }) {
-        Ok(_) => WEFT_OK,
-        Err(rc) => rc,
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn weft_pool_generate(
-    ctx: *mut WeftContext,
-    pool: weft_string_t,
-    consume: bool,
-    out_value: *mut weft_owned_string_t,
-) -> weft_result_t {
-    let call = "weft_pool_generate";
-    let said = unsafe { text(ctx, call, "pool", pool) }
-        .map(|pool| json!({ "pool": pool, "consume": consume }).to_string());
-    match said.and_then(|said| unsafe { sent(ctx, call, POOL_GENERATE, given(&said)) }) {
-        Ok(value) => unsafe { give(ctx, call, out_value, value) },
-        Err(rc) => rc,
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn weft_target(
-    ctx: *mut WeftContext,
-    value: f64,
-    label: weft_string_t,
-) -> weft_result_t {
-    let call = "weft_target";
-    let said = unsafe { text(ctx, call, "label", label) }
-        .map(|label| json!({ "value": value, "label": label }).to_string());
-    match said.and_then(|said| unsafe { sent(ctx, call, TARGET, given(&said)) }) {
-        Ok(_) => WEFT_OK,
-        Err(rc) => rc,
-    }
-}
-
 type Test = JoinHandle<Result<(bool, String), String>>;
 
 static TEST: Mutex<Option<Test>> = Mutex::new(None);

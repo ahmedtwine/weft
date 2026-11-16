@@ -128,12 +128,8 @@ fn checked(file: &Path, config: &Config, parent: Option<&str>) -> Checked {
 fn report(only: &[String], parent: Option<&str>) -> Result<Report, String> {
     let (files, config) = files(only)?;
     for file in &files {
-        let drawn = weft_orchestrator::diagram(file, &config).and_then(|d| {
-            let actions = d.actions(file.parent().unwrap_or(Path::new("")))?;
-            Ok((d, actions))
-        });
-        if let Ok((d, actions)) = drawn {
-            spans::drawn(&file.display().to_string(), &d, &actions);
+        if let Ok(d) = weft_orchestrator::diagram(file, &config) {
+            spans::drawn(&file.display().to_string(), &d, &d.actions());
         }
     }
     let width = match config.transport {

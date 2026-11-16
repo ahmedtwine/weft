@@ -1,4 +1,4 @@
-package parcel
+package orders
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ahmedtwine/weft/sdk/go"
 	"github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -25,6 +24,14 @@ type Order struct {
 type Placed struct {
 	ID       string `json:"id"`
 	Customer string `json:"customer"`
+}
+
+type Cancelled struct {
+	Order Placed `json:"order"`
+}
+
+type Orders struct {
+	Orders map[string]Order `json:"orders"`
 }
 
 var (
@@ -129,33 +136,26 @@ func Reset() error {
 	return db.FlushAll(ctx).Err()
 }
 
-func Cancel(tc weft.TestCase) error {
-	order := weft.Draw(tc, weft.NewPool[Placed](tc, "orders").ValuesConsumed())
+func Cancel(given Cancelled) error {
 	mu.Lock()
 	defer mu.Unlock()
-	return db.Del(context.Background(), "order:"+order.ID).Err()
+	return db.Del(context.Background(), "order:"+given.Order.ID).Err()
+}
+
+func State() Orders {
+	mu.Lock()
+	defer mu.Unlock()
+	ctx := context.Background()
+	all := map[string]Order{}
+	for _, key := range db.Keys(ctx, "order:*").Val() {
+		id := strings.TrimPrefix(key, "order:")
+		all[id], _ = order(ctx, id)
+	}
+	return Orders{Orders: all}
 }
 
 func Stop() {
 	if redisCtr != nil {
 		_ = testcontainers.TerminateContainer(redisCtr)
 	}
-}
-
-func Module() *weft.Module {
-	weft.State("orders.orders", func() map[string]Order {
-		mu.Lock()
-		defer mu.Unlock()
-		ctx := context.Background()
-		all := map[string]Order{}
-		for _, key := range db.Keys(ctx, "order:*").Val() {
-			id := strings.TrimPrefix(key, "order:")
-			all[id], _ = order(ctx, id)
-		}
-		return all
-	})
-	return weft.NewModule().
-		Function("url", URL).
-		Function("reset", Reset).
-		Function("cancel", Cancel)
 }
