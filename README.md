@@ -228,18 +228,17 @@ flowchart TB
 
 ## Dashboard
 
-`weft --ui [<file>…]` serves a live dashboard at http://127.0.0.1:7357 and runs each test when the page opens.
+`weft --ui [<file>…]` serves the dashboard at http://127.0.0.1:7357. Each test draws from its file before any run:
 
-| View | Holds |
-| ---- | ----- |
-| Before a run | One diagram of the test, from its `.weft.kdl` file and the exports of its modules: a section for each object in the color of its runner, with its state, its actions and its invariants. The sequence of the actions is in a second tab |
-| During a run | The test cases and the trace of the chosen case beside the diagram. Each step highlights its action, writes the state values into the same boxes, and marks a broken invariant |
+| In the test                   | In the diagram                                      |
+| ----------------------------- | --------------------------------------------------- |
+| `api "<object>"`              | A section, in the color of its runner               |
+| `impl "<lang>"`               | The runner color and the label `<object> · <lang>`  |
+| Each action of the module     | A node from the state of its section                |
+| `invariant "<name>"`          | A box in the section of its object                  |
+| The first `person`            | The caller in the Sequence tab                      |
 
-Weft writes the diagram in each count of columns, and the page keeps the one that shows the largest text in its panel. Each state value has a fixed width, so the layout stays the same from step to step.
-
-A hover on an action lists each step of the case that runs it, with its input; a click on a step, or the arrow keys, moves to that step. Weft checks the actions of the module files against the actions of the runners before the first case.
-
-Each run sends OpenTelemetry spans, one for each test case, step, check and HTTP request, and the dashboard reads them into [Perspective](https://perspective-dev.github.io) tables as they arrive. The diagrams use [pele](https://pele.run) and its theme variables.
+A run adds the test cases and the trace. Each step highlights its action, writes the state values into the section, and turns a broken invariant red. A hover on an action lists its steps.
 
 ## Crates
 
