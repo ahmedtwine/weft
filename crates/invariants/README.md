@@ -26,7 +26,7 @@ Each request to Jev holds one alternate and one invariant. A score of 0.82 or mo
 
 ## weft-hegel format
 
-The generator and the machine use the names of `weft-hegel`, so that the two can merge later.
+The generator and the machine use the names of `weft-hegel`, but the two machines stay apart. Weft keeps the invariants fixed and looks for a state. The invariants machine keeps the alternates fixed and looks for an invariant.
 
 | invariants | weft-hegel |
 |---|---|
