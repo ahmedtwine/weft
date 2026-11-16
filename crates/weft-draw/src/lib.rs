@@ -7,7 +7,7 @@ use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Render
 use sealmap_mermaid::{Ident, escape_text};
 use serde_json::Value;
 use vendor::lucide::ICONS;
-use weft_parse::{Diagram, Invariant, Now, Op, Quant, State};
+use weft_parse::{Diagram, Now, Op, Quant, State};
 
 const WRAP: usize = 24;
 const PAD: f64 = 10.0;
@@ -620,7 +620,6 @@ fn points(e: &Value) -> Vec<(f64, f64)> {
 }
 
 const BREAK: &str = "<br/>";
-const INVARIANT: &str = "«invariant»";
 const DONE: &str = "done";
 pub const LAYOUTS: &str = "\n%% layout\n";
 const RUNNERS: [usize; 7] = [1, 2, 3, 5, 6, 7, 8];
@@ -631,8 +630,6 @@ fn series(n: usize) -> usize {
 const FAILS: &str = "fails";
 
 const WIDTH: usize = 28;
-const ROWS: usize = 3;
-const RULE: usize = 22;
 
 fn fixed(text: &str) -> String {
     let cut: String = match text.chars().count() > WIDTH {
@@ -640,26 +637,6 @@ fn fixed(text: &str) -> String {
         false => text.to_string(),
     };
     escape_text(&cut)
-}
-
-fn block(text: &str) -> Vec<String> {
-    let mut rows: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        match rows.last_mut() {
-            Some(row) if row.chars().count() + 1 + word.chars().count() <= RULE => {
-                row.push(' ');
-                row.push_str(word);
-            }
-            _ => rows.push(word.to_string()),
-        }
-    }
-    if rows.len() > ROWS {
-        rows.truncate(ROWS);
-        if let Some(last) = rows.last_mut() {
-            last.push_str(" …");
-        }
-    }
-    rows.iter().map(|row| fixed(row)).collect()
 }
 
 struct Term {
@@ -780,7 +757,7 @@ fn node(t: &Term) -> String {
 fn checks_of(d: &Diagram) -> Vec<Check> {
     let mut out = Vec::new();
     for i in d.invariants() {
-        checks(&i.name, &i.body, &mut Vec::new(), &mut out);
+        checks(&i.place(), &i.body, &mut Vec::new(), &mut out);
     }
     out
 }
@@ -829,18 +806,6 @@ impl Moment<'_> {
             .collect()
     }
 
-    fn invariant(&self, i: &Invariant) -> String {
-        let (head, text) = match self.broken == Some(i.name.as_str()) {
-            true => (stereotype(Kind::Failed), self.failed.join(" ")),
-            false => (INVARIANT, i.name.clone()),
-        };
-        [fixed(head)]
-            .into_iter()
-            .chain(block(&text))
-            .collect::<Vec<_>>()
-            .join(BREAK)
-    }
-
     pub fn sequence(&self, d: &Diagram) -> String {
         let mut out = vec!["sequenceDiagram".to_string()];
         let ran: Vec<&str> = d
@@ -879,16 +844,7 @@ impl Moment<'_> {
                 ));
             }
         }
-        for o in &d.objects {
-            for i in &o.invariants {
-                out.push(format!(
-                    "  Note over {}: {}",
-                    Ident::new(&o.name),
-                    self.invariant(i)
-                ));
-            }
-        }
-        if let (None, Some(to), Some(check)) = (self.broken, self.target(d), self.check()) {
+        if let (Some(to), Some(check)) = (self.target(d), self.check()) {
             out.push(format!("  Note over {}: {check}", Ident::new(to)));
         }
         out.join("\n")
@@ -1234,7 +1190,7 @@ setup {
   person "agent"
   browser "page" snapshot="snap_0"
   element "origin" value="San Diego" {
-    invariant "shown" {
+    invariant {
       neq "origin.value" ""
     }
   }

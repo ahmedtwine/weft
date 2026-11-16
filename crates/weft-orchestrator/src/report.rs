@@ -46,14 +46,12 @@ fn parts(text: &str) -> Vec<String> {
 }
 
 pub fn brief(evidence: &[String]) -> Vec<String> {
-    let Some(name) = evidence
+    if !evidence
         .first()
-        .and_then(|first| first.strip_prefix("invariant \""))
-        .and_then(|rest| rest.split_once('"'))
-        .map(|(name, _)| name.to_string())
-    else {
+        .is_some_and(|first| first.starts_with("invariant {"))
+    {
         return evidence.to_vec();
-    };
+    }
     let shown = evidence
         .iter()
         .rev()
@@ -82,7 +80,7 @@ pub fn brief(evidence: &[String]) -> Vec<String> {
             })
         })
         .unwrap_or_else(|| evidence.last().cloned().unwrap_or_default());
-    vec![format!("\"{name}\""), shown]
+    vec![shown]
 }
 
 fn checked(d: &Diagram) -> BTreeSet<(String, String)> {

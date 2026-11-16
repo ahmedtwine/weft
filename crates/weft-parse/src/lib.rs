@@ -152,7 +152,6 @@ fn items(v: Json) -> Option<Vec<Json>> {
 
 #[derive(Debug, Clone)]
 pub struct Invariant {
-    pub name: String,
     pub body: Now,
     pub at: At,
     pub check: Check,
@@ -569,7 +568,15 @@ impl Now {
 
 impl Invariant {
     pub fn source(&self) -> String {
-        format!("invariant \"{}\" {{ {} }}", self.name, self.body.quint())
+        format!("invariant {{ {} }}", self.body.quint())
+    }
+
+    pub fn place(&self) -> String {
+        format!("{}:{}", self.at.line, self.at.column)
+    }
+
+    pub fn origin(&self, file: &str) -> String {
+        format!("{file}:{}", self.place())
     }
 
     pub fn items(&self, now: &State) -> Option<usize> {
@@ -987,7 +994,7 @@ fn implemented(n: &KdlNode) -> Result<Impl, String> {
     }
 }
 
-const INVARIANT: &str = "`invariant \"<name>\" { <condition> }` has one condition on one state; a condition is a Quint builtin `<op> <term>… { <op line>… }`: `and`, `or`, `not`, `implies`, `iff`, `eq`, `neq`, `in`, `ilt`, `ilte`, `igt`, `igte`, `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` or `iuminus`, or `forall` and `exists` as `forall \"<name>\" in=\"<object>.<key>\" { <condition> }` over each item of a list or a map; a term is `\"<name>.<field>\"` inside it, `\"<object>.<key>\"`, `(start)\"<object>.<key>\"` or a value, and each comparison names at least one `\"<object>.<key>\"`";
+const INVARIANT: &str = "`invariant { <condition> }` has one condition on one state; a condition is a Quint builtin `<op> <term>… { <op line>… }`: `and`, `or`, `not`, `implies`, `iff`, `eq`, `neq`, `in`, `ilt`, `ilte`, `igt`, `igte`, `iadd`, `isub`, `imul`, `idiv`, `imod`, `ipow` or `iuminus`, or `forall` and `exists` as `forall \"<name>\" in=\"<object>.<key>\" { <condition> }` over each item of a list or a map; a term is `\"<name>.<field>\"` inside it, `\"<object>.<key>\"`, `(start)\"<object>.<key>\"` or a value, and each comparison names at least one `\"<object>.<key>\"`";
 
 fn refer(names: &[String], s: &str) -> Option<(String, String)> {
     let (o, k) = s.split_once('.')?;
@@ -1094,7 +1101,10 @@ fn condition(n: &KdlNode, names: &[String], bound: &[String], src: &str) -> Resu
 }
 
 fn invariant(n: &KdlNode, names: &[String], src: &str, run: Run) -> Result<Invariant, String> {
-    let named = shape(n, 1, &["check"], true)?.remove(0);
+    if !args(n).is_empty() {
+        return Err(NAMELESS.into());
+    }
+    shape(n, 0, &["check"], true)?;
     let body = match lines(n) {
         [one] => condition(one, names, &[], src)?,
         _ => return Err(INVARIANT.into()),
@@ -1104,13 +1114,12 @@ fn invariant(n: &KdlNode, names: &[String], src: &str, run: Run) -> Result<Invar
         Now::Each(..) => {}
         _ => {
             return Err(format!(
-                "`invariant \"{named}\"` has a condition, not `{}`: {INVARIANT}",
+                "`invariant` has a condition, not `{}`: {INVARIANT}",
                 body.quint()
             ));
         }
     }
     Ok(Invariant {
-        name: named,
         body,
         at: at(src, n),
         check: check(n)?.unwrap_or(run.check),
@@ -1215,16 +1224,22 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
         }
     }
     let invariants = d.invariants();
-    if let Some(found) = invariants.iter().enumerate().find_map(|(at, i)| {
+    if let Some((i, j)) = invariants.iter().enumerate().find_map(|(at, i)| {
         invariants[..at]
             .iter()
-            .any(|j| j.name == i.name)
-            .then_some(i)
+            .find(|j| j.body == i.body)
+            .map(|j| (i, j))
     }) {
-        return Err(format!("`invariant \"{}\"` is set twice", found.name));
+        return Err(format!(
+            "the invariant at line {} has the condition of the invariant at line {}",
+            i.at.line, j.at.line
+        ));
     }
     Ok(d)
 }
+
+const NAMELESS: &str =
+    "`invariant` takes no name: write `invariant { <condition> }`, and the condition is the check";
 
 const FORM: &str = "a file of weft has the KDL that versions 1 and 2 share: the name of a line and a key are words with no `<`, `>` or `,`, a value is an integer or a string in `\"` with the escapes `\\n`, `\\r`, `\\t`, `\\\\`, `\\\"`, `\\b`, `\\f` and `\\u{…}`, a line ends at the end of its text line, and `\\` at the end of a text line continues the line";
 
@@ -1463,7 +1478,7 @@ setup {
   person "user"
   browser "history" snapshot="snap_0"
   element "origin" value="San Francisco" {
-    invariant "filled" {
+    invariant {
       neq "origin.value" ""
     }
   }
@@ -1477,7 +1492,7 @@ impl "bun" {
 setup {
   person "user"
   browser "page" count=0 opened=0 {
-    invariant "closed" {
+    invariant {
       implies {
         eq "page.opened" 0
         eq "page.count" (start)"page.count"
@@ -1544,10 +1559,9 @@ impl "bun" {
         let d = parse(POOL, &config).map_err(|e| e.0)?;
         assert_eq!(d.run, config.run);
         assert_eq!(d.invariants()[0].check, Check::Sampled);
-        let changed = POOL.replace("setup {", "run steps=5\nsetup {").replace(
-            "invariant \"closed\"",
-            "invariant \"closed\" check=\"always\"",
-        );
+        let changed = POOL
+            .replace("setup {", "run steps=5\nsetup {")
+            .replace("invariant {", "invariant check=\"always\" {");
         let d = parse(&changed, &config).map_err(|e| e.0)?;
         assert_eq!(
             d.run,
@@ -1597,7 +1611,7 @@ impl "bun" {
         let closed = d.invariants()[0];
         assert_eq!(
             closed.source(),
-            r#"invariant "closed" { implies(eq(page.opened, 0), eq(page.count, start(page.count))) }"#
+            r#"invariant { implies(eq(page.opened, 0), eq(page.count, start(page.count))) }"#
         );
         let page = |count: i64, opened: i64| {
             state(
@@ -1642,16 +1656,21 @@ impl "bun" {
                 at(format!("`sum` is not a builtin: {INVARIANT}")),
             ),
             (
-                "    invariant \"closed\" {\n",
-                "    invariant \"closed\" {\n      eq \"page.count\" 0\n",
+                "    invariant {\n",
+                "    invariant {\n      eq \"page.count\" 0\n",
                 at(INVARIANT.to_string()),
             ),
             (
                 "      implies {\n        eq \"page.opened\" 0\n        eq \"page.count\" (start)\"page.count\"\n      }\n",
                 "      iadd \"page.count\" 1\n",
                 at(format!(
-                    "`invariant \"closed\"` has a condition, not `iadd(page.count, 1)`: {INVARIANT}"
+                    "`invariant` has a condition, not `iadd(page.count, 1)`: {INVARIANT}"
                 )),
+            ),
+            (
+                "    invariant {\n",
+                "    invariant \"closed\" {\n",
+                at(NAMELESS.to_string()),
             ),
         ];
         for (from, to, want) in cases {

@@ -239,7 +239,7 @@ mod tests {
 setup {
   person "user"
   browser "page" count=0 {DRAW
-    invariant "counted" {
+    invariant {
       igte "page.count" 0
     }
   }

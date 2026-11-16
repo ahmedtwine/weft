@@ -58,7 +58,7 @@ A test changes a value with its own `run` line, and an invariant changes `check`
 run cases=200
 setup {
   api "bank" {
-    invariant "the balance never goes below zero" check="always" {
+    invariant check="always" {
       igte "bank.balance" 0
     }
   }
@@ -73,7 +73,7 @@ setup {
 setup {
   person "owner"
   api "bank" {
-    invariant "the balance never goes below zero" {
+    invariant {
       igte "bank.balance" 0
     }
   }
@@ -86,7 +86,7 @@ impl "bun" {
 | Line                                 | Gives                                                                      |
 | ------------------------------------ | -------------------------------------------------------------------------- |
 | `<kind> "<object>"`                  | An object; the first person calls each action in the diagram               |
-| `invariant "<name>" { <condition> }` | A Quint builtin over the state: `eq`, `igte`, `implies`, `forall` and more |
+| `invariant { <condition> }` | A Quint builtin over the state: `eq`, `igte`, `implies`, `forall` and more; the condition is the check, and a name is an error |
 | `impl "<lang>" { module … }`         | The runner of a language and the module of each of its objects            |
 
 An `impl` block holds `module` lines only. The module gives the rest:
@@ -125,7 +125,7 @@ export const withdraw = ({ amount }: z.infer<typeof withdrawSchema>) => {
 Hegel draws `deposit` and `withdraw` in any order with amounts from 1 to 100. With the `if` gone from `withdraw`, the test fails, Hegel shrinks the case to one step, and the failure gives the operator and its place:
 
 ```text
-✕ tests/bank.bun.weft.kdl · "the balance never goes below zero" · bank.balance = -1 < 0
+✕ tests/bank.bun.weft.kdl · bank.balance = -1 < 0
   bun · … · igte at tests/bank.bun.weft.kdl:5:7
 ```
 
@@ -159,7 +159,7 @@ The orders app checks the owner of the order, and the address book gives each ad
 
 ```kdl
 api "courier" {
-  invariant "a parcel goes only to the address of its own customer" {
+  invariant {
     forall "p" in="courier.parcels" {
       eq "p.customer" "p.recipient"
     }
@@ -168,7 +168,7 @@ api "courier" {
 ```
 
 ```text
-✕ tests/parcel.weft.kdl · "a parcel goes only to the address of its own customer" · courier.parcels[0].customer = "c-1" ≠ courier.parcels[0].recipient = "c-2"
+✕ tests/parcel.weft.kdl · courier.parcels[0].customer = "c-1" ≠ courier.parcels[0].recipient = "c-2"
 ```
 
 The test fails by design.

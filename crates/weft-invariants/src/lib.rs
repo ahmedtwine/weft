@@ -121,13 +121,13 @@ fn told(found: &Found, seen: &[Seen], others: &[Found]) {
         .iter()
         .find(|other| other.forbids == found.forbids && other.source != found.source)
         .map_or_else(String::new, |other| {
-            format!("  = {} {:?}", other.source, other.invariant.name)
+            format!("  = {} {:?}", other.source, other.invariant.source())
         });
     println!(
         "  {:>5}  {held}  {}  {:?}{twin}",
         cover::count(&found.forbids),
         found.source,
-        found.invariant.name
+        found.invariant.source()
     );
 }
 
@@ -196,7 +196,7 @@ pub fn mine(dir: &Path, test: &Path, options: &Options) -> Result<()> {
         .map(|invariant| Found {
             source: "golden",
             candidate: Candidate {
-                name: invariant.name.clone(),
+                name: invariant.source(),
                 measure: String::new(),
             },
             forbids: space.forbidden(invariant),

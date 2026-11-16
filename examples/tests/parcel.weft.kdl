@@ -2,7 +2,7 @@ setup {
   person "customer"
   api "shop"
   api "courier" {
-    invariant "a parcel goes only to the address of its own customer" {
+    invariant {
       forall "p" in="courier.parcels" {
         eq "p.customer" "p.recipient"
       }

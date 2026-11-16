@@ -22,6 +22,7 @@ pub(crate) struct Judged {
 
 pub(crate) struct Invariants<'a> {
     all: Vec<&'a Invariant>,
+    places: Vec<String>,
     file: String,
     pub checked: Vec<Checked>,
 }
@@ -32,12 +33,13 @@ impl<'a> Invariants<'a> {
         let checked = all
             .iter()
             .map(|i| Checked {
-                name: i.name.clone(),
+                name: i.origin(file),
                 checks: 0,
                 items: None,
             })
             .collect();
         Invariants {
+            places: all.iter().map(|i| i.place()).collect(),
             all,
             file: file.to_string(),
             checked,
@@ -47,7 +49,8 @@ impl<'a> Invariants<'a> {
     pub(crate) fn declared(&self) -> Vec<(&str, bool)> {
         self.all
             .iter()
-            .map(|i| (i.name.as_str(), i.check == Check::Always))
+            .zip(&self.places)
+            .map(|(i, place)| (place.as_str(), i.check == Check::Always))
             .collect()
     }
 
@@ -72,7 +75,7 @@ impl<'a> Invariants<'a> {
                 .map(|items| checked.items.unwrap_or(0) + items as u64);
             let failure = invariant.judge(first, real);
             stream(Event::Check(
-                &invariant.name,
+                &self.places[index],
                 failure.as_ref().map(|f| f.evidence.as_slice()),
             ));
             if let Some(failure) = failure {

@@ -27,11 +27,7 @@ pub fn written(candidate: &Candidate) -> String {
         .lines()
         .map(|line| format!("  {line}"))
         .collect();
-    format!(
-        "invariant {:?} {{\n{}\n}}",
-        candidate.name,
-        lines.join("\n")
-    )
+    format!("invariant {{\n{}\n}}", lines.join("\n"))
 }
 
 impl World {
