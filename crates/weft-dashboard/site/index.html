@@ -84,21 +84,21 @@ weft-sequence.failed .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fil
 :is(weft-sequence, weft-machine) .pele-edge-label.done text { fill: var(--pele-accent); font-weight: bold; }
 :is(weft-sequence, weft-machine) .pele-node.done :is(rect, path, polygon) { stroke: var(--pele-accent); stroke-width: 2px; }
 :is(weft-sequence, weft-machine) .pele-node.done text { fill: var(--pele-accent); }
-weft-machine :is(tspan, text).check-1, weft-machine .pele-edge-label.check-1 text { fill: var(--pele-series-1); font-weight: bold; }
+:is(weft-machine, weft-sequence) :is(tspan, text).check-1, weft-machine .pele-edge-label.check-1 text { fill: var(--pele-series-1); font-weight: bold; }
 weft-machine .pele-edge.check-1 path { stroke: var(--pele-series-1); stroke-width: 2px; }
-weft-machine :is(tspan, text).check-2, weft-machine .pele-edge-label.check-2 text { fill: var(--pele-series-2); font-weight: bold; }
+:is(weft-machine, weft-sequence) :is(tspan, text).check-2, weft-machine .pele-edge-label.check-2 text { fill: var(--pele-series-2); font-weight: bold; }
 weft-machine .pele-edge.check-2 path { stroke: var(--pele-series-2); stroke-width: 2px; }
-weft-machine :is(tspan, text).check-3, weft-machine .pele-edge-label.check-3 text { fill: var(--pele-series-3); font-weight: bold; }
+:is(weft-machine, weft-sequence) :is(tspan, text).check-3, weft-machine .pele-edge-label.check-3 text { fill: var(--pele-series-3); font-weight: bold; }
 weft-machine .pele-edge.check-3 path { stroke: var(--pele-series-3); stroke-width: 2px; }
-weft-machine :is(tspan, text).check-4, weft-machine .pele-edge-label.check-4 text { fill: var(--pele-series-4); font-weight: bold; }
+:is(weft-machine, weft-sequence) :is(tspan, text).check-4, weft-machine .pele-edge-label.check-4 text { fill: var(--pele-series-4); font-weight: bold; }
 weft-machine .pele-edge.check-4 path { stroke: var(--pele-series-4); stroke-width: 2px; }
-weft-machine :is(tspan, text).check-5, weft-machine .pele-edge-label.check-5 text { fill: var(--pele-series-5); font-weight: bold; }
+:is(weft-machine, weft-sequence) :is(tspan, text).check-5, weft-machine .pele-edge-label.check-5 text { fill: var(--pele-series-5); font-weight: bold; }
 weft-machine .pele-edge.check-5 path { stroke: var(--pele-series-5); stroke-width: 2px; }
-weft-machine :is(tspan, text).check-6, weft-machine .pele-edge-label.check-6 text { fill: var(--pele-series-6); font-weight: bold; }
+:is(weft-machine, weft-sequence) :is(tspan, text).check-6, weft-machine .pele-edge-label.check-6 text { fill: var(--pele-series-6); font-weight: bold; }
 weft-machine .pele-edge.check-6 path { stroke: var(--pele-series-6); stroke-width: 2px; }
-weft-machine :is(tspan, text).check-7, weft-machine .pele-edge-label.check-7 text { fill: var(--pele-series-7); font-weight: bold; }
+:is(weft-machine, weft-sequence) :is(tspan, text).check-7, weft-machine .pele-edge-label.check-7 text { fill: var(--pele-series-7); font-weight: bold; }
 weft-machine .pele-edge.check-7 path { stroke: var(--pele-series-7); stroke-width: 2px; }
-weft-machine :is(tspan, text).check-8, weft-machine .pele-edge-label.check-8 text { fill: var(--pele-series-8); font-weight: bold; }
+:is(weft-machine, weft-sequence) :is(tspan, text).check-8, weft-machine .pele-edge-label.check-8 text { fill: var(--pele-series-8); font-weight: bold; }
 weft-machine .pele-edge.check-8 path { stroke: var(--pele-series-8); stroke-width: 2px; }
 :is(weft-sequence, weft-machine) :is(.failed, .fails) :is(rect, path) { stroke: var(--pele-critical); stroke-width: 2px; }
 :is(weft-sequence, weft-machine) :is(.failed, .fails) text { fill: var(--pele-critical); }
@@ -180,9 +180,9 @@ const DIAGRAM = "weft.diagram";
 const MACHINE = "weft.machine";
 const INPUT = "weft.input";
 const FAILED = "weft.failed";
-const FAILS = "«fails»";
 const LAYOUTS = "\n%% layout\n";
 const RUNNERS = /^\s*%% runner (\S+) (\d+)$/gm;
+const FAILED_SERIES = 4;
 const CHECKS = /^\s*%% check (\S+) (\d+) (.+)$/gm;
 const LINKS = /^\s*%% link (\S+) (\d+)$/gm;
 const unchecked = (part) => part.classList.remove(...[...part.classList].filter((c) => c.startsWith("check-")));
@@ -255,7 +255,6 @@ class Drawing extends (await customElements.whenDefined("perspective-viewer-plug
     for (const [, id, n] of (this.text ?? "").matchAll(RUNNERS)) {
       for (const actor of this.querySelectorAll(`.pele-actor.${CSS.escape(id)}`)) actor.classList.add(`runner-${n}`);
     }
-    for (const note of this.querySelectorAll(".pele-note")) note.classList.toggle("failed", note.textContent.startsWith(FAILS));
     for (const edge of this.querySelectorAll(".pele-edge")) {
       const solid = !edge.querySelector("[stroke-dasharray]");
       this.querySelector(`.pele-edge-label[data-id="${edge.dataset.id}"]`)?.classList.toggle("done", solid && this.constructor.column === DIAGRAM);
@@ -277,6 +276,18 @@ class Drawing extends (await customElements.whenDefined("perspective-viewer-plug
 }
 class Sequence extends Drawing {
   static column = DIAGRAM;
+  filled() {
+    for (const part of this.querySelectorAll("[class*='check-']")) unchecked(part);
+    const notes = [...this.querySelectorAll(".pele-note")];
+    for (const [, , n, written] of this.text.matchAll(CHECKS)) {
+      const key = decoded(written);
+      for (const note of notes) {
+        const lines = note.querySelectorAll("tspan").length ? note.querySelectorAll("tspan") : note.querySelectorAll("text");
+        for (const line of lines) if (line.textContent.trim() === key || line.textContent.startsWith(`${key} =`)) line.classList.add(`check-${n}`);
+      }
+    }
+    for (const note of notes) note.classList.toggle("failed", !!note.querySelector(`.check-${FAILED_SERIES}`));
+  }
 }
 class Machine extends Drawing {
   static column = MACHINE;

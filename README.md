@@ -238,7 +238,7 @@ flowchart TB
 | `invariant { … }`             | Its keys and each comparison, such as `customer = recipient`, in one color in the state box of the object; a link with the sign between two state boxes it compares; red with the sign of the failing values, such as `customer ≠ recipient`, when it fails |
 | The first `person`            | The caller in the sequence diagram below            |
 
-A run adds the test cases and the trace. Each step highlights its action, writes the state values into the section, and turns a broken invariant red. A hover on an action lists its steps.
+The sequence diagram shows the lines of each state box in a note over its object, in the same colors. A run adds the test cases and the trace. Each step highlights its action, writes the state values into the section, and turns a broken invariant red. A hover on an action lists its steps.
 
 ## Crates
 

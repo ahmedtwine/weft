@@ -129,7 +129,6 @@ pub(crate) fn drawn(file: &str, d: &Diagram, actions: &[(String, String)]) {
             actions,
             done: None,
             state: &State::new(),
-            failed: &[],
             broken: None,
         };
         provider
@@ -207,12 +206,10 @@ impl<'a> Spans<'a> {
                 KeyValue::new(MACHINE, String::new()),
             ];
         };
-        let failed: Vec<String> = brief(&line.evidence).pop().into_iter().collect();
         let moment = Moment {
             actions: &self.actions,
             done: line.action.as_ref().map(|(verb, _)| verb.as_str()),
             state: &line.state,
-            failed: &failed,
             broken: self.broken.as_deref(),
         };
         [

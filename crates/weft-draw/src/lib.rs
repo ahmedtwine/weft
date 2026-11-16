@@ -679,9 +679,7 @@ fn reads(i: &Invariant) -> Vec<(&str, &str)> {
 
 struct Checked {
     objects: Vec<String>,
-    sign: &'static str,
     line: String,
-    failing: bool,
     color: usize,
 }
 
@@ -689,35 +687,12 @@ pub struct Moment<'a> {
     pub actions: &'a [(String, String)],
     pub done: Option<&'a str>,
     pub state: &'a State,
-    pub failed: &'a [String],
     pub broken: Option<&'a str>,
 }
 
 impl Moment<'_> {
     fn done(&self, verb: &str) -> bool {
         self.done == Some(verb)
-    }
-
-    fn target<'d>(&self, d: &'d Diagram) -> Option<&'d str> {
-        let to = self
-            .done
-            .and_then(|did| self.actions.iter().find(|(verb, _)| verb == did))
-            .map(|(_, to)| to.as_str());
-        d.objects
-            .iter()
-            .map(|o| o.name.as_str())
-            .find(|name| Some(*name) == to)
-            .or(d.caller())
-    }
-
-    fn check(&self) -> Option<String> {
-        (!self.failed.is_empty()).then(|| {
-            format!(
-                "{}{BREAK}{}",
-                stereotype(Kind::Failed),
-                self.failed.join(BREAK)
-            )
-        })
     }
 
     fn checked(&self, d: &Diagram) -> Vec<Checked> {
@@ -732,8 +707,6 @@ impl Moment<'_> {
                     Checked {
                         line: fixed(&format!("{} {sign} {}", c.sides[0], c.sides[1])),
                         objects: c.objects,
-                        sign,
-                        failing,
                         color: if broken { FAILED_SERIES } else { series(n) },
                     }
                 })
@@ -748,6 +721,42 @@ impl Moment<'_> {
             .flatten()
             .map(|(key, value)| fixed(&format!("{key} = {}", summary(value))))
             .collect()
+    }
+
+    fn boxed(&self, d: &Diagram, object: &str) -> Vec<String> {
+        let mut lines = self.lines(object);
+        if lines.is_empty() {
+            for i in d.invariants() {
+                for (_, key) in reads(i).into_iter().filter(|(o, _)| *o == object) {
+                    if !lines.contains(&fixed(key)) {
+                        lines.push(fixed(key));
+                    }
+                }
+            }
+        }
+        for c in self.checked(d) {
+            if c.objects == [object] && !lines.contains(&c.line) {
+                lines.push(c.line);
+            }
+        }
+        lines
+    }
+
+    fn checks(&self, d: &Diagram) -> Vec<(String, usize, String)> {
+        let mut all = Vec::new();
+        for (n, i) in d.invariants().into_iter().enumerate() {
+            let broken = self.broken == Some(i.place().as_str());
+            let color = if broken { FAILED_SERIES } else { series(n) };
+            for (object, key) in reads(i) {
+                all.push((object.to_string(), color, key.to_string()));
+            }
+        }
+        for c in self.checked(d) {
+            if let Some(object) = c.objects.first() {
+                all.push((object.clone(), c.color, c.line));
+            }
+        }
+        all
     }
 
     pub fn sequence(&self, d: &Diagram) -> String {
@@ -779,7 +788,7 @@ impl Moment<'_> {
             ));
         }
         for o in &d.objects {
-            let lines = self.lines(&o.name);
+            let lines = self.boxed(d, &o.name);
             if !lines.is_empty() {
                 out.push(format!(
                     "  Note over {}: {}",
@@ -788,14 +797,12 @@ impl Moment<'_> {
                 ));
             }
         }
-        for c in self.checked(d).iter().filter(|c| !c.failing) {
+        for c in self.checked(d).into_iter().filter(|c| c.objects.len() > 1) {
             let over: Vec<String> = c.objects.iter().map(|o| Ident::new(o).to_string()).collect();
-            if !over.is_empty() {
-                out.push(format!("  Note over {}: {}", over.join(","), c.line));
-            }
+            out.push(format!("  Note over {}: {}", over.join(","), c.line));
         }
-        if let (Some(to), Some(check)) = (self.target(d), self.check()) {
-            out.push(format!("  Note over {}: {check}", Ident::new(to)));
+        for (object, color, text) in self.checks(d) {
+            out.push(format!("  %% check {} {color} {text}", Ident::new(&object)));
         }
         out.join("\n")
     }
@@ -811,21 +818,7 @@ impl Moment<'_> {
             ),
             "    direction LR".into(),
         ];
-        let mut lines = self.lines(object);
-        if lines.is_empty() {
-            for i in d.invariants() {
-                for (_, key) in reads(i).into_iter().filter(|(o, _)| *o == object) {
-                    if !lines.contains(&fixed(key)) {
-                        lines.push(fixed(key));
-                    }
-                }
-            }
-        }
-        for c in self.checked(d) {
-            if c.objects == [object] && !lines.contains(&c.line) {
-                lines.push(c.line);
-            }
-        }
+        let mut lines = self.boxed(d, object);
         if lines.is_empty() {
             lines.push(fixed("state"));
         }
@@ -864,38 +857,29 @@ impl Moment<'_> {
                 marked.extend(marks);
             }
         }
-        for (n, i) in d.invariants().into_iter().enumerate() {
-            let broken = self.broken == Some(i.place().as_str());
-            let color = if broken { FAILED_SERIES } else { series(n) };
-            for (object, key) in reads(i) {
-                let state = Ident::new(&format!("s_{object}"));
-                body.push(format!("  %% check {state} {color} {key}"));
-                if broken {
-                    marked.push(format!("  class {state} {FAILS}"));
+        for i in d.invariants() {
+            if self.broken == Some(i.place().as_str()) {
+                for (object, _) in reads(i) {
+                    marked.push(format!("  class {} {FAILS}", Ident::new(&format!("s_{object}"))));
                 }
             }
+        }
+        for (object, color, text) in self.checks(d) {
+            body.push(format!("  %% check {} {color} {text}", Ident::new(&format!("s_{object}"))));
         }
         for (j, c) in self.checked(d).into_iter().enumerate() {
-            match c.objects.as_slice() {
-                [object] => body.push(format!(
-                    "  %% check {} {} {}",
-                    Ident::new(&format!("s_{object}")),
-                    c.color,
-                    c.line
-                )),
-                [from, to, ..] => {
-                    let link = format!("c_{j}");
-                    body.push(format!(
-                        "  {} {link}@---|\"{}\"| {}",
-                        Ident::new(&format!("s_{from}")),
-                        c.sign,
-                        Ident::new(&format!("s_{to}"))
-                    ));
-                    body.push(format!("  %% link {link} {}", c.color));
-                }
-                [] => {}
+            if let [from, to, ..] = c.objects.as_slice() {
+                let link = format!("c_{j}");
+                body.push(format!(
+                    "  {} {link}@---|\"{}\"| {}",
+                    Ident::new(&format!("s_{from}")),
+                    c.line,
+                    Ident::new(&format!("s_{to}"))
+                ));
+                body.push(format!("  %% link {link} {}", c.color));
             }
         }
+        marked.sort();
         marked.dedup();
         body.extend(marked);
         (1..=groups.len().max(1))
