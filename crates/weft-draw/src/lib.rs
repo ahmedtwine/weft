@@ -771,13 +771,7 @@ impl Moment<'_> {
         out.join("\n")
     }
 
-    fn group(
-        &self,
-        d: &Diagram,
-        object: &str,
-        adapter: &str,
-        n: usize,
-    ) -> (Vec<String>, Vec<String>) {
+    fn group(&self, d: &Diagram, object: &str, adapter: &str) -> (Vec<String>, Vec<String>) {
         let state = Ident::new(&format!("s_{object}"));
         let section = Ident::new(&format!("o_{object}"));
         let mut out = vec![
@@ -793,7 +787,7 @@ impl Moment<'_> {
             lines.push(fixed("state"));
         }
         out.push(format!("    {state}(\"{}\")", lines.join(BREAK)));
-        let mut marked = vec![format!("  %% runner {section} {}", series(n))];
+        let mut marked = Vec::new();
         for (verb, _) in self.actions.iter().filter(|(_, to)| to == object) {
             let action = Ident::new(&format!("a_{object}_{verb}"));
             out.push(format!(
@@ -836,9 +830,9 @@ impl Moment<'_> {
             format!("  classDef {FAILS} stroke-width:2px"),
         ];
         let mut marked = Vec::new();
-        for (n, i) in d.impls.iter().enumerate() {
+        for i in &d.impls {
             for (object, _) in &i.modules {
-                let (lines, marks) = self.group(d, object, &i.adapter, n);
+                let (lines, marks) = self.group(d, object, &i.adapter);
                 body.extend(lines);
                 marked.extend(marks);
             }

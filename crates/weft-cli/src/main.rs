@@ -9,7 +9,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use globset::{Glob, GlobSetBuilder};
@@ -27,6 +27,7 @@ const PASS: &str = "pass";
 const FAIL: &str = "fail";
 const SUFFIX: &str = ".weft.kdl";
 const ADDRESS: &str = "127.0.0.1:7357";
+const WATCH: Duration = Duration::from_secs(1);
 static RAN: Mutex<Option<Option<SystemTime>>> = Mutex::new(None);
 static RUNS: AtomicBool = AtomicBool::new(false);
 
@@ -195,6 +196,13 @@ fn rerun(only: &[String]) {
 fn serve(only: &[String]) -> Result<(), String> {
     files(only)?;
     spans::traced(true)?;
+    let watched = only.to_vec();
+    thread::spawn(move || {
+        loop {
+            rerun(&watched);
+            thread::sleep(WATCH);
+        }
+    });
     weft_dashboard::serve(ADDRESS, || rerun(only))
 }
 

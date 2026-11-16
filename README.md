@@ -228,12 +228,12 @@ flowchart TB
 
 ## Dashboard
 
-`weft --ui [<file>…]` serves the dashboard at http://127.0.0.1:7357. Each test draws from its file before any run:
+`weft --ui [<file>…]` serves the dashboard at http://127.0.0.1:7357 and runs each test again when a file changes. Each test draws from its file before any run:
 
 | In the test                   | In the diagram                                      |
 | ----------------------------- | --------------------------------------------------- |
-| `api "<object>"`              | A section, in the color of its runner               |
-| `impl "<lang>"`               | The runner color and the label `<object> · <lang>`  |
+| `api "<object>"`              | A section                                           |
+| `impl "<lang>"`               | The label `<object> · <lang>` of the section        |
 | Each action of the module     | A node from the state of its section                |
 | `invariant "<name>"`          | A box in the section of its object                  |
 | The first `person`            | The caller in the Sequence tab                      |

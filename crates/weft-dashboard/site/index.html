@@ -87,22 +87,6 @@ weft-sequence.failed .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fil
 :is(weft-sequence, weft-machine) :is(.failed, .fails) :is(rect, path) { stroke: var(--pele-critical); stroke-width: 2px; }
 :is(weft-sequence, weft-machine) :is(.failed, .fails) text { fill: var(--pele-critical); }
 :is(weft-sequence, weft-machine) .acted { cursor: pointer; }
-weft-machine .pele-cluster.runner-1 > rect { stroke: var(--pele-series-1); stroke-width: 2px; }
-weft-machine .pele-cluster.runner-1 .pele-cluster-label { fill: var(--pele-series-1); }
-weft-machine .pele-cluster.runner-2 > rect { stroke: var(--pele-series-2); stroke-width: 2px; }
-weft-machine .pele-cluster.runner-2 .pele-cluster-label { fill: var(--pele-series-2); }
-weft-machine .pele-cluster.runner-3 > rect { stroke: var(--pele-series-3); stroke-width: 2px; }
-weft-machine .pele-cluster.runner-3 .pele-cluster-label { fill: var(--pele-series-3); }
-weft-machine .pele-cluster.runner-4 > rect { stroke: var(--pele-series-4); stroke-width: 2px; }
-weft-machine .pele-cluster.runner-4 .pele-cluster-label { fill: var(--pele-series-4); }
-weft-machine .pele-cluster.runner-5 > rect { stroke: var(--pele-series-5); stroke-width: 2px; }
-weft-machine .pele-cluster.runner-5 .pele-cluster-label { fill: var(--pele-series-5); }
-weft-machine .pele-cluster.runner-6 > rect { stroke: var(--pele-series-6); stroke-width: 2px; }
-weft-machine .pele-cluster.runner-6 .pele-cluster-label { fill: var(--pele-series-6); }
-weft-machine .pele-cluster.runner-7 > rect { stroke: var(--pele-series-7); stroke-width: 2px; }
-weft-machine .pele-cluster.runner-7 .pele-cluster-label { fill: var(--pele-series-7); }
-weft-machine .pele-cluster.runner-8 > rect { stroke: var(--pele-series-8); stroke-width: 2px; }
-weft-machine .pele-cluster.runner-8 .pele-cluster-label { fill: var(--pele-series-8); }
 weft-sequence .pele-actor.runner-1 rect { stroke: var(--pele-series-1); stroke-width: 2px; }
 weft-sequence .pele-actor.runner-2 rect { stroke: var(--pele-series-2); stroke-width: 2px; }
 weft-sequence .pele-actor.runner-3 rect { stroke: var(--pele-series-3); stroke-width: 2px; }
@@ -250,7 +234,7 @@ class Drawing extends (await customElements.whenDefined("perspective-viewer-plug
   marked() {
     this.filled();
     for (const [, id, n] of (this.text ?? "").matchAll(RUNNERS)) {
-      for (const part of this.querySelectorAll(`.pele-actor.${CSS.escape(id)}, .pele-cluster[data-id="${CSS.escape(id)}"]`)) part.classList.add(`runner-${n}`);
+      for (const actor of this.querySelectorAll(`.pele-actor.${CSS.escape(id)}`)) actor.classList.add(`runner-${n}`);
     }
     for (const note of this.querySelectorAll(".pele-note")) note.classList.toggle("failed", note.textContent.startsWith(FAILS));
     for (const edge of this.querySelectorAll(".pele-edge")) {
@@ -360,6 +344,7 @@ const tests = () =>
         plugin: "Datagrid",
         columns: [FILE, STATUS, "weft.test_cases", "weft.steps", "weft.checks", CHECK],
         sort: [["start", "desc"]],
+        plugin_config: { edit_mode: "SELECT_ROW" },
         columns_config: sized({ [CHECK]: 480 }),
       }),
     },
