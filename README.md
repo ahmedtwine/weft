@@ -228,7 +228,7 @@ flowchart TB
 
 ## Dashboard
 
-`weft --ui [<file>…]` serves the dashboard at http://127.0.0.1:7357 and runs each test again when a file changes. Each test draws from its file before any run:
+`weft --ui [<file>…]` serves the dashboard at http://127.0.0.1:7357 and runs each test again when a file changes. A second `weft --ui` takes the port over from the first one, and the reaper of the first one stops its runners. Each test draws from its file before any run:
 
 | In the test                   | In the diagram                                      |
 | ----------------------------- | --------------------------------------------------- |

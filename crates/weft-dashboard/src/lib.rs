@@ -3,7 +3,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use include_dir::{Dir, include_dir};
 use opentelemetry::trace::Status;
@@ -121,6 +121,10 @@ const STATES: (&str, &[(&str, &str)]) = (
 static SITE: Dir = include_dir!("$CARGO_MANIFEST_DIR/site");
 const INDEX: &str = "index.html";
 const IDLE: Duration = Duration::from_secs(5);
+const TAKEOVER: Duration = Duration::from_secs(5);
+const IDLE_BIND: Duration = Duration::from_millis(100);
+const POST: &str = "POST";
+const QUIT: &str = "quit";
 const SHOWN: Duration = Duration::from_millis(200);
 const EVENTS: &str =
     "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\n\r\n";
@@ -448,11 +452,13 @@ fn kind(path: &str) -> &'static str {
 fn respond(mut stream: TcpStream, opened: &(impl Fn() + Sync)) -> io::Result<()> {
     let mut request = String::new();
     BufReader::new(&stream).read_line(&mut request)?;
-    let path = request
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or_default()
-        .trim_start_matches('/');
+    let mut parts = request.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or_default().trim_start_matches('/');
+    if (method, path) == (POST, QUIT) {
+        stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")?;
+        std::process::exit(0);
+    }
     let tables;
     let (status, kind, body): (&str, &str, &[u8]) = match path {
         "events" => return LOG.stream(stream),
@@ -481,8 +487,28 @@ fn respond(mut stream: TcpStream, opened: &(impl Fn() + Sync)) -> io::Result<()>
     stream.write_all(body)
 }
 
+fn bound(address: &str) -> Result<TcpListener, String> {
+    let mut asked = false;
+    let until = Instant::now() + TAKEOVER;
+    loop {
+        match TcpListener::bind(address) {
+            Ok(listener) => return Ok(listener),
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse && Instant::now() < until => {
+                if !asked {
+                    asked = true;
+                    if let Ok(mut old) = TcpStream::connect(address) {
+                        let _ = write!(old, "{POST} /{QUIT} HTTP/1.1\r\nhost: {address}\r\n\r\n");
+                    }
+                }
+                thread::sleep(IDLE_BIND);
+            }
+            Err(e) => return Err(format!("{address}: {e}")),
+        }
+    }
+}
+
 pub fn serve(address: &str, opened: impl Fn() + Sync) -> Result<(), String> {
-    let listener = TcpListener::bind(address).map_err(|e| format!("{address}: {e}"))?;
+    let listener = bound(address)?;
     println!("Weft: http://{address}");
     opened();
     thread::scope(|s| {
