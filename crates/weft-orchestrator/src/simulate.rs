@@ -72,6 +72,7 @@ pub(crate) type Answer<'a> = dyn FnMut(Ask) -> Result<Option<Json>, Halt> + 'a;
 #[derive(Clone, Copy)]
 pub enum Event<'a> {
     Hegel(&'a str),
+    Joined(&'a str),
     Actions(&'a [(String, String)]),
     Run(u64),
     Step(&'a Line),

@@ -72,7 +72,7 @@ impl Generator {
         }
     }
 
-    pub fn values(&self, model: &Model) -> Result<Vec<Value>> {
+    pub fn values(&self, model: &dyn Model) -> Result<Vec<Value>> {
         match self {
             Generator::Integer(min, max) => Ok((*min..=*max).map(Value::from).collect()),
             Generator::SampledFrom(options) => Ok(options.clone()),
@@ -82,7 +82,7 @@ impl Generator {
 }
 
 pub fn lint(
-    model: &Model,
+    model: &dyn Model,
     invariants: &BTreeMap<String, String>,
     parts: &[Part],
 ) -> Result<Vec<Violation>> {

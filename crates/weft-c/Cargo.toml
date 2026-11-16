@@ -12,6 +12,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 serde_json = "1"
 weft-parse = { path = "../weft-parse" }
 weft-draw = { path = "../weft-draw" }
+weft-orchestrator = { path = "../weft-orchestrator" }
 weft-wire = { path = "../weft-wire" }
 
 [dev-dependencies]

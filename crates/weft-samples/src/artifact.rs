@@ -21,7 +21,7 @@ pub struct Artifact<'a> {
     pub text: String,
     pub medium: Box<dyn Medium + Send + Sync>,
     pub parts: Vec<Part>,
-    pub model: Model,
+    pub model: Box<dyn Model>,
 }
 
 pub fn read(path: &Path) -> Result<String> {
@@ -33,7 +33,7 @@ pub fn example(path: &Path) -> Result<Example> {
 }
 
 impl<'a> Artifact<'a> {
-    pub fn open(file: &'a Path, model: Model) -> Result<Self> {
+    pub fn open(file: &'a Path, model: Box<dyn Model>) -> Result<Self> {
         let text = read(file)?;
         let medium = medium::of(&file.to_string_lossy());
         Ok(Self {
@@ -60,7 +60,7 @@ impl<'a> Artifact<'a> {
         &self,
         invariants: &BTreeMap<String, String>,
     ) -> Result<Vec<(usize, String)>> {
-        let found = lint(&self.model, invariants, &self.parts)?;
+        let found = lint(self.model.as_ref(), invariants, &self.parts)?;
         for v in &found {
             println!(
                 "{}  {}  {:.2}  {:?}",
@@ -115,7 +115,7 @@ impl<'a> Artifact<'a> {
         for (marked, note) in &example.annotations {
             println!("annotation  {marked:?}  {note:?}");
             let mut machine = Machine::new(
-                &self.model,
+                self.model.as_ref(),
                 self.medium.as_ref(),
                 &self.text,
                 (marked, note),
@@ -164,7 +164,7 @@ impl<'a> Artifact<'a> {
         invariants: &BTreeMap<String, String>,
     ) -> Result<BTreeMap<String, BTreeSet<usize>>> {
         let mut flagged: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-        for v in lint(&self.model, invariants, &self.parts)? {
+        for v in lint(self.model.as_ref(), invariants, &self.parts)? {
             flagged.entry(v.invariant).or_default().insert(v.part);
         }
         Ok(flagged)

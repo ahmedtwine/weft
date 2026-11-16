@@ -15,10 +15,8 @@ use weft_dashboard::{
     REFUSED, REPLY, STATE, STATUS, STEP, STEPS, TEST_CASE, TEST_CASES, TO,
 };
 use weft_draw::Moment;
-use weft_orchestrator::{Event, Line};
+use weft_orchestrator::{Event, Line, brief, compact, sorted};
 use weft_parse::Diagram;
-
-use crate::trace;
 
 const SERVICE: &str = "weft";
 const ERROR: &str = "error";
@@ -183,7 +181,7 @@ impl<'a> Spans<'a> {
                 KeyValue::new(FLOW, String::new()),
             ];
         };
-        let failed: Vec<String> = trace::brief(&line.evidence).pop().into_iter().collect();
+        let failed: Vec<String> = brief(&line.evidence).pop().into_iter().collect();
         let moment = Moment {
             actions: &self.actions,
             done: line.action.as_ref().map(|(verb, _)| verb.as_str()),
@@ -200,7 +198,7 @@ impl<'a> Spans<'a> {
         let Some(case) = self.case.clone() else {
             return;
         };
-        let hops = trace::sorted(&line.hops);
+        let hops = sorted(&line.hops);
         let mut attributes = self.placed();
         attributes.push(KeyValue::new(
             INPUT,
@@ -215,7 +213,7 @@ impl<'a> Spans<'a> {
                         h.method,
                         h.path,
                         h.status,
-                        trace::compact(&h.reply)
+                        compact(&h.reply)
                     )
                     .trim_end()
                     .to_string()
@@ -253,8 +251,8 @@ impl<'a> Spans<'a> {
                 KeyValue::new(CODE, i64::from(h.status)),
                 KeyValue::new(FROM, h.from.clone()),
                 KeyValue::new(TO, h.to.clone()),
-                KeyValue::new(BODY, trace::compact(&h.body)),
-                KeyValue::new(REPLY, trace::compact(&h.reply)),
+                KeyValue::new(BODY, compact(&h.body)),
+                KeyValue::new(REPLY, compact(&h.reply)),
             ]);
             self.calls += 1;
             self.start(
@@ -274,7 +272,7 @@ impl<'a> Spans<'a> {
 
     pub(crate) fn hear(&mut self, event: Event) {
         match event {
-            Event::Hegel(_) => {}
+            Event::Hegel(_) | Event::Joined(_) => {}
             Event::Actions(actions) => self.actions = actions.to_vec(),
             Event::Run(run) => {
                 self.close();
@@ -302,7 +300,7 @@ impl<'a> Spans<'a> {
                 if let Some(line) = self.lines.last_mut() {
                     line.evidence = evidence.to_vec();
                 }
-                let check = trace::brief(evidence).pop().unwrap_or_default();
+                let check = brief(evidence).pop().unwrap_or_default();
                 if let Some(step) = &self.step {
                     step.span().set_status(Status::error(check.clone()));
                 }

@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use weft_samples::Result;
 use weft_samples::artifact::{Artifact, example};
 use weft_samples::machine::{Alternate, Machine};
-use weft_samples::model::Model;
+use weft_samples::model::Live;
 
 const USAGE: &str = "usage: weft-samples check <file> <invariants.json> | narrow <file>";
 
@@ -28,7 +28,7 @@ fn asked(_: &str, alternate: &Alternate) -> Option<bool> {
 }
 
 fn narrow(file: &Path) -> Result<()> {
-    let artifact = Artifact::open(file, Model::open()?)?;
+    let artifact = Artifact::open(file, Box::new(Live::open()?))?;
     let machines = artifact.narrow(&example(&file.with_extension("json"))?, asked)?;
     let found: BTreeMap<String, String> = machines
         .iter()
@@ -46,8 +46,8 @@ fn main() -> ExitCode {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["check", file, invariants] => Model::open()
-            .and_then(|model| Artifact::open(Path::new(file), model))
+        ["check", file, invariants] => Live::open()
+            .and_then(|model| Artifact::open(Path::new(file), Box::new(model)))
             .and_then(|artifact| {
                 artifact
                     .violations(&example(Path::new(invariants))?.invariants)

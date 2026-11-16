@@ -1,8 +1,7 @@
 mod spans;
-mod trace;
 
 use std::{
-    env, fs, io, iter,
+    env, io, iter,
     path::{Path, PathBuf},
     process::{self, ExitCode},
     sync::{
@@ -10,12 +9,12 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
-    time::{Duration, Instant, SystemTime},
+    time::{Instant, SystemTime},
 };
 
 use globset::{Glob, GlobSetBuilder};
 use ignore::WalkBuilder;
-use weft_orchestrator::{Outcome, Tally, view};
+use weft_orchestrator::{CONFIG, Event, Outcome, brief, checks, summary, totals};
 use weft_parse::{Config, Diagram};
 
 use spans::{Ended, Spans};
@@ -26,12 +25,8 @@ const UI: &str = "--ui";
 const ORPHANED: i32 = 2;
 const PASS: &str = "pass";
 const FAIL: &str = "fail";
-const CONFIG: &str = "weft.kdl";
 const SUFFIX: &str = ".weft.kdl";
 const ADDRESS: &str = "127.0.0.1:7357";
-const INPUT: usize = 80;
-const DRAWN: &str = "* draw ";
-const SHARE: &str = " of test cases";
 static RAN: Mutex<Option<Option<SystemTime>>> = Mutex::new(None);
 static RUNS: AtomicBool = AtomicBool::new(false);
 
@@ -46,11 +41,8 @@ struct Checked {
 }
 
 fn files(only: &[String]) -> Result<(Vec<PathBuf>, Config), String> {
-    let source =
-        fs::read_to_string(CONFIG).map_err(|_| format!("{CONFIG} is not in this directory"))?;
-    let at = |e: String| format!("{CONFIG}: {e}");
-    let config = weft_parse::config(&source).map_err(|e| at(e.to_string()))?;
-    weft_draw::styled(&config.styles).map_err(at)?;
+    let config = weft_orchestrator::config()?;
+    weft_draw::styled(&config.styles).map_err(|e| format!("{CONFIG}: {e}"))?;
     let mut set = GlobSetBuilder::new();
     for pattern in &config.include {
         if !pattern.ends_with(SUFFIX) {
@@ -77,265 +69,6 @@ fn files(only: &[String]) -> Result<(Vec<PathBuf>, Config), String> {
     }
 }
 
-struct Table {
-    head: Vec<String>,
-    rows: Vec<Vec<String>>,
-}
-
-impl Table {
-    fn new<const N: usize>(head: [&str; N], rows: Vec<Vec<String>>) -> Table {
-        Table {
-            head: head.map(String::from).to_vec(),
-            rows,
-        }
-    }
-
-    fn text(&self) -> Vec<String> {
-        let line = |cells: Vec<&str>| format!("  {}", cells.join(" · "));
-        iter::once(line(self.head.iter().map(String::as_str).collect()))
-            .chain(self.rows.iter().map(|cells| {
-                line(
-                    cells
-                        .iter()
-                        .map(|c| match c.is_empty() {
-                            true => "-",
-                            false => c,
-                        })
-                        .collect(),
-                )
-            }))
-            .collect()
-    }
-}
-
-fn checks(o: &Outcome) -> u64 {
-    o.tally.iter().map(|t| t.checks).sum()
-}
-
-fn headline(d: &Diagram, config: &Config, o: &Outcome, took: Duration) -> String {
-    format!(
-        "{}{} · {} cases · {} runs · {} steps · {} checks{}{} [{:.2}s]",
-        d.impls
-            .iter()
-            .map(|i| i.adapter.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-        config
-            .transport
-            .as_ref()
-            .map_or(String::new(), |t| format!(" · transport {t}")),
-        o.cases,
-        o.runs,
-        o.tally.iter().map(|t| t.steps).sum::<u64>(),
-        checks(o),
-        match (o.failed, o.trace.len() - 1) {
-            (false, _) => String::new(),
-            (true, 0) => " · fails at start".to_string(),
-            (true, 1) => " · fails after 1 step".to_string(),
-            (true, n) => format!(" · fails after {n} steps"),
-        },
-        o.caveat
-            .as_ref()
-            .map_or(String::new(), |c| format!(" · {c}")),
-        took.as_secs_f64()
-    )
-}
-
-fn tables(d: &Diagram, o: &Outcome) -> Vec<Table> {
-    let named = trace::checked(d);
-    let shown = |state: &weft_parse::State| {
-        let kept: weft_parse::State = state
-            .iter()
-            .map(|(object, pairs)| {
-                (
-                    object.clone(),
-                    pairs
-                        .iter()
-                        .filter(|(key, _)| {
-                            named.is_empty() || named.contains(&(object.clone(), key.to_string()))
-                        })
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                )
-            })
-            .filter(|(_, pairs): &(String, weft_parse::Pairs)| !pairs.is_empty())
-            .collect();
-        view(&kept)
-    };
-    let cut = |text: String| {
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        match text.chars().count() > INPUT {
-            true => text.chars().take(INPUT).chain(['…']).collect(),
-            false => text,
-        }
-    };
-    let trace = Table::new(
-        ["step", "action", "input", "state", "check"],
-        o.trace
-            .iter()
-            .enumerate()
-            .flat_map(|(k, l)| {
-                iter::once(vec![
-                    k.to_string(),
-                    l.step(),
-                    cut(l.input()),
-                    shown(&l.state),
-                    trace::brief(&l.evidence).join(" · "),
-                ])
-                .chain(trace::sorted(&l.hops).into_iter().map(|h| {
-                    vec![
-                        String::new(),
-                        format!("↳ {} → {} {} {}", h.from, h.to, h.method, h.path),
-                        cut(trace::compact(&h.body)),
-                        cut(format!("{} {}", h.status, trace::compact(&h.reply))),
-                        String::new(),
-                    ]
-                }))
-            })
-            .collect(),
-    );
-    let case = Table::new(
-        ["case", "runs"],
-        o.counts
-            .statuses
-            .iter()
-            .map(|(status, runs)| vec![status.to_string(), runs.to_string()])
-            .collect(),
-    );
-    let tally = Table::new(
-        ["action", "runs", "steps", "refused", "checks"],
-        o.tally
-            .iter()
-            .map(|t| {
-                vec![
-                    t.step.clone(),
-                    t.runs.to_string(),
-                    t.steps.to_string(),
-                    t.refused
-                        .iter()
-                        .map(|(cause, tries)| format!("{cause} {tries}"))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    t.checks.to_string(),
-                ]
-            })
-            .collect(),
-    );
-    let verb = |t: &Tally| t.step.split(' ').next().unwrap_or_default().to_string();
-    let then = Table {
-        head: iter::once("then".to_string())
-            .chain(o.tally.iter().map(verb))
-            .collect(),
-        rows: o
-            .tally
-            .iter()
-            .filter(|_| o.tally.len() > 1)
-            .map(|t| {
-                iter::once(verb(t))
-                    .chain(t.then.iter().map(u64::to_string))
-                    .collect()
-            })
-            .collect(),
-    };
-    let call = Table::new(
-        ["call", "status", "count"],
-        o.counts
-            .calls
-            .iter()
-            .map(|((call, status), count)| {
-                vec![call.clone(), status.to_string(), count.to_string()]
-            })
-            .collect(),
-    );
-    let pool = Table::new(
-        ["pool", "add", "generate", "consume", "empty"],
-        o.counts
-            .pools
-            .iter()
-            .map(|(pool, p)| {
-                iter::once(pool.clone())
-                    .chain([p.add, p.generate, p.consume, p.empty].map(|n| n.to_string()))
-                    .collect()
-            })
-            .collect(),
-    );
-    let invariant = Table::new(
-        ["invariant", "checks", "items"],
-        o.counts
-            .invariants
-            .iter()
-            .map(|i| {
-                vec![
-                    i.name.clone(),
-                    i.checks.to_string(),
-                    i.items.map_or(String::new(), |items| items.to_string()),
-                ]
-            })
-            .collect(),
-    );
-    let code = Table::new(
-        ["code", "files", "lines"],
-        trace::kinds(&o.ran)
-            .iter()
-            .map(|(name, spans)| {
-                let mut files: Vec<&String> = spans.iter().map(|s| &s.file).collect();
-                files.sort();
-                files.dedup();
-                vec![
-                    name.to_string(),
-                    files.len().to_string(),
-                    spans.iter().map(trace::size).sum::<usize>().to_string(),
-                ]
-            })
-            .collect(),
-    );
-    let drawn = Table::new(
-        ["draw", "cases"],
-        o.output
-            .iter()
-            .filter_map(|line| line.trim().strip_prefix(DRAWN)?.rsplit_once(": "))
-            .map(|(value, share)| {
-                vec![value.to_string(), share.trim_end_matches(SHARE).to_string()]
-            })
-            .collect(),
-    );
-    [trace, case, tally, then, call, pool, invariant, code, drawn]
-        .into_iter()
-        .filter(|t| !t.rows.is_empty())
-        .collect()
-}
-
-fn invariants(d: &Diagram) -> Vec<String> {
-    d.objects
-        .iter()
-        .flat_map(|o| {
-            o.invariants
-                .iter()
-                .map(|invariant| format!("{} · {}", o.name, invariant.source()))
-        })
-        .collect()
-}
-
-fn summary(path: &str, d: &Diagram, config: &Config, o: &Outcome, took: Duration) -> String {
-    let head = format!(
-        "{} {path}{}",
-        match o.failed {
-            true => '✕',
-            false => '✓',
-        },
-        match (o.failed, o.trace.last()) {
-            (true, Some(last)) => format!(" · {}", trace::brief(&last.evidence).join(" · ")),
-            _ => String::new(),
-        }
-    );
-    [head, format!("  {}", headline(d, config, o, took))]
-        .into_iter()
-        .chain(invariants(d).into_iter().map(|rule| format!("  {rule}")))
-        .chain(tables(d, o).iter().flat_map(Table::text))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn run(
     d: &Diagram,
     file: &Path,
@@ -343,23 +76,20 @@ fn run(
     parent: Option<&str>,
     spans: &mut Option<Spans<'_>>,
 ) -> Result<Outcome, String> {
-    let key = fs::canonicalize(file).map_err(|e| e.to_string())?;
-    weft_orchestrator::run(config, d, file, key.to_str(), parent, &mut |event| {
+    weft_orchestrator::tested(config, d, file, parent, &mut |event| {
+        if let Event::Joined(line) = event {
+            println!("{line}");
+        }
         if let Some(spans) = spans {
             spans.hear(event);
         }
     })
 }
 
-fn diagram(file: &Path, config: &Config) -> Result<Diagram, String> {
-    let src = fs::read_to_string(file).map_err(|e| e.to_string())?;
-    weft_parse::parse(&src, config).map_err(|e| e.to_string())
-}
-
 fn checked(file: &Path, config: &Config, parent: Option<&str>) -> Checked {
     let path = file.strip_prefix(".").unwrap_or(file).display().to_string();
     let started = Instant::now();
-    diagram(file, config)
+    weft_orchestrator::diagram(file, config)
         .and_then(|d| {
             let o = run(&d, file, config, parent, &mut Spans::new(&path, &d))?;
             spans::ended(
@@ -374,7 +104,7 @@ fn checked(file: &Path, config: &Config, parent: Option<&str>) -> Checked {
                     checks: checks(&o),
                     check: o
                         .failed
-                        .then(|| o.trace.last().and_then(|l| trace::brief(&l.evidence).pop()))
+                        .then(|| o.trace.last().and_then(|l| brief(&l.evidence).pop()))
                         .flatten(),
                     took: started.elapsed(),
                     test_case: o.failed.then_some(o.runs),
@@ -465,28 +195,12 @@ fn check(only: &[String], parent: Option<&str>) -> Result<bool, String> {
     let r = report(only, parent);
     spans::flushed();
     let r = r?;
-    r.lines.iter().for_each(|l| println!("{l}"));
-    let fail = r.lines.iter().filter(|l| l.starts_with('✕')).count();
-    println!(
-        "\n {} pass\n {fail} fail\n {} checks\nRan {} in {:.2}s",
-        r.lines.len() - fail,
-        r.checks,
-        match r.lines.len() {
-            1 => "1 file".to_string(),
-            n => format!("{n} files"),
-        },
-        started.elapsed().as_secs_f64()
-    );
-    Ok(fail > 0)
+    println!("{}", totals(&r.lines, r.checks, started.elapsed()));
+    Ok(r.lines.iter().any(|l| l.starts_with('✕')))
 }
 
 fn joined(adapter: &str, file: &str) -> Result<bool, String> {
-    let cwd = env::current_dir().map_err(|e| e.to_string())?;
-    let root = cwd
-        .ancestors()
-        .find(|dir| dir.join(CONFIG).is_file())
-        .ok_or_else(|| format!("{CONFIG} is not in this directory or in a directory above it"))?;
-    env::set_current_dir(root).map_err(|e| e.to_string())?;
+    weft_orchestrator::rooted()?;
     thread::spawn(|| {
         let _ = io::copy(&mut io::stdin(), &mut io::sink());
         process::exit(ORPHANED);

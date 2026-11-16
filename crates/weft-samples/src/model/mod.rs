@@ -38,41 +38,23 @@ fn secret(name: &str) -> Result<String> {
         ))
 }
 
-enum Store {
-    Cache(PathBuf),
-    Recorded(BTreeMap<String, Value>),
-}
-
-impl Store {
-    async fn cached<T: Serialize + DeserializeOwned>(
-        &self,
-        key: impl Hash,
-        fetch: impl Future<Output = Result<T>>,
-    ) -> Result<T> {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        let name = format!("{:016x}", hasher.finish());
-        match self {
-            Store::Recorded(answers) => answers
-                .get(&name)
-                .ok_or(format!("no recorded answer {name}"))
-                .and_then(|answer| {
-                    serde_json::from_value(answer.clone()).map_err(|e| format!("{name}: {e}"))
-                }),
-            Store::Cache(dir) => {
-                let file = dir.join(&name);
-                if let Some(found) = fs::read(&file)
-                    .ok()
-                    .and_then(|b| serde_json::from_slice(&b).ok())
-                {
-                    return Ok(found);
-                }
-                let fetched = fetch.await?;
-                fs::write(&file, serde_json::to_vec(&fetched).unwrap_or_default()).ok();
-                Ok(fetched)
-            }
-        }
+async fn cached<T: Serialize + DeserializeOwned>(
+    cache: &Path,
+    key: impl Hash,
+    fetch: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let file = cache.join(format!("{:016x}", hasher.finish()));
+    if let Some(found) = fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+    {
+        return Ok(found);
     }
+    let fetched = fetch.await?;
+    fs::write(&file, serde_json::to_vec(&fetched).unwrap_or_default()).ok();
+    Ok(fetched)
 }
 
 #[derive(Clone)]
@@ -111,36 +93,28 @@ pub fn alternate(source: &dyn Source, size: usize) -> Value {
     request
 }
 
-pub struct Model {
-    runtime: tokio::runtime::Runtime,
-    store: Store,
+pub trait Model {
+    fn alternates(&self, model: &str, request: &Value) -> Result<Vec<Value>>;
+    fn scores(
+        &self,
+        invariants: &BTreeMap<String, String>,
+        texts: &[&str],
+    ) -> Result<Vec<BTreeMap<String, f64>>>;
 }
 
-impl Model {
+pub struct Live {
+    runtime: tokio::runtime::Runtime,
+    cache: PathBuf,
+}
+
+impl Live {
     pub fn open() -> Result<Self> {
         let cache = home(".cache");
         fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-        Self::with(Store::Cache(cache))
-    }
-
-    pub fn recorded(file: &Path) -> Result<Self> {
-        let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
-        let text = fs::read_to_string(file).map_err(|e| failed(&e))?;
-        Self::with(Store::Recorded(
-            serde_json::from_str(&text).map_err(|e| failed(&e))?,
-        ))
-    }
-
-    fn with(store: Store) -> Result<Self> {
         Ok(Self {
             runtime: tokio::runtime::Runtime::new().map_err(|e| e.to_string())?,
-            store,
+            cache,
         })
-    }
-
-    pub fn alternates(&self, model: &str, request: &Value) -> Result<Vec<Value>> {
-        self.runtime
-            .block_on(gemini::alternates(&self.store, model, request))
     }
 
     pub fn candidates(&self, source: &dyn Source) -> Result<Vec<Candidate>> {
@@ -150,13 +124,20 @@ impl Model {
             .map(|example| json!({"text": example.text, "note": example.note}))
             .collect();
         self.runtime.block_on(gemini::candidates(
-            &self.store,
+            &self.cache,
             MODEL,
             &json!({"examples": examples, "context": source.context()}),
         ))
     }
+}
 
-    pub fn scores(
+impl Model for Live {
+    fn alternates(&self, model: &str, request: &Value) -> Result<Vec<Value>> {
+        self.runtime
+            .block_on(gemini::alternates(&self.cache, model, request))
+    }
+
+    fn scores(
         &self,
         invariants: &BTreeMap<String, String>,
         texts: &[&str],
@@ -178,7 +159,7 @@ impl Model {
         )]);
         Ok(self
             .runtime
-            .block_on(jev::nouls(&self.store, &states, &instructions))?
+            .block_on(jev::nouls(&self.cache, &states, &instructions))?
             .chunks(invariants.len())
             .map(|nouls| {
                 invariants

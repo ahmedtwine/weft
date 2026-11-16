@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use weft_parse::{Invariant, State};
-use weft_samples::model::{Example, Given, Model};
+use weft_samples::model::{Example, Given, Live};
 use weft_samples::{Candidate, Result};
 
 use cover::Set;
@@ -155,7 +155,7 @@ fn modeled(
         context: json!({"keys": keys, "actions": actions, "grammar": GRAMMAR}),
     };
     let mut found = Vec::new();
-    for candidate in Model::open()?.candidates(&given)? {
+    for candidate in Live::open()?.candidates(&given)? {
         match space.found(world, "model", vec![candidate.clone()]) {
             Ok(one) => found.extend(one),
             Err(e) => println!(

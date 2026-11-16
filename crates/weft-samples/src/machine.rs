@@ -21,7 +21,7 @@ pub struct Machine {
 
 impl Machine {
     pub fn new(
-        model: &Model,
+        model: &dyn Model,
         medium: &dyn Medium,
         artifact: &str,
         (marked, note): (&str, &str),

@@ -12,6 +12,7 @@ typedef enum {
   WEFT_E_REFUSED = -4,
   WEFT_E_STOP_TEST = -5,
   WEFT_E_ASSUME = -6,
+  WEFT_E_FAILED = -7,
 } weft_result_t;
 
 typedef enum {
@@ -65,3 +66,10 @@ weft_result_t weft_pool_generate(weft_context_t *ctx,
                                  weft_owned_string_t *out_value);
 
 weft_result_t weft_target(weft_context_t *ctx, double value, weft_string_t label);
+
+weft_result_t weft_test_start(weft_context_t *ctx,
+                              weft_string_t adapter,
+                              weft_string_t file,
+                              weft_owned_string_t *out_joined);
+
+weft_result_t weft_test_end(weft_context_t *ctx, weft_owned_string_t *out_report);

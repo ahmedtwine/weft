@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::CStr;
 use std::fs::{self, File};
 use std::io;
 use std::mem::MaybeUninit;
@@ -24,14 +25,27 @@ const HARNESS: &str = r#"await import(Bun.resolveSync("weft/harness", process.cw
 static RUNS: AtomicU64 = AtomicU64::new(0);
 
 fn library() -> Result<PathBuf, String> {
-    let exe = env::current_exe().map_err(|e| e.to_string())?;
     let name = format!("{}weft{}", env::consts::DLL_PREFIX, env::consts::DLL_SUFFIX);
-    exe.ancestors()
-        .skip(1)
-        .take(2)
-        .map(|dir| dir.join(&name))
-        .find(|path| path.is_file())
-        .ok_or_else(|| format!("`{name}` is not beside `{}`", exe.display()))
+    let here: fn() -> Result<PathBuf, String> = library;
+    let mut info = MaybeUninit::<libc::Dl_info>::zeroed();
+    if unsafe { libc::dladdr(here as *const libc::c_void, info.as_mut_ptr()) } == 0 {
+        return Err(format!("`{name}` is not found"));
+    }
+    let image = PathBuf::from(
+        unsafe { CStr::from_ptr(info.assume_init().dli_fname) }
+            .to_string_lossy()
+            .into_owned(),
+    );
+    match image.file_name() == Some(name.as_ref()) {
+        true => Ok(image),
+        false => image
+            .ancestors()
+            .skip(1)
+            .take(2)
+            .map(|dir| dir.join(&name))
+            .find(|path| path.is_file())
+            .ok_or_else(|| format!("`{name}` is not beside `{}`", image.display())),
+    }
 }
 
 fn scratch() -> Result<PathBuf, String> {
@@ -106,14 +120,13 @@ pub(crate) fn ended(started: Vec<Started>) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn parent(r: &Runner) -> Result<(), String> {
+pub(crate) fn parent(r: &Runner) -> Result<String, String> {
     let cwd = env::current_dir().map_err(|e| e.to_string())?;
     let env: Map<String, Json> = given(r)?
         .into_iter()
         .map(|(key, value)| (key, Json::String(value)))
         .collect();
-    println!("{}", json!({ "cwd": cwd, "env": env }));
-    Ok(())
+    Ok(json!({ "cwd": cwd, "env": env }).to_string())
 }
 
 fn spawn(
@@ -126,6 +139,13 @@ fn spawn(
     let begun = Instant::now();
     let tag = format!("{} · {}", r.name, r.adapter);
     let log = File::create(dir.join("runner.log")).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    unsafe {
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
     let mut child = command
         .envs(given(&r)?)
         .stdin(Stdio::null())

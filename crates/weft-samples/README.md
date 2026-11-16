@@ -52,7 +52,7 @@ All model code is in `src/model`. No other module sends a request.
 |---|---|
 | `model/jev.rs` | Scores each invariant on each part |
 | `model/gemini.rs` | Draws from `gemini-flash-latest`: alternates for an annotation, and candidates for examples |
-| `model/mod.rs` | `Example`, `Source`, `Given` and `Model`, the one handle that the other modules use. `Model::open` answers from the cache and sends a request only for a missing answer. `Model::recorded` answers only from one file and sends no request |
+| `model/mod.rs` | `Example`, `Source`, `Given`, the `Model` trait, and `Live`, the model that answers from the cache and sends a request only for a missing answer |
 
 ## Candidates
 
@@ -89,11 +89,11 @@ To add a medium, implement `parts`, `rules` and `run` of the `Medium` trait. To 
 |---|---|
 | `weft-samples check <file> <invariants.json>` | Each violation, with its place and invariant name |
 | `weft-samples narrow <file>` | Your reactions for each annotation in `<file>.json`, then each invariant and its violations |
-| `cargo nextest run -p weft-samples` | For each example: the wrong violations of the golden invariants, then the flow of each annotation. The test reads only `tests/answers/<example>.json` and sends no request |
+| `cargo nextest run -p weft-samples` | For each example: the wrong violations of the golden invariants, then the flow of each annotation, with no model request |
 
 ## Test
 
-[tests/examples.rs](tests/examples.rs) runs one test for each example. The test reacts for you: it rejects an alternate when the golden invariant of the annotation reports it. The golden invariant of an annotation is the one whose violations hold the annotated part. For each annotation, the flow gives one result:
+[tests/examples.rs](tests/examples.rs) runs one test for each example with `Golden`, a mock of the `Model` trait. A part violates a golden invariant when it holds one of the golden violations of that invariant. The alternates are the part with the violations of each golden invariant removed. The test reacts for you: it rejects an alternate when the golden invariant of the annotation reports it. The golden invariant of an annotation is the one whose violations hold the annotated part. For each annotation, the flow gives one result:
 
 | Result | Meaning |
 |---|---|

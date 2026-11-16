@@ -1,10 +1,12 @@
+use std::path::Path;
+
 use rig::AgentBuilder;
 use rig::catalog::Catalog;
 use rig::providers::registry::ConnectOptions;
 use rig::schemars::Schema;
 use serde_json::{Value, json};
 
-use super::{Store, secret};
+use super::{cached, secret};
 use crate::{Candidate, Result};
 
 pub const MODEL: &str = "gcp.gemini/gemini-flash-latest";
@@ -59,23 +61,23 @@ async fn ask(model: &str, instructions: &str, schema: Value, request: &Value) ->
 }
 
 async fn drawn(
-    store: &Store,
+    cache: &Path,
     model: &str,
     instructions: &str,
     schema: Value,
     request: &Value,
 ) -> Result<Value> {
-    store
-        .cached(
-            (model, instructions, request.to_string()),
-            ask(model, instructions, schema, request),
-        )
-        .await
+    cached(
+        cache,
+        (model, instructions, request.to_string()),
+        ask(model, instructions, schema, request),
+    )
+    .await
 }
 
-pub(super) async fn alternates(store: &Store, model: &str, request: &Value) -> Result<Vec<Value>> {
+pub(super) async fn alternates(cache: &Path, model: &str, request: &Value) -> Result<Vec<Value>> {
     let more = json!({"alternates": {"type": "array", "items": {"type": "string"}}});
-    let answer = drawn(store, model, ALTERNATES, schema("measure", &more), request).await?;
+    let answer = drawn(cache, model, ALTERNATES, schema("measure", &more), request).await?;
     let invariants = answer["invariants"].as_array().cloned().unwrap_or_default();
     Ok(answer["alternates"]
         .as_array()
@@ -90,12 +92,12 @@ pub(super) async fn alternates(store: &Store, model: &str, request: &Value) -> R
 }
 
 pub(super) async fn candidates(
-    store: &Store,
+    cache: &Path,
     model: &str,
     request: &Value,
 ) -> Result<Vec<Candidate>> {
     let answer = drawn(
-        store,
+        cache,
         model,
         CANDIDATES,
         schema("measure", &json!({})),

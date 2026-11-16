@@ -2,6 +2,7 @@ mod hub;
 mod process;
 mod proxy;
 mod reaper;
+mod report;
 mod schema;
 mod shape;
 mod simulate;
@@ -10,16 +11,64 @@ mod transport;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use std::{env, fs};
 
 use serde_json::{Value as Json, json};
 use simulate::simulate;
 use weft_parse::{Adapter, Config, Diagram, Start};
 
 pub use reaper::{REAP, guard, reap};
+pub use report::{brief, checks, compact, sorted, summary};
 pub use simulate::{Event, Hop, Line, Outcome, Stream, Tally, view};
 use transport::{HUB, listen};
 
 const WAIT: Duration = Duration::from_secs(60);
+pub const CONFIG: &str = "weft.kdl";
+
+pub fn config() -> Result<Config, String> {
+    let source =
+        fs::read_to_string(CONFIG).map_err(|_| format!("{CONFIG} is not in this directory"))?;
+    weft_parse::config(&source).map_err(|e| format!("{CONFIG}: {e}"))
+}
+
+pub fn rooted() -> Result<(), String> {
+    let cwd = env::current_dir().map_err(|e| e.to_string())?;
+    let root = cwd
+        .ancestors()
+        .find(|dir| dir.join(CONFIG).is_file())
+        .ok_or_else(|| format!("{CONFIG} is not in this directory or in a directory above it"))?;
+    env::set_current_dir(root).map_err(|e| e.to_string())
+}
+
+pub fn diagram(file: &Path, config: &Config) -> Result<Diagram, String> {
+    let src = fs::read_to_string(file).map_err(|e| e.to_string())?;
+    weft_parse::parse(&src, config).map_err(|e| e.to_string())
+}
+
+pub fn tested<'a>(
+    config: &Config,
+    d: &'a Diagram,
+    file: &Path,
+    parent: Option<&str>,
+    stream: &'a mut Stream<'a>,
+) -> Result<Outcome, String> {
+    let key = fs::canonicalize(file).map_err(|e| e.to_string())?;
+    run(config, d, file, key.to_str(), parent, stream)
+}
+
+pub fn totals(lines: &[String], checks: u64, took: Duration) -> String {
+    let fail = lines.iter().filter(|l| l.starts_with('✕')).count();
+    format!(
+        "{}\n\n {} pass\n {fail} fail\n {checks} checks\nRan {} in {:.2}s",
+        lines.join("\n"),
+        lines.len() - fail,
+        match lines.len() {
+            1 => "1 file".to_string(),
+            n => format!("{n} files"),
+        },
+        took.as_secs_f64()
+    )
+}
 
 fn clean(path: &Path) -> String {
     let mut out = PathBuf::new();
@@ -129,7 +178,10 @@ pub fn run<'a>(
         let runner = match line {
             Some(Start::Command(line)) => process::command(&line, r).map(Some),
             Some(Start::Bun) => process::bun(r).map(Some),
-            None => process::parent(&r).map(|()| None),
+            None => process::parent(&r).map(|line| {
+                stream(Event::Joined(&line));
+                None
+            }),
         };
         match runner {
             Ok(runner) => started.extend(runner),

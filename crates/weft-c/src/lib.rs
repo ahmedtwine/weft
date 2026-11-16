@@ -1,10 +1,16 @@
 #![allow(non_camel_case_types, clippy::missing_safety_doc)]
 
 use std::ffi::c_char;
+use std::path::Path;
 use std::ptr;
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Mutex, PoisonError};
+use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use serde_json::{Value as Json, json};
 use weft_draw::{Code, Theme};
+use weft_orchestrator::{Event, checks, summary, totals};
 use weft_parse::Diagram;
 use weft_wire::{
     ASSUME, DONE, GENERATE, JOIN, POOL_ADD, POOL_GENERATE, STOP_TEST, TARGET, TURN, client,
@@ -26,6 +32,7 @@ pub enum weft_result_t {
     WEFT_E_REFUSED = -4,
     WEFT_E_STOP_TEST = -5,
     WEFT_E_ASSUME = -6,
+    WEFT_E_FAILED = -7,
 }
 
 use weft_result_t::*;
@@ -308,5 +315,87 @@ pub unsafe extern "C" fn weft_target(
     match said.and_then(|said| unsafe { sent(ctx, call, TARGET, given(&said)) }) {
         Ok(_) => WEFT_OK,
         Err(rc) => rc,
+    }
+}
+
+type Test = JoinHandle<Result<(bool, String), String>>;
+
+static TEST: Mutex<Option<Test>> = Mutex::new(None);
+
+fn tested(adapter: &str, file: &str, joined: &Sender<String>) -> Result<(bool, String), String> {
+    weft_orchestrator::rooted()?;
+    let config = weft_orchestrator::config()?;
+    let path = Path::new(file);
+    let d = weft_orchestrator::diagram(path, &config)?;
+    let started = Instant::now();
+    let o = weft_orchestrator::tested(&config, &d, path, Some(adapter), &mut |event| {
+        if let Event::Joined(line) = event {
+            let _ = joined.send(line.to_string());
+        }
+    })?;
+    let line = summary(file, &d, &config, &o, started.elapsed());
+    Ok((o.failed, totals(&[line], checks(&o), started.elapsed())))
+}
+
+fn ended(test: Test) -> String {
+    test.join().map_or_else(
+        |_| "the test panics".into(),
+        |r| r.err().unwrap_or_default(),
+    )
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn weft_test_start(
+    ctx: *mut WeftContext,
+    adapter: weft_string_t,
+    file: weft_string_t,
+    out_joined: *mut weft_owned_string_t,
+) -> weft_result_t {
+    let call = "weft_test_start";
+    set_error(ctx, "");
+    let adapter = match unsafe { text(ctx, call, "adapter", adapter) } {
+        Ok(adapter) => adapter.to_string(),
+        Err(rc) => return rc,
+    };
+    let file = match unsafe { text(ctx, call, "file", file) } {
+        Ok(file) => file.to_string(),
+        Err(rc) => return rc,
+    };
+    let (sender, joined) = mpsc::channel();
+    let test = thread::spawn(move || tested(&adapter, &file, &sender));
+    match joined.recv() {
+        Ok(line) => {
+            *TEST.lock().unwrap_or_else(PoisonError::into_inner) = Some(test);
+            unsafe { give(ctx, call, out_joined, line) }
+        }
+        Err(_) => {
+            set_error(ctx, &ended(test));
+            WEFT_E_REFUSED
+        }
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn weft_test_end(
+    ctx: *mut WeftContext,
+    out_report: *mut weft_owned_string_t,
+) -> weft_result_t {
+    let call = "weft_test_end";
+    set_error(ctx, "");
+    let Some(test) = TEST.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+        set_error(ctx, &format!("{call}: no test runs"));
+        return WEFT_E_INVALID_ARG;
+    };
+    match test.join() {
+        Ok(Ok((failed, report))) => match unsafe { give(ctx, call, out_report, report) } {
+            WEFT_OK if failed => WEFT_E_FAILED,
+            rc => rc,
+        },
+        Ok(Err(e)) => {
+            set_error(ctx, &e);
+            WEFT_E_REFUSED
+        }
+        Err(_) => {
+            set_error(ctx, &format!("{call}: the test panics"));
+            WEFT_E_REFUSED
+        }
     }
 }

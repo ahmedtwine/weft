@@ -7853,6 +7853,7 @@ dependencies = [
  "cbindgen",
  "serde_json",
  "weft-draw",
+ "weft-orchestrator",
  "weft-parse",
  "weft-wire",
 ]

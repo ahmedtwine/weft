@@ -14,6 +14,7 @@ export class AssumeFailed extends Error {}
 
 const STOP_TEST = -5;
 const ASSUME = -6;
+const FAILED = -7;
 
 export const setup = (): { diagram: string; lib: string; adapter: string } => {
   const text = process.env.WEFT;
@@ -21,8 +22,8 @@ export const setup = (): { diagram: string; lib: string; adapter: string } => {
   return JSON.parse(text);
 };
 
-const opened = () => {
-  const lib = koffi.load(setup().lib);
+const opened = (library = setup().lib) => {
+  const lib = koffi.load(library);
   koffi.struct("weft_string_t", { data: "const char *", len: "size_t" });
   koffi.struct("weft_owned_string_t", { data: "void *", len: "size_t" });
   koffi.opaque("weft_context_t");
@@ -45,11 +46,15 @@ const opened = () => {
       "int weft_pool_generate(weft_context_t *ctx, weft_string_t pool, bool consume, _Out_ weft_owned_string_t *out_value)"
     ),
     target: lib.func("int weft_target(weft_context_t *ctx, double value, weft_string_t label)"),
+    start: lib.func(
+      "int weft_test_start(weft_context_t *ctx, weft_string_t adapter, weft_string_t file, _Out_ weft_owned_string_t *out_joined)"
+    ),
+    end: lib.func("int weft_test_end(weft_context_t *ctx, _Out_ weft_owned_string_t *out_report)"),
   };
 };
 
 type Weft = ReturnType<typeof opened>;
-type Asked = "join" | "turn" | "generate" | "poolGenerate";
+type Asked = "join" | "turn" | "generate" | "poolGenerate" | "start";
 let weft: Weft | undefined;
 const call = () => (weft ??= opened());
 
@@ -60,12 +65,15 @@ const checked = (code: number) => {
   if (code === ASSUME) throw new AssumeFailed();
   if (code !== 0) throw new Error(call().error(call().ctx).data);
 };
+const taken = (out: Owned) => {
+  const text = Buffer.from(koffi.decode(out.data, "uint8_t", out.len)).toString();
+  call().free(call().ctx, out);
+  return text;
+};
 const asked = (ask: Asked, ...args: unknown[]) => {
   const out: Owned = { data: null, len: 0 };
   checked(call()[ask](call().ctx, ...args, out));
-  const said = JSON.parse(Buffer.from(koffi.decode(out.data, "uint8_t", out.len)).toString());
-  call().free(call().ctx, out);
-  return said;
+  return JSON.parse(taken(out));
 };
 
 export const join = (name: string): Code => asked("join", given(name));
@@ -78,6 +86,16 @@ export const poolGenerate = (pool: string, consume: boolean): unknown =>
   asked("poolGenerate", given(pool), consume);
 export const target = (value: number, label: string) =>
   checked(call().target(call().ctx, value, given(label)));
+export const started = (library: string, adapter: string, file: string) => {
+  weft ??= opened(library);
+  return asked("start", given(adapter), given(file)) as { cwd: string; env: Record<string, string> };
+};
+export const ended = () => {
+  const out: Owned = { data: null, len: 0 };
+  const code = call().end(call().ctx, out);
+  if (code !== 0 && code !== FAILED) throw new Error(call().error(call().ctx).data);
+  return { failed: code === FAILED, report: taken(out) };
+};
 export const setenv = (env: Record<string, string>) => {
   const set = koffi.load(null).func("int setenv(const char *name, const char *value, int overwrite)");
   for (const [name, value] of Object.entries(env)) {
