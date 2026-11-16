@@ -464,6 +464,7 @@ impl Peer {
             .ok_or_else(|| format!("weft runs no diagram `{name}`"))?;
         let code = session.code.clone();
         self.session = Some(session);
+        self.seat = None;
         Ok(code)
     }
 

@@ -9,7 +9,7 @@ export const dist = async () => {
   const token = process.env.GH_TOKEN;
   if (!token) throw new Error("GH_TOKEN must give read access to ahmedtwine/weft");
   const get = async (url: string, accept: string) => {
-    const response = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept } });
+    const response = await Bun.fetch(url, { headers: { authorization: `Bearer ${token}`, accept } });
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
     return response;
   };
