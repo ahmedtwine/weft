@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::Display;
 use std::fs;
+use std::io::{self, BufRead, BufReader};
+use std::marker::PhantomData;
 use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
 
 pub use schemars::JsonSchema;
@@ -13,13 +15,13 @@ use serde::de::DeserializeOwned;
 pub use serde_json::{Value as Json, json};
 use syn::spanned::Spanned;
 use weft_wire::client::said;
-use weft_wire::{DONE, JOIN, TURN};
+use weft_wire::{ASSUME, DONE, GENERATE, JOIN, POOL_ADD, POOL_GENERATE, STOP_TEST, TARGET, TURN};
 
 const ADAPTER: &str = "rust";
 const START: &str = "start";
 
 pub enum Failure {
-    Refused,
+    Refused(&'static str),
     Error(String),
     Fault(String),
 }
@@ -28,6 +30,102 @@ type Call = Arc<dyn Fn(Json) -> Result<Json, Failure> + Send + Sync>;
 
 const RESET: &str = "reset";
 const URL: &str = "url";
+const WEFT: &str = "WEFT_BIN";
+const PARENT: &str = "--parent";
+
+struct StopTest;
+struct AssumeFailed;
+
+#[derive(Clone, Copy)]
+pub struct TestCase(());
+
+pub trait Generator<T> {
+    fn do_draw(&self, tc: &TestCase) -> T;
+}
+
+pub struct Schema<T>(PhantomData<T>);
+
+pub struct Pool<T> {
+    name: String,
+    values: PhantomData<T>,
+}
+
+pub struct Values<'a, T> {
+    pool: &'a Pool<T>,
+    consume: bool,
+}
+
+fn asked<T: DeserializeOwned>(call: u8, part: &Json) -> T {
+    let value = match said(call, part.to_string().as_bytes()) {
+        Ok(value) => value,
+        Err((STOP_TEST, _)) => panic::resume_unwind(Box::new(StopTest)),
+        Err((ASSUME, _)) => panic::resume_unwind(Box::new(AssumeFailed)),
+        Err((_, e)) => panic!("{e}"),
+    };
+    serde_json::from_str(&value).unwrap_or_else(|e| panic!("weft gives `{value}`: {e}"))
+}
+
+pub fn schema<T: DeserializeOwned + JsonSchema>() -> Schema<T> {
+    Schema(PhantomData)
+}
+
+pub fn pool<T>(_: &TestCase, name: &str) -> Pool<T> {
+    Pool {
+        name: name.to_string(),
+        values: PhantomData,
+    }
+}
+
+impl TestCase {
+    pub fn draw<T>(&self, generator: impl Generator<T>) -> T {
+        generator.do_draw(self)
+    }
+
+    pub fn assume(&self, condition: bool) {
+        if !condition {
+            panic::resume_unwind(Box::new(AssumeFailed));
+        }
+    }
+
+    pub fn target(&self, score: f64, label: &str) {
+        asked::<Json>(TARGET, &json!({ "value": score, "label": label }));
+    }
+}
+
+impl<T: DeserializeOwned + JsonSchema> Generator<T> for Schema<T> {
+    fn do_draw(&self, _: &TestCase) -> T {
+        asked(GENERATE, &json!(schemars::schema_for!(T)))
+    }
+}
+
+impl<T: Serialize> Pool<T> {
+    pub fn add(&self, v: T) {
+        asked::<Json>(POOL_ADD, &json!({ "pool": self.name, "value": v }));
+    }
+
+    pub fn values_reusable(&self) -> Values<'_, T> {
+        Values {
+            pool: self,
+            consume: false,
+        }
+    }
+
+    pub fn values_consumed(&self) -> Values<'_, T> {
+        Values {
+            pool: self,
+            consume: true,
+        }
+    }
+}
+
+impl<T: DeserializeOwned> Generator<T> for Values<'_, T> {
+    fn do_draw(&self, _: &TestCase) -> T {
+        asked(
+            POOL_GENERATE,
+            &json!({ "pool": self.pool.name, "consume": self.consume }),
+        )
+    }
+}
 
 struct Export {
     name: String,
@@ -83,8 +181,40 @@ where
     E: Display,
 {
     fn call(&self, input: Json) -> Result<Json, Failure> {
-        let input = serde_json::from_value(input).map_err(|_| Failure::Refused)?;
+        let input = serde_json::from_value(input).map_err(|_| Failure::Refused("schema"))?;
         returned(self(input))
+    }
+
+    fn input(&self) -> Option<Json> {
+        serde_json::to_value(schemars::schema_for!(I)).ok()
+    }
+}
+
+impl<F, T, E> Function<TestCase> for F
+where
+    F: Fn(TestCase) -> Result<T, E> + Send + Sync + 'static,
+    T: Serialize,
+    E: Display,
+{
+    fn call(&self, _: Json) -> Result<Json, Failure> {
+        returned(self(TestCase(())))
+    }
+
+    fn input(&self) -> Option<Json> {
+        None
+    }
+}
+
+impl<F, I, T, E> Function<(I, TestCase)> for F
+where
+    F: Fn(I, TestCase) -> Result<T, E> + Send + Sync + 'static,
+    I: DeserializeOwned + JsonSchema,
+    T: Serialize,
+    E: Display,
+{
+    fn call(&self, input: Json) -> Result<Json, Failure> {
+        let input = serde_json::from_value(input).map_err(|_| Failure::Refused("schema"))?;
+        returned(self(input, TestCase(())))
     }
 
     fn input(&self) -> Option<Json> {
@@ -209,7 +339,7 @@ impl Runner {
                         URL => {
                             let given = Self::called(&e.call, Json::Null).map_err(|f| match f {
                                 Failure::Error(m) | Failure::Fault(m) => m,
-                                Failure::Refused => "`url` takes no input".into(),
+                                Failure::Refused(_) => "`url` takes no input".into(),
                             })?;
                             serves = Some(given.as_str().map_or(given.to_string(), String::from));
                         }
@@ -250,6 +380,8 @@ impl Runner {
     fn called(run: &Call, input: Json) -> Result<Json, Failure> {
         match panic::catch_unwind(AssertUnwindSafe(|| run(input))) {
             Ok(result) => result,
+            Err(payload) if payload.is::<AssumeFailed>() => Err(Failure::Refused("assume")),
+            Err(payload) if payload.is::<StopTest>() => Err(Failure::Refused("stop_test")),
             Err(payload) => Err(Failure::Fault(
                 FAULT
                     .lock()
@@ -277,7 +409,7 @@ impl Runner {
             ran.insert((used.module, used.name.clone()));
             match Self::called(&used.call, call["input"].clone()) {
                 Ok(_) => {}
-                Err(Failure::Refused) => return Ok(json!({ "refused": true })),
+                Err(Failure::Refused(cause)) => return Ok(json!({ "refused": cause })),
                 Err(Failure::Error(message) | Failure::Fault(message)) => {
                     return Ok(json!({ "thrown": message }));
                 }
@@ -334,16 +466,18 @@ impl Runner {
 fn joined(modules: Vec<Module>) -> Result<Runner, String> {
     let adapter = env::var("WEFT_ADAPTER").unwrap_or_else(|_| ADAPTER.into());
     let diagram = env::var("WEFT_DIAGRAM").map_err(|_| "WEFT_DIAGRAM is not set".to_string())?;
-    let code: Json =
-        serde_json::from_str(&said(JOIN, diagram.as_bytes())?).map_err(|e| e.to_string())?;
+    let code: Json = serde_json::from_str(&said(JOIN, diagram.as_bytes()).map_err(|(_, e)| e)?)
+        .map_err(|e| e.to_string())?;
     Runner::new(&code, &adapter, modules)
 }
 
 fn played(runner: &mut Runner) -> Result<(), String> {
     let mut report = runner.hello.clone();
     loop {
-        let turn: Json = serde_json::from_str(&said(TURN, report.to_string().as_bytes())?)
-            .map_err(|e| e.to_string())?;
+        let turn: Json = serde_json::from_str(
+            &said(TURN, report.to_string().as_bytes()).map_err(|(_, e)| e)?,
+        )
+        .map_err(|e| e.to_string())?;
         if turn.get("done").is_some() {
             return Ok(());
         }
@@ -351,7 +485,7 @@ fn played(runner: &mut Runner) -> Result<(), String> {
     }
 }
 
-pub fn run(modules: impl IntoIterator<Item = Module>) -> ExitCode {
+fn ran(modules: impl IntoIterator<Item = Module>) -> Result<(), String> {
     panic::set_hook(Box::new(|info| {
         let message = info
             .payload()
@@ -374,11 +508,59 @@ pub fn run(modules: impl IntoIterator<Item = Module>) -> ExitCode {
         Ok(ran) => json!({ "ran": ran }),
         Err(e) => json!({ "error": e }),
     };
-    match (said(DONE, said_done.to_string().as_bytes()), ended) {
-        (Ok(_), Ok(_)) => ExitCode::SUCCESS,
-        (Err(e), _) | (_, Err(e)) => {
+    said(DONE, said_done.to_string().as_bytes())
+        .map_err(|(_, e)| e)
+        .and(ended.map(|_| ()))
+}
+
+pub fn run(modules: impl IntoIterator<Item = Module>) -> ExitCode {
+    match ran(modules) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
             eprintln!("{e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn tested(file: &str, modules: impl IntoIterator<Item = Module>) -> Result<(), String> {
+    let weft = env::var(WEFT).unwrap_or_else(|_| "weft".into());
+    let mut child = Command::new(&weft)
+        .args([PARENT, ADAPTER, file])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{weft}: {e}"))?;
+    let mut output = BufReader::new(child.stdout.take().ok_or("weft has no output")?);
+    let mut first = String::new();
+    output.read_line(&mut first).map_err(|e| e.to_string())?;
+    let joined = serde_json::from_str::<Json>(&first).ok();
+    let played = joined.as_ref().map_or(Ok(()), |given| {
+        env::set_current_dir(given["cwd"].as_str().unwrap_or_default())
+            .map_err(|e| e.to_string())?;
+        for (key, value) in given["env"].as_object().into_iter().flatten() {
+            unsafe { env::set_var(key, value.as_str().unwrap_or_default()) };
+        }
+        ran(modules)
+    });
+    let mut report = match joined {
+        Some(_) => String::new(),
+        None => first,
+    };
+    io::Read::read_to_string(&mut output, &mut report).map_err(|e| e.to_string())?;
+    let status = child.wait().map_err(|e| e.to_string())?;
+    match (status.success(), played) {
+        (true, Ok(())) => {
+            print!("{report}");
+            Ok(())
+        }
+        (_, Err(e)) => Err(format!("{e}\n{report}")),
+        (false, Ok(())) => Err(format!("{status}\n{report}")),
+    }
+}
+
+pub fn test(file: &str, modules: impl IntoIterator<Item = Module>) {
+    if let Err(e) = tested(file, modules) {
+        panic!("{e}");
     }
 }

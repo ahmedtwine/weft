@@ -1,7 +1,7 @@
 include "tests/*.weft.kdl"
 style "person" icon="user"
 style "api" icon="server"
-adapter "bun" cases=100
+adapter "bun" cases=5
 runner "rust" command="runners/rust/target/release/runner"
 runner "go" command="runners/go/bin/runner"
 runner "python" command="uv run --quiet --project runners/python python -m weft"

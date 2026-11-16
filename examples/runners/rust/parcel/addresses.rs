@@ -5,7 +5,7 @@ use std::thread;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
-use weft_sdk::{self as weft, Json, Module, json};
+use weft_sdk::{self as weft, Json, Module, TestCase, json};
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 struct Address {
@@ -13,6 +13,12 @@ struct Address {
     street: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct Correction {
+    street: String,
+}
+
+const OWNER: &str = "?owner=";
 static URL: OnceLock<String> = OnceLock::new();
 static BOOK: Mutex<BTreeMap<String, Address>> = Mutex::new(BTreeMap::new());
 
@@ -29,14 +35,23 @@ fn handled(method: &Method, id: &str, service: &str, body: &str) -> (u16, Json) 
         return (503, json!({ "error": "the address book is busy" }));
     };
     match method {
-        Method::Put => match serde_json::from_str::<Address>(body) {
+        Method::Post => match serde_json::from_str::<Address>(body) {
             Ok(address) => {
-                book.insert(id.to_string(), address.clone());
-                (201, json!(address))
+                let made = format!("a-{}", book.len() + 1);
+                book.insert(made.clone(), address);
+                (201, json!({ "id": made }))
             }
             Err(e) => (400, json!({ "error": e.to_string() })),
         },
         Method::Get if service.is_empty() => (401, json!({ "error": "a service reads an address" })),
+        Method::Get if id.starts_with(OWNER) => {
+            let own: Vec<&String> = book
+                .iter()
+                .filter(|(_, address)| address.owner == id[OWNER.len()..])
+                .map(|(id, _)| id)
+                .collect();
+            (200, json!(own))
+        }
         Method::Get => match book.get(id) {
             Some(address) => (200, json!(address)),
             None => (404, json!({ "error": "no such address" })),
@@ -49,7 +64,8 @@ fn served(server: Server) {
     for mut request in server.incoming_requests() {
         let id = request
             .url()
-            .trim_start_matches("/addresses/")
+            .trim_start_matches("/addresses")
+            .trim_start_matches('/')
             .to_string();
         let service = header(&request, "x-service");
         let mut body = String::new();
@@ -82,6 +98,14 @@ pub fn reset() -> Result<(), String> {
     Ok(())
 }
 
+pub fn correct(correction: Correction, tc: TestCase) -> Result<(), String> {
+    let id = tc.draw(weft::pool::<String>(&tc, "addresses").values_reusable());
+    if let Some(address) = BOOK.lock().map_err(|e| e.to_string())?.get_mut(&id) {
+        address.street = correction.street;
+    }
+    Ok(())
+}
+
 fn book() -> BTreeMap<String, Address> {
     BOOK.lock().map(|b| b.clone()).unwrap_or_default()
 }
@@ -91,4 +115,5 @@ pub fn module() -> Module {
     weft::module!()
         .function("url", url)
         .function("reset", reset)
+        .function("correct", correct)
 }

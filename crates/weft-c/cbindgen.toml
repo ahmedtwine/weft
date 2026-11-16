@@ -1,6 +1,6 @@
 language = "C"
 pragma_once = true
-sys_includes = ["stddef.h", "stdint.h"]
+sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
 no_includes = true
 documentation = false
 style = "type"

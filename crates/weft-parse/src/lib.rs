@@ -502,6 +502,21 @@ impl Invariant {
         format!("invariant \"{}\" {{ {} }}", self.name, self.body.quint())
     }
 
+    pub fn items(&self, now: &State) -> Option<usize> {
+        let sets: HashSet<(&String, &String)> = self
+            .body
+            .fields()
+            .into_iter()
+            .map(|(o, k, _)| (o, k))
+            .collect();
+        (!sets.is_empty()).then(|| {
+            sets.into_iter()
+                .filter_map(|(o, k)| read(now, o, k)?.as_array())
+                .map(Vec::len)
+                .sum()
+        })
+    }
+
     pub fn judge(&self, start: &State, now: &State) -> Option<Vec<String>> {
         let env = Vec::new();
         (!self.body.passes(start, now, &env))

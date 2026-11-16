@@ -5,7 +5,10 @@ use std::ptr;
 
 use weft_draw::{Code, Theme};
 use weft_parse::Diagram;
-use weft_wire::{DONE, JOIN, TURN, client};
+use serde_json::{Value as Json, json};
+use weft_wire::{
+    ASSUME, DONE, GENERATE, JOIN, POOL_ADD, POOL_GENERATE, STOP_TEST, TARGET, TURN, client,
+};
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct weft_string_t {
@@ -21,6 +24,8 @@ pub enum weft_result_t {
     WEFT_E_INVALID_ARG = -2,
     WEFT_E_RENDER = -3,
     WEFT_E_REFUSED = -4,
+    WEFT_E_STOP_TEST = -5,
+    WEFT_E_ASSUME = -6,
 }
 
 use weft_result_t::*;
@@ -194,10 +199,21 @@ unsafe fn sent(
 ) -> Result<String, weft_result_t> {
     set_error(ctx, "");
     let part = unsafe { text(ctx, call, "the message", part) }?;
-    client::said(index, part.as_bytes()).map_err(|e| {
+    client::said(index, part.as_bytes()).map_err(|(code, e)| {
         set_error(ctx, &e);
-        WEFT_E_REFUSED
+        match code {
+            STOP_TEST => WEFT_E_STOP_TEST,
+            ASSUME => WEFT_E_ASSUME,
+            _ => WEFT_E_REFUSED,
+        }
     })
+}
+
+fn given(said: &str) -> weft_string_t {
+    weft_string_t {
+        data: said.as_ptr().cast(),
+        len: said.len(),
+    }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn weft_diagram_join(
@@ -229,6 +245,67 @@ pub unsafe extern "C" fn weft_diagram_done(
     said: weft_string_t,
 ) -> weft_result_t {
     match unsafe { sent(ctx, "weft_diagram_done", DONE, said) } {
+        Ok(_) => WEFT_OK,
+        Err(rc) => rc,
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn weft_generate(
+    ctx: *mut WeftContext,
+    schema: weft_string_t,
+    out_value: *mut weft_owned_string_t,
+) -> weft_result_t {
+    let call = "weft_generate";
+    match unsafe { sent(ctx, call, GENERATE, schema) } {
+        Ok(value) => unsafe { give(ctx, call, out_value, value) },
+        Err(rc) => rc,
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn weft_pool_add(
+    ctx: *mut WeftContext,
+    pool: weft_string_t,
+    value: weft_string_t,
+) -> weft_result_t {
+    let call = "weft_pool_add";
+    let said = unsafe { text(ctx, call, "pool", pool) }.and_then(|pool| {
+        let value = unsafe { text(ctx, call, "value", value) }?;
+        let value: Json = serde_json::from_str(value).map_err(|e| {
+            set_error(ctx, &format!("{call}: value: {e}"));
+            WEFT_E_INVALID_ARG
+        })?;
+        Ok(json!({ "pool": pool, "value": value }).to_string())
+    });
+    match said.and_then(|said| unsafe { sent(ctx, call, POOL_ADD, given(&said)) }) {
+        Ok(_) => WEFT_OK,
+        Err(rc) => rc,
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn weft_pool_generate(
+    ctx: *mut WeftContext,
+    pool: weft_string_t,
+    consume: bool,
+    out_value: *mut weft_owned_string_t,
+) -> weft_result_t {
+    let call = "weft_pool_generate";
+    let said = unsafe { text(ctx, call, "pool", pool) }
+        .map(|pool| json!({ "pool": pool, "consume": consume }).to_string());
+    match said.and_then(|said| unsafe { sent(ctx, call, POOL_GENERATE, given(&said)) }) {
+        Ok(value) => unsafe { give(ctx, call, out_value, value) },
+        Err(rc) => rc,
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn weft_target(
+    ctx: *mut WeftContext,
+    value: f64,
+    label: weft_string_t,
+) -> weft_result_t {
+    let call = "weft_target";
+    let said = unsafe { text(ctx, call, "label", label) }
+        .map(|label| json!({ "value": value, "label": label }).to_string());
+    match said.and_then(|said| unsafe { sent(ctx, call, TARGET, given(&said)) }) {
         Ok(_) => WEFT_OK,
         Err(rc) => rc,
     }

@@ -53,14 +53,6 @@ fn plain(schema: &Json) -> &Json {
         .map_or(schema, plain)
 }
 
-fn typed(schema: &Json) -> Option<&str> {
-    match plain(schema).get("type")? {
-        Json::String(t) => Some(t),
-        Json::Array(all) => all.iter().filter_map(Json::as_str).find(|t| *t != "null"),
-        _ => None,
-    }
-}
-
 pub enum Field<'a> {
     Found(&'a Json),
     Open,
@@ -83,29 +75,6 @@ pub fn item(schema: &Json) -> Option<&Json> {
         .or_else(|| s.get("additionalProperties").filter(|a| a.is_object()))
 }
 
-pub fn kind(schema: &Json) -> String {
-    let s = plain(schema);
-    let title = s.get("title").and_then(Json::as_str);
-    match (typed(s), title) {
-        _ if s.get("enum").is_some() || s.get("const").is_some() => "enum".into(),
-        (Some("string"), _) => "string".into(),
-        (Some("integer"), _) => "int".into(),
-        (Some("number"), _) => "float".into(),
-        (Some("boolean"), _) => "bool".into(),
-        (Some("array"), _) => match item(s).map(kind) {
-            Some(inner) if inner != "any" => format!("{inner}[]"),
-            _ => "list".into(),
-        },
-        (Some("object"), Some(title)) if s.get("properties").is_some() => title.into(),
-        (Some("object"), _) if s.get("properties").is_some() => "record".into(),
-        (Some("object"), _) => match item(s).map(kind) {
-            Some(inner) if inner != "any" => format!("map<{inner}>"),
-            _ => "map".into(),
-        },
-        _ => "any".into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,7 +86,6 @@ mod tests {
             "items": {"$ref": "#/$defs/Parcel"},
             "$defs": {"Parcel": {"type": "object", "properties": {"customer": {"type": "string"}}}}
         }));
-        assert_eq!(kind(&s), "Parcel[]");
         let parcel = item(&s).expect("items");
         assert!(matches!(field(parcel, "customer"), Field::Found(_)));
         assert!(matches!(field(parcel, "custmer"), Field::Missing(_)));
@@ -126,7 +94,6 @@ mod tests {
     #[test]
     fn a_map_names_its_values() {
         let s = json!({"type": "object", "additionalProperties": {"type": "object", "title": "Order", "properties": {}}});
-        assert_eq!(kind(&s), "map<Order>");
         assert!(matches!(field(&s, "o-ana"), Field::Open));
     }
 }

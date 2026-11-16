@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::ffi::{c_char, c_void};
 use std::path::PathBuf;
@@ -9,8 +9,8 @@ use std::slice;
 
 use hegel_c::hegel_result_t::{HEGEL_E_ASSUME, HEGEL_E_RETRY, HEGEL_E_STOP_TEST, HEGEL_OK};
 use hegel_c::{
-    HegelContext, HegelGrammar, HegelRun, HegelStateMachine, HegelTestCase, hegel_result_t,
-    hegel_string_t,
+    HegelContext, HegelGrammar, HegelPool, HegelRun, HegelStateMachine, HegelTestCase,
+    hegel_result_t, hegel_string_t,
 };
 use serde_json::Value as Json;
 
@@ -18,7 +18,7 @@ use crate::generator::{Drawer, Generator};
 
 const STORE: &str = "weft";
 const STEP: &str = "hegel.stateful.rule";
-const QUIET: u32 = 1;
+const VERBOSE: u32 = 2;
 const FILTER_TOO_MUCH: u32 = 1 << 0;
 const TOO_SLOW: u32 = 1 << 1;
 const FAILED: u32 = 1;
@@ -105,7 +105,13 @@ pub struct Engine {
     run: *mut HegelRun,
     step: u64,
     output: Box<RefCell<Vec<String>>>,
+    heard: usize,
     grammars: Grammars,
+}
+
+struct Pool {
+    pool: *mut HegelPool,
+    values: HashMap<i64, Json>,
 }
 
 pub struct Case {
@@ -113,6 +119,8 @@ pub struct Case {
     pub(crate) tc: *mut HegelTestCase,
     pub(crate) grammars: Grammars,
     pub(crate) labels: RefCell<HashMap<*const Generator, u64>>,
+    pools: RefCell<HashMap<String, Pool>>,
+    targets: RefCell<BTreeMap<String, f64>>,
     machine: *mut HegelStateMachine,
     step: u64,
     spans: Cell<usize>,
@@ -137,7 +145,7 @@ impl Engine {
             let store = key.map_or(String::new(), |_| store());
             let database = text(store.as_bytes());
             hegel!(ctx, hegel_settings_set_test_cases(settings, cases))?;
-            hegel!(ctx, hegel_settings_set_verbosity(settings, QUIET))?;
+            hegel!(ctx, hegel_settings_set_verbosity(settings, VERBOSE))?;
             hegel!(ctx, hegel_settings_set_print_blob(settings, false))?;
             hegel!(ctx, hegel_settings_set_show_statistics(settings, true))?;
             hegel!(
@@ -168,6 +176,7 @@ impl Engine {
             run,
             step,
             output,
+            heard: 0,
             grammars: Grammars::default(),
         })
     }
@@ -181,10 +190,18 @@ impl Engine {
             tc,
             grammars: self.grammars.clone(),
             labels: RefCell::default(),
+            pools: RefCell::default(),
+            targets: RefCell::default(),
             machine: ptr::null_mut(),
             step: self.step,
             spans: Cell::new(0),
         }))
+    }
+
+    pub fn heard(&mut self) -> Vec<String> {
+        let new = self.output.borrow()[self.heard..].to_vec();
+        self.heard += new.len();
+        new
     }
 
     pub fn end(&mut self) -> Result<Ended, String> {
@@ -221,7 +238,7 @@ impl Engine {
         Ok(Ended {
             failed,
             caveat,
-            output: self.output.take(),
+            output: self.output.borrow().clone(),
         })
     }
 }
@@ -272,8 +289,63 @@ impl Case {
         hegel!(self.ctx, hegel_event(self.tc, text(label.as_bytes())))
     }
 
+    pub fn event_value(&self, label: &str, value: f64) -> Result<(), Halt> {
+        hegel!(
+            self.ctx,
+            hegel_event_value(self.tc, value, text(label.as_bytes()))
+        )
+    }
+
     pub fn draw(&self, generator: &Generator) -> Result<Json, Halt> {
         Drawer::new(self).draw(generator)
+    }
+
+    pub fn add(&self, pool: &str, value: Json) -> Result<(), Halt> {
+        let mut pools = self.pools.borrow_mut();
+        if !pools.contains_key(pool) {
+            let mut made = ptr::null_mut();
+            hegel!(self.ctx, hegel_new_pool(self.tc, &mut made))?;
+            pools.insert(
+                pool.to_string(),
+                Pool {
+                    pool: made,
+                    values: HashMap::new(),
+                },
+            );
+        }
+        let known = pools.get_mut(pool).ok_or(Halt::Invalid)?;
+        let mut variable_id = 0;
+        hegel!(
+            self.ctx,
+            hegel_pool_add(self.tc, known.pool, &mut variable_id)
+        )?;
+        known.values.insert(variable_id, value);
+        Ok(())
+    }
+
+    pub fn generate(&self, pool: &str, consume: bool) -> Result<Option<Json>, Halt> {
+        let mut pools = self.pools.borrow_mut();
+        let Some(known) = pools.get_mut(pool).filter(|p| !p.values.is_empty()) else {
+            return Ok(None);
+        };
+        let mut variable_id = 0;
+        hegel!(
+            self.ctx,
+            hegel_pool_generate(self.tc, known.pool, consume, &mut variable_id)
+        )?;
+        let value = match consume {
+            true => known.values.remove(&variable_id),
+            false => known.values.get(&variable_id).cloned(),
+        };
+        value.map(Some).ok_or_else(|| {
+            Halt::Fatal(format!(
+                "Hegel generates the variable {variable_id}, and the pool `{pool}` has no such variable"
+            ))
+        })
+    }
+
+    pub fn target(&self, value: f64, label: &str) {
+        self.targets.borrow_mut().insert(label.to_string(), value);
     }
 
     pub fn machine(
@@ -364,6 +436,12 @@ impl Case {
 
     pub fn complete(self, status: u32, origin: Option<&str>) -> Result<(), String> {
         let origin = origin.map(|o| text(o.as_bytes()));
+        let targeted = self.targets.borrow().iter().try_for_each(|(label, value)| {
+            hegel!(
+                self.ctx,
+                hegel_target(self.tc, *value, text(label.as_bytes()))
+            )
+        });
         let marked = hegel!(
             self.ctx,
             hegel_mark_complete(
@@ -373,10 +451,15 @@ impl Case {
             )
         );
         unsafe {
+            for known in self.pools.borrow().values() {
+                let _ = hegel_c::hegel_pool_free(self.ctx, known.pool);
+            }
             let _ = hegel_c::hegel_state_machine_free(self.ctx, self.machine);
             let _ = hegel_c::hegel_test_case_free(self.ctx, self.tc);
         }
-        marked.map_err(|halt| fatal(halt, "at the end of a case"))
+        targeted
+            .and(marked)
+            .map_err(|halt| fatal(halt, "at the end of a case"))
     }
 }
 

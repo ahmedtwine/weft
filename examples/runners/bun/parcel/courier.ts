@@ -1,4 +1,4 @@
-import { state } from "weft";
+import { Pool, state, type TestCase } from "weft";
 import { z } from "zod";
 
 const Parcel = z
@@ -8,8 +8,6 @@ const Parcel = z
 const parcels: z.infer<typeof Parcel>[] = [];
 state("courier.parcels", () => parcels, z.array(Parcel));
 
-export const shipSchema = z.strictObject({ order: z.literal("o-ana") });
-
 const get = async (base: string, path: string) => {
   const response = await fetch(`${Bun.env[base]}${path}`, { headers: { "x-service": "courier" } });
   const said = await response.json();
@@ -17,10 +15,14 @@ const get = async (base: string, path: string) => {
   return said;
 };
 
-export const ship = async ({ order }: z.infer<typeof shipSchema>) => {
-  const { customer, address_id } = await get("WEFT_ORDERS_URL", `/orders/${order}`);
+const Order = z.object({ id: z.string(), customer: z.string() });
+
+export const ship = async (_: undefined, tc: TestCase) => {
+  const { id } = tc.draw(new Pool<z.infer<typeof Order>>(tc, "orders").valuesConsumed());
+  const { customer, address_id } = await get("WEFT_ORDERS_URL", `/orders/${id}`);
   const { owner, street } = await get("WEFT_ADDRESSES_URL", `/addresses/${address_id}`);
-  parcels.push({ order, customer, recipient: owner, street });
+  parcels.push({ order: id, customer, recipient: owner, street });
+  tc.target(parcels.length, "parcels");
 };
 
 export const reset = () => {

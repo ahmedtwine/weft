@@ -3,6 +3,7 @@ package parcel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -19,6 +20,11 @@ const image = "redis:7-alpine"
 type Order struct {
 	Customer  string `json:"customer"`
 	AddressID string `json:"address_id"`
+}
+
+type Placed struct {
+	ID       string `json:"id"`
+	Customer string `json:"customer"`
 }
 
 var (
@@ -63,17 +69,18 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	defer mu.Unlock()
 	ctx := r.Context()
-	id := strings.TrimPrefix(r.URL.Path, "/orders/")
+	id := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/orders"), "/")
 	found, known := order(ctx, id)
 	switch r.Method {
-	case http.MethodPut:
+	case http.MethodPost:
 		var given Order
 		if err := json.NewDecoder(r.Body).Decode(&given); err != nil {
 			reply(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		db.HSet(ctx, "order:"+id, "customer", given.Customer, "address_id", given.AddressID)
-		reply(w, http.StatusCreated, given)
+		made := fmt.Sprintf("o-%d", db.Incr(ctx, "orders").Val())
+		db.HSet(ctx, "order:"+made, "customer", given.Customer, "address_id", given.AddressID)
+		reply(w, http.StatusCreated, map[string]string{"id": made})
 	case http.MethodPatch:
 		var change struct {
 			AddressID string `json:"address_id"`
@@ -122,6 +129,13 @@ func Reset() error {
 	return db.FlushAll(ctx).Err()
 }
 
+func Cancel(tc weft.TestCase) error {
+	order := weft.Draw(tc, weft.NewPool[Placed](tc, "orders").ValuesConsumed())
+	mu.Lock()
+	defer mu.Unlock()
+	return db.Del(context.Background(), "order:"+order.ID).Err()
+}
+
 func Stop() {
 	if redisCtr != nil {
 		_ = testcontainers.TerminateContainer(redisCtr)
@@ -142,5 +156,6 @@ func Module() *weft.Module {
 	})
 	return weft.NewModule().
 		Function("url", URL).
-		Function("reset", Reset)
+		Function("reset", Reset).
+		Function("cancel", Cancel)
 }

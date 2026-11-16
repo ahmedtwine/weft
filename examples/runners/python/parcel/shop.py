@@ -2,52 +2,67 @@ import json
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import weft
-
-CUSTOMERS = [
-    {"customer": "ana", "order": "o-ana", "address": "addr-ana", "street": "1 Elm Street"},
-    {"customer": "ben", "order": "o-ben", "address": "addr-ben", "street": "9 Oak Avenue"},
-]
+from weft import Pool, TestCase
 
 
 @dataclass
 class Shop:
-    address_id: str = ""
+    customers: list[str] = field(default_factory=list)
 
 
 shop = Shop()
 weft.state("shop", lambda: shop)
 
 
-def _call(base, method, path, body, headers=None):
+def _call(base, method, path, body=None, customer=""):
     request = urllib.request.Request(
         os.environ[base] + path,
-        data=json.dumps(body).encode(),
+        data=None if body is None else json.dumps(body).encode(),
         method=method,
-        headers={"content-type": "application/json", **(headers or {})},
+        headers={"content-type": "application/json", "x-service": "shop", "x-customer": customer},
     )
     try:
         with urllib.request.urlopen(request) as response:
-            return json.loads(response.read() or b"{}")
+            return json.loads(response.read())
     except urllib.error.HTTPError as error:
         raise RuntimeError(f"{path}: {error.code} {error.read().decode()}") from error
 
 
 def reset():
-    for c in CUSTOMERS:
-        _call("WEFT_ADDRESSES_URL", "PUT", f"/addresses/{c['address']}", {"owner": c["customer"], "street": c["street"]})
-        _call("WEFT_ORDERS_URL", "PUT", f"/orders/{c['order']}", {"customer": c["customer"], "address_id": c["address"]})
-    shop.address_id = "addr-ana"
+    shop.customers.clear()
+
+
+def sign_up(tc: TestCase):
+    customer = f"c-{len(shop.customers) + 1}"
+    shop.customers.append(customer)
+    Pool(tc, "customers").add(customer)
 
 
 @dataclass
-class Choice:
-    address_id: Literal["addr-ana", "addr-ben"]
+class Home:
+    street: str
 
 
-def choose_address(choice: Choice):
-    _call("WEFT_ORDERS_URL", "PATCH", "/orders/o-ana", {"address_id": choice.address_id}, {"x-customer": "ana"})
-    shop.address_id = choice.address_id
+def add_address(home: Home, tc: TestCase):
+    customer = tc.draw(Pool(tc, "customers").values_reusable())
+    made = _call("WEFT_ADDRESSES_URL", "POST", "/addresses", {"owner": customer, "street": home.street})
+    Pool(tc, "addresses").add(made["id"])
+
+
+def place_order(tc: TestCase):
+    customer = tc.draw(Pool(tc, "customers").values_reusable())
+    own = _call("WEFT_ADDRESSES_URL", "GET", f"/addresses?owner={customer}")
+    tc.assume(own)
+    address = tc.draw(Literal[tuple(own)])
+    made = _call("WEFT_ORDERS_URL", "POST", "/orders", {"customer": customer, "address_id": address})
+    Pool(tc, "orders").add({"id": made["id"], "customer": customer})
+
+
+def choose_address(tc: TestCase):
+    order = tc.draw(Pool(tc, "orders").values_reusable())
+    address = tc.draw(Pool(tc, "addresses").values_reusable())
+    _call("WEFT_ORDERS_URL", "PATCH", f"/orders/{order['id']}", {"address_id": address}, order["customer"])

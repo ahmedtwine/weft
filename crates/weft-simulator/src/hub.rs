@@ -3,21 +3,29 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde_json::Value as Json;
-use weft_hegel::Generator;
+use weft_hegel::{Generator, Halt};
 use weft_parse::{Draw, Ran, Span, State};
-use weft_wire::{DONE, JOIN, Reader, Short, TURN, Writer};
+use weft_wire::{
+    ASSUME, DONE, GENERATE, JOIN, OK, POOL_ADD, POOL_GENERATE, REFUSED, Reader, STOP_TEST, Short,
+    TARGET, TURN, Writer,
+};
 
 use crate::schema::{live, narrowed, whole};
 use crate::shape::resolved;
-use crate::{Action, Hello, Hop, Member, Report, Start, Turn};
+use crate::{Action, Answer, Ask, Hello, Hop, Member, Report, Start, Turn};
 
-const REFUSED: i32 = 1;
 const CUT: &str = "the message of the runner is too short";
+const DRAW: &str = "`tc.draw`";
+const SLOW: Duration = Duration::from_secs(300);
+
+type Said = Result<String, (i32, String)>;
 
 #[derive(Default)]
 struct Desk {
     turn: Option<String>,
     report: Option<Report>,
+    ask: Option<Ask>,
+    answer: Option<Said>,
     done: Option<Result<Ran, String>>,
     lost: Option<String>,
 }
@@ -45,6 +53,7 @@ pub struct Session {
     hops: Mutex<Vec<Hop>>,
     clock: std::sync::atomic::AtomicUsize,
     draws: Vec<Draw>,
+    generators: Mutex<HashMap<String, Arc<Generator>>>,
     joined: Mutex<Joined>,
     changed: Condvar,
 }
@@ -200,17 +209,9 @@ fn report(states: &[String], said: &Json) -> Result<Report, String> {
         said.get("thrown").and_then(Json::as_str),
         said.get("refused"),
     ) {
-        (true, None, None) => {
-            let added = said
-                .get("added")
-                .and_then(Json::as_array)
-                .map_or(Vec::new(), |all| {
-                    all.iter().filter_map(Json::as_u64).collect()
-                });
-            Ok(Report::State(state(states, said)?, added))
-        }
+        (true, None, None) => Ok(Report::State(state(states, said)?)),
         (false, Some(error), None) => Ok(Report::Thrown(error.to_string())),
-        (false, None, Some(_)) => Ok(Report::Refused),
+        (false, None, Some(Json::String(cause))) => Ok(Report::Refused(cause.clone())),
         _ => Err(format!("the runner reports `{said}`")),
     }
 }
@@ -241,8 +242,52 @@ fn ran(node: &Json) -> Option<Ran> {
     })
 }
 
+fn asked(session: &Session, call: u8, part: &[u8]) -> Result<Ask, String> {
+    let said: Json = serde_json::from_slice(part)
+        .map_err(|e| format!("{e}: {}", String::from_utf8_lossy(part)))?;
+    let text = |key: &str| {
+        said.get(key)
+            .and_then(Json::as_str)
+            .map(String::from)
+            .ok_or_else(|| format!("the runner sends `{said}` with no `{key}`"))
+    };
+    match call {
+        GENERATE => {
+            let key = said.to_string();
+            let mut generators = held(&session.generators);
+            if let Some(known) = generators.get(&key) {
+                return Ok(Ask::Generate(known.clone()));
+            }
+            let made = Arc::new(live(whole(DRAW, &said)?).ok_or_else(|| {
+                format!("{DRAW} takes the schema `{said}`, which has no value that weft draws")
+            })?);
+            generators.insert(key, made.clone());
+            Ok(Ask::Generate(made))
+        }
+        POOL_ADD => Ok(Ask::PoolAdd(
+            text("pool")?,
+            said.get("value").cloned().unwrap_or_default(),
+        )),
+        POOL_GENERATE => Ok(Ask::PoolGenerate(
+            text("pool")?,
+            said.get("consume").and_then(Json::as_bool) == Some(true),
+        )),
+        _ => Ok(Ask::Target(
+            said.get("value")
+                .and_then(Json::as_f64)
+                .ok_or_else(|| format!("the runner sends `{said}` with no `value`"))?,
+            text("label")?,
+        )),
+    }
+}
+
 impl Seat {
-    fn wait<T>(&self, mut ready: impl FnMut(&mut Desk) -> Option<T>) -> Result<T, String> {
+    fn wait<T>(
+        &self,
+        limit: Option<Duration>,
+        mut ready: impl FnMut(&mut Desk) -> Option<T>,
+    ) -> Result<T, String> {
+        let until = limit.map(|limit| Instant::now() + limit);
         let mut desk = held(&self.desk);
         loop {
             if let Some(found) = ready(&mut desk) {
@@ -251,7 +296,20 @@ impl Seat {
             if let Some(why) = &desk.lost {
                 return Err(why.clone());
             }
-            desk = self.changed.wait(desk).unwrap_or_else(|p| p.into_inner());
+            let left = until.map_or(Ok(SLOW), |until| {
+                until.checked_duration_since(Instant::now()).ok_or_else(|| {
+                    format!(
+                        "the runner of `impl \"{}\"` sends no report in {} seconds",
+                        self.adapter,
+                        SLOW.as_secs()
+                    )
+                })
+            })?;
+            desk = self
+                .changed
+                .wait_timeout(desk, left)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
         }
     }
 
@@ -376,6 +434,7 @@ impl Hub {
             hops: Mutex::default(),
             clock: std::sync::atomic::AtomicUsize::new(0),
             draws,
+            generators: Mutex::default(),
             joined: Mutex::default(),
             changed: Condvar::new(),
         });
@@ -427,7 +486,18 @@ impl Peer {
                 self.seat.insert(seat).clone()
             }
         };
-        seat.wait(|d| d.turn.take())
+        seat.wait(None, |d| d.turn.take())
+    }
+
+    fn ask(&mut self, call: u8, part: &[u8]) -> Said {
+        let refused = |e: String| (REFUSED, e);
+        let seat = self
+            .seat
+            .as_ref()
+            .ok_or_else(|| refused("the runner calls `tc` in an action".into()))?;
+        let ask = asked(self.session().map_err(refused)?, call, part).map_err(refused)?;
+        seat.set(|d| d.ask = Some(ask));
+        seat.wait(None, |d| d.answer.take()).map_err(refused)?
     }
 
     fn done(&mut self, said: &Json) -> Result<String, String> {
@@ -449,25 +519,29 @@ impl Peer {
         Ok(String::new())
     }
 
-    fn answer(&mut self, hub: &Hub, r: &mut Reader) -> Result<String, String> {
-        let call = r.call().map_err(|Short| CUT.to_string())?;
-        let part = r.bytes().map_err(|Short| CUT.to_string())?;
+    fn answer(&mut self, hub: &Hub, r: &mut Reader) -> Said {
+        let refused = |e: String| (REFUSED, e);
+        let call = r.call().map_err(|Short| refused(CUT.into()))?;
+        let part = r.bytes().map_err(|Short| refused(CUT.into()))?;
         let said = || {
             serde_json::from_slice(part)
-                .map_err(|e| format!("{e}: {}", String::from_utf8_lossy(part)))
+                .map_err(|e| refused(format!("{e}: {}", String::from_utf8_lossy(part))))
         };
         match call {
-            JOIN => self.join(hub, &String::from_utf8_lossy(part)),
-            TURN => self.turn(&said()?),
-            DONE => self.done(&said()?),
-            _ => Err(format!("weft has no call {call}")),
+            JOIN => self
+                .join(hub, &String::from_utf8_lossy(part))
+                .map_err(refused),
+            TURN => self.turn(&said()?).map_err(refused),
+            DONE => self.done(&said()?).map_err(refused),
+            GENERATE | POOL_ADD | POOL_GENERATE | TARGET => self.ask(call, part),
+            _ => Err(refused(format!("weft has no call {call}"))),
         }
     }
 
     pub fn serve(&mut self, hub: &Hub, message: &[u8]) -> Vec<u8> {
         match self.answer(hub, &mut Reader(message)) {
-            Ok(said) => Writer::reply(0, said.as_bytes()).0,
-            Err(e) => Writer::reply(REFUSED, e.as_bytes()).0,
+            Ok(said) => Writer::reply(OK, said.as_bytes()).0,
+            Err((code, e)) => Writer::reply(code, e.as_bytes()).0,
         }
     }
 }
@@ -485,14 +559,41 @@ impl Member for Remote {
         &self.seat.hello
     }
 
-    fn turn(&mut self, turn: &Turn) -> Result<Report, String> {
+    fn turn(&mut self, turn: &Turn, answer: &mut Answer) -> Result<Report, Halt> {
         self.seat.set(|d| d.turn = Some(turn.json()));
-        self.seat.wait(|d| d.report.take())
+        let mut halt = None;
+        loop {
+            let heard = self.seat.wait(Some(SLOW), |d| {
+                d.report.take().map(Ok).or_else(|| d.ask.take().map(Err))
+            })?;
+            let ask = match heard {
+                Ok(report) => return halt.map_or(Ok(report), Err),
+                Err(ask) => ask,
+            };
+            let said = match halt.is_none().then(|| answer(ask)) {
+                Some(Ok(Some(value))) => Ok(value.to_string()),
+                Some(Ok(None)) => Err((ASSUME, String::new())),
+                Some(Err(Halt::Fatal(e))) => {
+                    halt = Some(Halt::Fatal(e.clone()));
+                    Err((REFUSED, e))
+                }
+                Some(Err(stop)) => {
+                    let code = match stop {
+                        Halt::Invalid => ASSUME,
+                        _ => STOP_TEST,
+                    };
+                    halt = Some(stop);
+                    Err((code, String::new()))
+                }
+                None => Err((STOP_TEST, String::new())),
+            };
+            self.seat.set(|d| d.answer = Some(said));
+        }
     }
 
     fn finish(&mut self) -> Result<Ran, String> {
         self.seat.set(|d| d.turn = Some(Turn::Done.json()));
-        self.seat.wait(|d| d.done.take())?
+        self.seat.wait(Some(SLOW), |d| d.done.take())?
     }
 
     fn hops(&mut self) -> Vec<Hop> {

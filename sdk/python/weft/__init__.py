@@ -1,9 +1,11 @@
 import ctypes
 import dataclasses
+import functools
 import importlib.util
 import inspect
 import json
 import os
+import subprocess
 import sys
 import traceback
 import types
@@ -14,10 +16,28 @@ ADAPTER = "python"
 START = "start"
 RESET = "reset"
 URL = "url"
+PARENT = "--parent"
+STOP_TEST = -5
+ASSUME = -6
+
+
+class StopTest(Exception):
+    cause = "stop_test"
+
+
+class AssumeFailed(Exception):
+    cause = "assume"
 
 
 class _Text(ctypes.Structure):
     _fields_ = [("data", ctypes.c_void_p), ("len", ctypes.c_size_t)]
+
+
+def _text(value):
+    data = value.encode()
+    text = _Text(ctypes.cast(data, ctypes.c_void_p), len(data))
+    text.kept = data
+    return text
 
 
 class _Weft:
@@ -27,33 +47,88 @@ class _Weft:
         self.lib.weft_context_last_error.restype = _Text
         self.lib.weft_context_last_error.argtypes = [ctypes.c_void_p]
         self.lib.weft_owned_string_free.argtypes = [ctypes.c_void_p, ctypes.POINTER(_Text)]
-        for name in ("weft_diagram_join", "weft_diagram_turn"):
+        for name in ("weft_diagram_join", "weft_diagram_turn", "weft_generate"):
             getattr(self.lib, name).argtypes = [ctypes.c_void_p, _Text, ctypes.POINTER(_Text)]
         self.lib.weft_diagram_done.argtypes = [ctypes.c_void_p, _Text]
+        self.lib.weft_pool_add.argtypes = [ctypes.c_void_p, _Text, _Text]
+        self.lib.weft_pool_generate.argtypes = [ctypes.c_void_p, _Text, ctypes.c_bool, ctypes.POINTER(_Text)]
+        self.lib.weft_target.argtypes = [ctypes.c_void_p, ctypes.c_double, _Text]
         self.ctx = self.lib.weft_context_new()
 
     def _checked(self, code):
+        if code == STOP_TEST:
+            raise StopTest()
+        if code == ASSUME:
+            raise AssumeFailed()
         if code != 0:
             said = self.lib.weft_context_last_error(self.ctx)
             raise RuntimeError(ctypes.string_at(said.data, said.len).decode())
 
-    def _asked(self, call, text):
-        data = text.encode()
+    def _asked(self, call, *given):
         out = _Text()
-        self._checked(call(self.ctx, _Text(ctypes.cast(data, ctypes.c_void_p), len(data)), ctypes.byref(out)))
+        self._checked(call(self.ctx, *given, ctypes.byref(out)))
         said = ctypes.string_at(out.data, out.len).decode()
         self.lib.weft_owned_string_free(self.ctx, ctypes.byref(out))
         return json.loads(said)
 
     def join(self, name):
-        return self._asked(self.lib.weft_diagram_join, name)
+        return self._asked(self.lib.weft_diagram_join, _text(name))
 
     def turn(self, report):
-        return self._asked(self.lib.weft_diagram_turn, json.dumps(report))
+        return self._asked(self.lib.weft_diagram_turn, _text(json.dumps(report)))
 
     def done(self, said):
-        data = json.dumps(said).encode()
-        self._checked(self.lib.weft_diagram_done(self.ctx, _Text(ctypes.cast(data, ctypes.c_void_p), len(data))))
+        self._checked(self.lib.weft_diagram_done(self.ctx, _text(json.dumps(said))))
+
+    def generate(self, schema):
+        return self._asked(self.lib.weft_generate, _text(json.dumps(schema)))
+
+    def pool_add(self, pool, value):
+        self._checked(self.lib.weft_pool_add(self.ctx, _text(pool), _text(json.dumps(value, default=_native))))
+
+    def pool_generate(self, pool, consume):
+        return self._asked(self.lib.weft_pool_generate, _text(pool), consume)
+
+    def target(self, value, label):
+        self._checked(self.lib.weft_target(self.ctx, value, _text(label)))
+
+
+@functools.cache
+def _weft():
+    return _Weft(os.environ["WEFT_LIB"])
+
+
+class Generator:
+    def __init__(self, do_draw):
+        self.do_draw = do_draw
+
+
+class TestCase:
+    def draw(self, generator):
+        if isinstance(generator, Generator):
+            return generator.do_draw(self)
+        return _given(generator, _weft().generate(_shape(generator)))
+
+    def assume(self, condition):
+        if not condition:
+            raise AssumeFailed()
+
+    def target(self, score, label):
+        _weft().target(score, label)
+
+
+class Pool:
+    def __init__(self, tc, name):
+        self.name = name
+
+    def add(self, value):
+        _weft().pool_add(self.name, value)
+
+    def values_reusable(self):
+        return Generator(lambda tc: _weft().pool_generate(self.name, False))
+
+    def values_consumed(self):
+        return Generator(lambda tc: _weft().pool_generate(self.name, True))
 
 
 _STATES = {}
@@ -219,14 +294,12 @@ def _fault(error):
     return f"{type(error).__name__}: {error}{at}"
 
 
-def _input(function):
-    parameters = list(inspect.signature(function).parameters.values())
-    if not parameters:
-        return None
+def _kinds(function):
     hints = typing.get_type_hints(function)
-    if parameters[0].name not in hints:
+    names = list(inspect.signature(function).parameters)
+    if any(name not in hints for name in names):
         raise RuntimeError(f"`{function.__name__}` names the type of its input")
-    return hints[parameters[0].name]
+    return [hints[name] for name in names]
 
 
 def _given(kind, value):
@@ -249,6 +322,7 @@ def _functions(module):
 class _Runner:
     def __init__(self, code, adapter, lines):
         self.lines = lines
+        self.tc = TestCase()
         self.reset = []
         self.actions = []
         self.said_reset = []
@@ -261,24 +335,27 @@ class _Runner:
                 module = _imported(place)
                 lines.watch(module)
                 for function in _functions(module):
-                    kind = _input(function)
+                    kinds = _kinds(function)
+                    kind = next((kind for kind in kinds if kind is not TestCase), None)
                     said = {"function": [name, function.__name__], "input": None if kind is None else _shape(kind)}
                     if function.__name__ == URL:
                         self.serves = str(function())
                     elif function.__name__ == RESET:
-                        self.reset.append((function, kind))
+                        self.reset.append((function, kinds))
                         self.said_reset.append(said)
                     else:
-                        self.actions.append((function, kind))
+                        self.actions.append((function, kinds))
                         self.said_actions.append(said)
         self.start = {}
         self.covered = {}
 
     def _reported(self, calls, step):
         for call in calls:
-            function, kind = (self.reset if step == START else self.actions)[call["use"]]
+            function, kinds = (self.reset if step == START else self.actions)[call["use"]]
             try:
-                function() if kind is None else function(_given(kind, call["input"]))
+                function(*(self.tc if kind is TestCase else _given(kind, call["input"]) for kind in kinds))
+            except (StopTest, AssumeFailed) as stop:
+                return {"refused": stop.cause}
             except Exception as error:
                 return {"thrown": _fault(error)}
         return None
@@ -310,7 +387,7 @@ class _Runner:
 
 
 def run():
-    weft = _Weft(os.environ["WEFT_LIB"])
+    weft = _weft()
     try:
         runner = _Runner(
             weft.join(os.environ["WEFT_DIAGRAM"]),
@@ -331,3 +408,24 @@ def run():
         said = {"error": traceback.format_exc()}
     weft.done(said)
     return 0 if "ran" in said else 1
+
+
+def test(file):
+    weft = subprocess.Popen(
+        [os.environ.get("WEFT_BIN", "weft"), PARENT, ADAPTER, file],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    first = weft.stdout.readline()
+    joins = first.startswith("{")
+    if joins:
+        given = json.loads(first)
+        os.chdir(given["cwd"])
+        os.environ.update(given["env"])
+        run()
+    report = ("" if joins else first) + weft.stdout.read()
+    code = weft.wait()
+    if code != 0:
+        raise AssertionError(report or f"weft ends with {code}")
+    print(report)

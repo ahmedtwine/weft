@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -9,6 +10,8 @@ typedef enum {
   WEFT_E_INVALID_ARG = -2,
   WEFT_E_RENDER = -3,
   WEFT_E_REFUSED = -4,
+  WEFT_E_STOP_TEST = -5,
+  WEFT_E_ASSUME = -6,
 } weft_result_t;
 
 typedef enum {
@@ -49,3 +52,16 @@ weft_result_t weft_diagram_turn(weft_context_t *ctx,
                                 weft_owned_string_t *out_turn);
 
 weft_result_t weft_diagram_done(weft_context_t *ctx, weft_string_t said);
+
+weft_result_t weft_generate(weft_context_t *ctx,
+                            weft_string_t schema,
+                            weft_owned_string_t *out_value);
+
+weft_result_t weft_pool_add(weft_context_t *ctx, weft_string_t pool, weft_string_t value);
+
+weft_result_t weft_pool_generate(weft_context_t *ctx,
+                                 weft_string_t pool,
+                                 bool consume,
+                                 weft_owned_string_t *out_value);
+
+weft_result_t weft_target(weft_context_t *ctx, double value, weft_string_t label);

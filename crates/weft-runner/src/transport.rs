@@ -4,12 +4,15 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 
 use weft_parse::Transport;
 use weft_simulator::{Hub, Peer};
 use weft_wire::{receive, send};
+
+use crate::reaper;
 
 type Peers = Arc<Mutex<HashMap<String, Arc<Mutex<Peer>>>>>;
 
@@ -81,6 +84,7 @@ fn open(transport: Option<&Transport>) -> Result<String, String> {
     let socket = |path: String| {
         let _ = fs::remove_file(&path);
         let listener = UnixListener::bind(&path).map_err(|e| format!("{path}: {e}"))?;
+        reaper::path(Path::new(&path));
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 thread::spawn(move || unix(stream));

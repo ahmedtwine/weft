@@ -3,12 +3,13 @@ mod schema;
 mod shape;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
 use weft_hegel::{Case, Engine, Halt, INTERESTING, INVALID, OVERRUN, VALID};
 use weft_parse::{Diagram, Ran, Span, State, shown};
 
-use crate::shape::{Field, field, item, kind};
+use crate::shape::{Field, field, item};
 
 pub use hub::{Hub, Peer, Remote, Session};
 
@@ -26,9 +27,8 @@ pub struct Hop {
 }
 pub use weft_hegel::Generator;
 
-const STEPS: i64 = 20;
+const STEPS: i64 = 50;
 const TRIES: usize = 4;
-const ORIGIN: &str = "weft";
 const START: &str = "start";
 
 pub struct Start {
@@ -63,23 +63,41 @@ pub enum Turn<'a> {
 }
 
 pub enum Report {
-    State(State, Vec<u64>),
+    State(State),
     Thrown(String),
-    Refused,
+    Refused(String),
 }
+
+pub enum Ask {
+    Generate(Arc<Generator>),
+    PoolAdd(String, Json),
+    PoolGenerate(String, bool),
+    Target(f64, String),
+}
+
+pub type Answer<'a> = dyn FnMut(Ask) -> Result<Option<Json>, Halt> + 'a;
+
+pub enum Event<'a> {
+    Hegel(&'a str),
+    Actions(&'a [(String, String)]),
+    Run(u64),
+    Step(&'a Line),
+    Refused(&'a Line, &'a str),
+    Check(&'a str, Option<&'a [String]>),
+    End(&'static str, Option<&'a str>),
+}
+
+pub type Stream<'a> = dyn FnMut(Event) + 'a;
 
 pub trait Member {
     fn hello(&self) -> &Hello;
-    fn turn(&mut self, turn: &Turn) -> Result<Report, String>;
+    fn turn(&mut self, turn: &Turn, answer: &mut Answer) -> Result<Report, Halt>;
     fn finish(&mut self) -> Result<Ran, String>;
     fn hops(&mut self) -> Vec<Hop> {
         Vec::new()
     }
 }
 
-fn heard(members: &mut Members) -> Vec<Hop> {
-    members.iter_mut().flat_map(|m| m.hops()).collect()
-}
 
 #[derive(Clone)]
 pub struct Line {
@@ -109,20 +127,45 @@ impl Line {
 
 pub struct Tally {
     pub step: String,
+    pub runs: u64,
     pub steps: u64,
+    pub refused: BTreeMap<String, u64>,
+    pub then: Vec<u64>,
     pub checks: u64,
+}
+
+#[derive(Default)]
+pub struct Pooled {
+    pub add: u64,
+    pub generate: u64,
+    pub consume: u64,
+    pub empty: u64,
+}
+
+pub struct Checked {
+    pub name: String,
+    pub checks: u64,
+    pub items: Option<u64>,
+}
+
+#[derive(Default)]
+pub struct Counts {
+    pub statuses: BTreeMap<&'static str, u64>,
+    pub calls: BTreeMap<(String, u16), u64>,
+    pub pools: BTreeMap<String, Pooled>,
+    pub invariants: Vec<Checked>,
 }
 
 pub struct Outcome {
     pub cases: u64,
     pub runs: u64,
+    pub counts: Counts,
     pub tally: Vec<Tally>,
     pub trace: Vec<Line>,
     pub failed: bool,
     pub caveat: Option<String>,
     pub output: Vec<String>,
     pub ran: Ran,
-    pub types: BTreeMap<String, String>,
 }
 
 struct Step {
@@ -142,13 +185,16 @@ struct Run<'a> {
     found: Option<Vec<Line>>,
     trace: Vec<Line>,
     story: Vec<Line>,
-    refused: BTreeSet<String>,
+    refused: BTreeMap<String, BTreeSet<String>>,
+    counts: Counts,
+    order: Vec<usize>,
+    stream: &'a mut Stream<'a>,
 }
 
 enum Stepped {
     Next,
     Refused,
-    Failed(Vec<String>),
+    Failed(String),
 }
 
 type Members<'m> = [Box<dyn Member + 'm>];
@@ -208,6 +254,59 @@ fn telling(trace: &[Line]) -> Vec<Line> {
     trace[..end].to_vec()
 }
 
+fn origin(error: &str) -> String {
+    error
+        .rsplit_once(" at ")
+        .map_or(error, |(_, place)| place)
+        .to_string()
+}
+
+#[derive(Default)]
+struct Asked {
+    input: Vec<Json>,
+    empty: Option<String>,
+}
+
+fn answered(
+    case: &Case,
+    pools: &mut BTreeMap<String, Pooled>,
+    asked: &mut Asked,
+    ask: Ask,
+) -> Result<Option<Json>, Halt> {
+    match ask {
+        Ask::Generate(generator) => {
+            let value = case.draw(&generator)?;
+            asked.input.push(value.clone());
+            Ok(Some(value))
+        }
+        Ask::PoolGenerate(pool, consume) => {
+            let value = case.generate(&pool, consume)?;
+            let pooled = pools.entry(pool.clone()).or_default();
+            match (&value, consume) {
+                (None, _) => {
+                    pooled.empty += 1;
+                    asked.empty = Some(format!("pool {pool}"));
+                }
+                (Some(_), true) => pooled.consume += 1,
+                (Some(_), false) => pooled.generate += 1,
+            }
+            asked
+                .input
+                .extend(value.iter().map(|value| json!({ pool.as_str(): value })));
+            Ok(value)
+        }
+        Ask::PoolAdd(pool, value) => {
+            case.add(&pool, value)?;
+            pools.entry(pool).or_default().add += 1;
+            Ok(Some(Json::Null))
+        }
+        Ask::Target(value, label) => {
+            case.target(value, &label);
+            Ok(Some(Json::Null))
+        }
+    }
+}
+
 fn merged(mut state: State, part: State) -> State {
     for (object, pairs) in part {
         state.entry(object).or_default().extend(pairs);
@@ -216,17 +315,61 @@ fn merged(mut state: State, part: State) -> State {
 }
 
 impl Run<'_> {
-    fn thrown(&mut self, mut line: Line, error: &str) -> Vec<String> {
+    fn heard(&mut self, case: &Case, members: &mut Members) -> Result<Vec<Hop>, Halt> {
+        let hops: Vec<Hop> = members.iter_mut().flat_map(|m| m.hops()).collect();
+        for hop in &hops {
+            let route = hop.path.split(['/', '?']).nth(1).unwrap_or_default();
+            let call = format!("{} → {} {} /{route}", hop.from, hop.to, hop.method);
+            case.event(&format!("call {call} {}", hop.status))?;
+            *self.counts.calls.entry((call, hop.status)).or_default() += 1;
+        }
+        Ok(hops)
+    }
+
+    fn told(&mut self) {
+        if let Some(line) = self.trace.last() {
+            (self.stream)(Event::Step(line));
+        }
+    }
+
+    fn read(
+        &mut self,
+        case: &Case,
+        members: &mut Members,
+        but: Option<usize>,
+    ) -> Result<State, Halt> {
+        let mut real = State::new();
+        for (_, m) in members
+            .iter_mut()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != but)
+        {
+            match m.turn(&Turn::Read, &mut |ask| {
+                answered(case, &mut self.counts.pools, &mut Asked::default(), ask)
+            })? {
+                Report::State(part) => real = merged(real, part),
+                _ => {
+                    return Err(Halt::Fatal(
+                        "the runner answers `read` with no state".into(),
+                    ));
+                }
+            }
+        }
+        Ok(real)
+    }
+
+    fn thrown(&mut self, mut line: Line, error: &str) -> String {
         line.evidence = vec![format!("throws {error}")];
-        self.trace.push(line.clone());
-        line.evidence
+        self.trace.push(line);
+        self.told();
+        origin(error)
     }
 
     fn started(
         &mut self,
         case: &Case,
         members: &mut Members,
-    ) -> Result<Result<State, Vec<String>>, Halt> {
+    ) -> Result<Result<State, String>, Halt> {
         let mut real = State::new();
         let mut line = Line {
             action: None,
@@ -236,63 +379,64 @@ impl Run<'_> {
             hops: Vec::new(),
         };
         self.trace.clear();
-        for m in members.iter_mut() {
+        self.order.clear();
+        for at in 0..members.len() {
+            let m = &mut members[at];
             let inputs = m
                 .hello()
                 .start
                 .iter()
                 .map(|s| s.input.as_ref().map_or(Ok(Json::Null), |g| case.draw(g)))
                 .collect::<Result<Vec<Json>, Halt>>()?;
-            let report = match inputs.is_empty() {
-                true => m.turn(&Turn::Read)?,
-                false => {
-                    line.input = inputs.clone();
-                    let calls: Vec<Call> = m
-                        .hello()
-                        .start
-                        .iter()
-                        .zip(&inputs)
-                        .map(|(s, input)| Call {
-                            line: s.line,
-                            input,
-                        })
-                        .collect();
-                    m.turn(&Turn::Start(&calls))?
-                }
+            let mut asked = Asked {
+                input: inputs.clone(),
+                empty: None,
             };
+            let calls: Vec<Call> = m
+                .hello()
+                .start
+                .iter()
+                .zip(&inputs)
+                .map(|(s, input)| Call {
+                    line: s.line,
+                    input,
+                })
+                .collect();
+            let turn = match calls.is_empty() {
+                true => Turn::Read,
+                false => Turn::Start(&calls),
+            };
+            let report = m.turn(&turn, &mut |ask| {
+                answered(case, &mut self.counts.pools, &mut asked, ask)
+            })?;
+            line.input = asked.input;
             match report {
-                Report::State(part, _) => real = merged(real, part),
+                Report::State(part) => real = merged(real, part),
                 Report::Thrown(error) => {
-                    line.hops = heard(members);
+                    line.hops = self.heard(case, members)?;
                     return Ok(Err(self.thrown(line, &error)));
                 }
-                Report::Refused => {
-                    heard(members);
-                    self.refused.insert(START.into());
+                Report::Refused(cause) => {
+                    line.hops = self.heard(case, members)?;
+                    let cause = asked.empty.unwrap_or(cause);
+                    (self.stream)(Event::Refused(&line, &cause));
+                    self.refused.entry(START.into()).or_default().insert(cause);
                     return Err(Halt::Invalid);
                 }
             };
         }
         if members.len() > 1 {
-            for m in members.iter_mut() {
-                match m.turn(&Turn::Read)? {
-                    Report::State(part, _) => real = merged(real, part),
-                    _ => {
-                        return Err(Halt::Fatal(
-                            "the runner answers `read` with no state".into(),
-                        ));
-                    }
-                }
-            }
+            real = merged(real, self.read(case, members, None)?);
         }
-        line.hops = heard(members);
+        line.hops = self.heard(case, members)?;
         let started = self.d.started(&real);
         line.state = real.clone();
         line.evidence = started.clone().unwrap_or_default();
         self.trace.push(line);
+        self.told();
         self.first = real.clone();
         let judged = match started {
-            Some(evidence) => Some(evidence),
+            Some(_) => Some(START.to_string()),
             None => self.judged(case, None, &real)?,
         };
         Ok(judged.map_or(Ok(real), Err))
@@ -303,7 +447,7 @@ impl Run<'_> {
         case: &Case,
         rule: Option<usize>,
         real: &State,
-    ) -> Result<Option<Vec<String>>, Halt> {
+    ) -> Result<Option<String>, Halt> {
         let d = self.d;
         for (index, invariant) in d.invariants().into_iter().enumerate() {
             if self.machine && !case.invariant(index)? {
@@ -312,11 +456,18 @@ impl Run<'_> {
             if let Some(rule) = rule {
                 self.tally[rule].checks += 1;
             }
-            if let Some(evidence) = invariant.judge(&self.first, real) {
+            let checked = &mut self.counts.invariants[index];
+            checked.checks += 1;
+            checked.items = invariant
+                .items(real)
+                .map(|items| checked.items.unwrap_or(0) + items as u64);
+            let evidence = invariant.judge(&self.first, real);
+            (self.stream)(Event::Check(&invariant.name, evidence.as_deref()));
+            if let Some(evidence) = evidence {
                 if let Some(line) = self.trace.last_mut() {
-                    line.evidence = evidence.clone();
+                    line.evidence = evidence;
                 }
-                return Ok(Some(evidence));
+                return Ok(Some(invariant.name.clone()));
             }
         }
         Ok(None)
@@ -343,46 +494,50 @@ impl Run<'_> {
             evidence: Vec::new(),
             hops: Vec::new(),
         };
-        let mut report = Report::Refused;
+        let mut report = Report::Refused(String::new());
         for _ in 0..TRIES {
-            if !matches!(report, Report::Refused) {
+            if !matches!(report, Report::Refused(_)) {
                 break;
             }
             let drawn = case.draw(&members[owner].hello().actions[action].drawn)?;
-            line.input = vec![drawn.clone()];
+            let mut asked = Asked {
+                input: vec![drawn.clone()],
+                empty: None,
+            };
             let call = Call {
                 line: members[owner].hello().actions[action].line,
                 input: &drawn,
             };
-            report = members[owner].turn(&Turn::Run(&verb, &object, call))?;
-        }
-        let mut next = match report {
-            Report::State(part, _) => merged(real.clone(), part),
-            Report::Refused => {
-                heard(members);
-                self.refused.insert(verb);
-                return Ok(Stepped::Refused);
+            report = members[owner].turn(&Turn::Run(&verb, &object, call), &mut |ask| {
+                answered(case, &mut self.counts.pools, &mut asked, ask)
+            })?;
+            line.input = asked.input;
+            if let Report::Refused(cause) = &report {
+                let cause = asked.empty.unwrap_or_else(|| cause.clone());
+                line.hops = self.heard(case, members)?;
+                case.event(&format!("refused {verb}: {cause}"))?;
+                (self.stream)(Event::Refused(&line, &cause));
+                *self.tally[rule].refused.entry(cause.clone()).or_default() += 1;
+                self.refused.entry(verb.clone()).or_default().insert(cause);
             }
+        }
+        let next = match report {
+            Report::State(part) => merged(real.clone(), part),
+            Report::Refused(_) => return Ok(Stepped::Refused),
             Report::Thrown(error) => {
-                line.hops = heard(members);
+                line.hops = self.heard(case, members)?;
                 return Ok(Stepped::Failed(self.thrown(line, &error)));
             }
         };
-        for (_, m) in members.iter_mut().enumerate().filter(|(i, _)| *i != owner) {
-            match m.turn(&Turn::Read)? {
-                Report::State(part, _) => next = merged(next, part),
-                _ => {
-                    return Err(Halt::Fatal(
-                        "the runner answers `read` with no state".into(),
-                    ));
-                }
-            }
-        }
-        line.hops = heard(members);
+        let next = merged(next, self.read(case, members, Some(owner))?);
+        line.hops = self.heard(case, members)?;
+        case.event(&format!("step {verb}"))?;
+        self.order.push(rule);
         self.tally[rule].steps += 1;
         self.tally[rule].checks += 1;
         line.state = next.clone();
         self.trace.push(line);
+        self.told();
         *real = next;
         Ok(Stepped::Next)
     }
@@ -391,11 +546,11 @@ impl Run<'_> {
         &mut self,
         case: &mut Case,
         members: &mut Members,
-    ) -> Result<Option<Vec<String>>, Halt> {
+    ) -> Result<Option<String>, Halt> {
         self.machine = false;
         let mut real = match self.started(case, members)? {
             Ok(real) => real,
-            Err(evidence) => return Ok(Some(evidence)),
+            Err(origin) => return Ok(Some(origin)),
         };
         let rules: Vec<String> = self.tally.iter().map(|t| t.step.clone()).collect();
         let invariants: Vec<String> = self
@@ -416,15 +571,15 @@ impl Run<'_> {
                         case.rejected()?;
                         rejected = true;
                     }
-                    Stepped::Failed(evidence) => {
+                    Stepped::Failed(origin) => {
                         case.close(false)?;
-                        return Ok(Some(evidence));
+                        return Ok(Some(origin));
                     }
                 }
             }
             case.close(rejected)?;
-            if let Some(evidence) = self.judged(case, last, &real)? {
-                return Ok(Some(evidence));
+            if let Some(origin) = self.judged(case, last, &real)? {
+                return Ok(Some(origin));
             }
         }
         case.close(false)?;
@@ -433,13 +588,32 @@ impl Run<'_> {
 
     fn case(&mut self, mut case: Case, members: &mut Members) -> Result<(), String> {
         self.runs += 1;
-        let status = match self.stepped(&mut case, members) {
-            Ok(None) => VALID,
-            Ok(Some(_)) => INTERESTING,
-            Err(Halt::Overrun) => OVERRUN,
-            Err(Halt::Invalid | Halt::Retry) => INVALID,
+        (self.stream)(Event::Run(self.runs));
+        let mut origin = None;
+        let (status, named) = match self.stepped(&mut case, members) {
+            Ok(None) => (VALID, "valid"),
+            Ok(found) => {
+                origin = found;
+                (INTERESTING, "interesting")
+            }
+            Err(Halt::Overrun) => (OVERRUN, "overrun"),
+            Err(Halt::Invalid | Halt::Retry) => (INVALID, "invalid"),
             Err(Halt::Fatal(e)) => return Err(e),
         };
+        *self.counts.statuses.entry(named).or_default() += 1;
+        (self.stream)(Event::End(named, origin.as_deref()));
+        if matches!(status, VALID | INTERESTING) {
+            let _ = case.event_value("steps", self.order.len() as f64);
+        }
+        for (at, rule) in self.order.iter().enumerate() {
+            if !self.order[..at].contains(rule) {
+                self.tally[*rule].runs += 1;
+                let after: BTreeSet<usize> = self.order[at + 1..].iter().copied().collect();
+                for then in after {
+                    self.tally[*rule].then[then] += 1;
+                }
+            }
+        }
         match status == INTERESTING {
             true => self.found = Some(self.trace.clone()),
             false => {
@@ -452,7 +626,7 @@ impl Run<'_> {
                 }
             }
         }
-        case.complete(status, (status == INTERESTING).then_some(ORIGIN))
+        case.complete(status, origin.as_deref())
     }
 }
 
@@ -548,18 +722,6 @@ fn shaped(d: &Diagram, members: &Members) -> Result<(), String> {
     Ok(())
 }
 
-fn types(members: &Members, first: &State) -> BTreeMap<String, String> {
-    first
-        .iter()
-        .flat_map(|(o, keys)| {
-            keys.keys().filter_map(move |k| {
-                let found = registered(members, o, k).ok().flatten()?;
-                Some((format!("{o}.{k}"), kind(found)))
-            })
-        })
-        .collect()
-}
-
 fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
     shaped(d, members)?;
     if members.iter().all(|m| m.hello().start.is_empty()) {
@@ -596,11 +758,12 @@ fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
     }
 }
 
-pub fn simulate(
-    d: &Diagram,
+pub fn simulate<'a>(
+    d: &'a Diagram,
     members: &mut Members,
     cases: u64,
     key: Option<&str>,
+    stream: &'a mut Stream<'a>,
 ) -> Result<Outcome, String> {
     let steps = owners(d, members)?;
     let mut run = Run {
@@ -609,7 +772,10 @@ pub fn simulate(
             .iter()
             .map(|s| Tally {
                 step: format!("{} to={}", s.verb, s.object),
+                runs: 0,
                 steps: 0,
+                refused: BTreeMap::new(),
+                then: vec![0; steps.len()],
                 checks: 0,
             })
             .collect(),
@@ -620,27 +786,54 @@ pub fn simulate(
         found: None,
         trace: Vec::new(),
         story: Vec::new(),
-        refused: BTreeSet::new(),
+        refused: BTreeMap::new(),
+        counts: Counts {
+            invariants: d
+                .invariants()
+                .into_iter()
+                .map(|i| Checked {
+                    name: i.name.clone(),
+                    checks: 0,
+                    items: None,
+                })
+                .collect(),
+            ..Counts::default()
+        },
+        order: Vec::new(),
+        stream,
     };
+    let actions: Vec<(String, String)> = run.steps.iter().map(|s| (s.verb.clone(), s.object.clone())).collect();
+    (run.stream)(Event::Actions(&actions));
     let mut engine = Engine::start(cases, key)?;
-    while let Some(case) = engine.case()? {
+    loop {
+        let case = engine.case()?;
+        for line in engine.heard() {
+            (run.stream)(Event::Hegel(&line));
+        }
+        let Some(case) = case else {
+            break;
+        };
         run.case(case, members)?;
     }
     let ended = engine.end()?;
+    for line in engine.heard() {
+        (run.stream)(Event::Hegel(&line));
+    }
     let rans = members
         .iter_mut()
         .map(|m| m.finish())
         .collect::<Result<Vec<Ran>, String>>()?;
     let verb = |t: &Tally| t.step.split(' ').next().unwrap_or_default().to_string();
-    if let Some(refused) = [START.to_string()]
+    if let Some((refused, causes)) = [START.to_string()]
         .into_iter()
         .filter(|_| run.story.is_empty())
         .chain(run.tally.iter().filter(|t| t.steps == 0).map(verb))
         .filter(|_| !ended.failed)
-        .find(|v| run.refused.contains(v))
+        .find_map(|v| run.refused.get(&v).map(|causes| (v, causes)))
     {
         return Err(format!(
-            "each input of `{refused}` fails the schema of its function"
+            "each try of `{refused}` is refused by {}",
+            causes.iter().cloned().collect::<Vec<_>>().join(", ")
         ));
     }
     if let Some(unrun) = run
@@ -664,19 +857,15 @@ pub fn simulate(
         (true, None) => return Err("Hegel fails the run with no failing case".into()),
         (false, _) => run.story,
     };
-    let types = types(
-        members,
-        &trace.first().map(|l| l.state.clone()).unwrap_or_default(),
-    );
     Ok(Outcome {
         cases,
         runs: run.runs,
+        counts: run.counts,
         failed: ended.failed,
         trace,
         tally: run.tally,
         caveat: ended.caveat,
         output: ended.output,
         ran,
-        types,
     })
 }

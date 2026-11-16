@@ -1,26 +1,106 @@
 package weft
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"testing"
 )
 
 const (
 	adapter = "go"
 	start   = "start"
+	parent  = "--parent"
 )
+
+type TestCase struct{}
+
+type Generator[T any] struct {
+	draw func() ([]byte, error)
+}
+
+type Pool[T any] struct {
+	name string
+}
+
+var testCase = reflect.TypeFor[TestCase]()
+
+func drawn[T any](said []byte, err error) T {
+	var value T
+	if err == nil {
+		err = json.Unmarshal(said, &value)
+	}
+	if err != nil {
+		panic(err)
+	}
+	return value
+}
+
+func Draw[T any](tc TestCase, generator Generator[T]) T {
+	return drawn[T](generator.draw())
+}
+
+func Schema[T any]() Generator[T] {
+	return Generator[T]{draw: func() ([]byte, error) {
+		schema, err := json.Marshal(schemaOf(reflect.TypeFor[T](), map[reflect.Type]bool{}))
+		if err != nil {
+			return nil, err
+		}
+		return ask(generate, schema)
+	}}
+}
+
+func (tc TestCase) Assume(condition bool) {
+	if !condition {
+		panic(stopped("assume"))
+	}
+}
+
+func (tc TestCase) Target(score float64, label string) {
+	if err := target(score, label); err != nil {
+		panic(err)
+	}
+}
+
+func NewPool[T any](tc TestCase, name string) *Pool[T] {
+	return &Pool[T]{name: name}
+}
+
+func (p *Pool[T]) Add(tc TestCase, value T) {
+	said, err := json.Marshal(value)
+	if err == nil {
+		err = poolAdd(p.name, said)
+	}
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (p *Pool[T]) values(consume bool) Generator[T] {
+	return Generator[T]{draw: func() ([]byte, error) { return poolGenerate(p.name, consume) }}
+}
+
+func (p *Pool[T]) ValuesReusable() Generator[T] {
+	return p.values(false)
+}
+
+func (p *Pool[T]) ValuesConsumed() Generator[T] {
+	return p.values(true)
+}
 
 type export struct {
 	name     string
@@ -42,8 +122,8 @@ func NewModule() *Module {
 
 func (m *Module) Function(name string, function any) *Module {
 	value := reflect.ValueOf(function)
-	if value.Kind() != reflect.Func || value.Type().NumIn() > 1 || value.Type().NumOut() > 2 {
-		panic(fmt.Sprintf("weft: `%s` is a func with at most one input and two results", name))
+	if value.Kind() != reflect.Func || len(inputs(value.Type())) > 1 || value.Type().NumOut() > 2 {
+		panic(fmt.Sprintf("weft: `%s` is a func with at most one input, a TestCase and two results", name))
 	}
 	m.exports = slices.DeleteFunc(m.exports, func(e export) bool { return e.name == name })
 	m.exports = append(m.exports, export{name: name, function: value})
@@ -162,7 +242,7 @@ type block struct {
 }
 
 type failure struct {
-	refused bool
+	refused string
 	fault   bool
 	message string
 }
@@ -177,11 +257,15 @@ func place(at string) string {
 	return path
 }
 
+func inputs(kind reflect.Type) []reflect.Type {
+	return slices.DeleteFunc(slices.Collect(kind.Ins()), func(in reflect.Type) bool { return in == testCase })
+}
+
 func input(function reflect.Value) any {
-	if function.Type().NumIn() == 0 {
-		return nil
+	for _, in := range inputs(function.Type()) {
+		return schemaOf(in, map[reflect.Type]bool{})
 	}
-	return schemaOf(function.Type().In(0), map[reflect.Type]bool{})
+	return nil
 }
 
 func newRunner(code []block, name string, modules []*Module) (*runner, error) {
@@ -227,17 +311,20 @@ func newRunner(code []block, name string, modules []*Module) (*runner, error) {
 
 func called(function reflect.Value, input json.RawMessage) (result any, fail *failure) {
 	defer func() {
-		if p := recover(); p != nil {
+		p := recover()
+		if cause, stops := p.(stopped); stops {
+			fail = &failure{refused: string(cause)}
+		} else if p != nil {
 			fail = &failure{fault: true, message: fmt.Sprintf("panic: %v%s", p, panicked())}
 		}
 	}()
 	kind := function.Type()
 	var args []reflect.Value
-	if kind.NumIn() == 1 {
-		value := reflect.New(kind.In(0))
-		if len(input) > 0 && string(input) != "null" {
+	for in := range kind.Ins() {
+		value := reflect.New(in)
+		if in != testCase && len(input) > 0 && string(input) != "null" {
 			if err := json.Unmarshal(input, value.Interface()); err != nil {
-				return nil, &failure{refused: true}
+				return nil, &failure{refused: "schema"}
 			}
 		}
 		args = append(args, value.Elem())
@@ -315,8 +402,8 @@ func (r *runner) play(t turn) (any, error) {
 		_, fail := called(u.function, c.Input)
 		switch {
 		case fail == nil:
-		case fail.refused:
-			return map[string]bool{"refused": true}, nil
+		case fail.refused != "":
+			return map[string]string{"refused": fail.refused}, nil
 		default:
 			return map[string]string{"thrown": fail.message}, nil
 		}
@@ -376,7 +463,7 @@ func played(modules []*Module) (map[string]any, error) {
 	if given, ok := os.LookupEnv("WEFT_ADAPTER"); ok {
 		name = given
 	}
-	said, err := ask(false, []byte(diagram))
+	said, err := ask(join, []byte(diagram))
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +485,7 @@ func played(modules []*Module) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		said, err := ask(true, message)
+		said, err := ask(turns, message)
 		if err != nil {
 			return nil, err
 		}
@@ -434,4 +521,48 @@ func Run(modules ...*Module) int {
 		return 1
 	}
 	return 0
+}
+
+func Test(t *testing.T, file string, modules ...*Module) {
+	weft := os.Getenv("WEFT_BIN")
+	if weft == "" {
+		weft = "weft"
+	}
+	command := exec.Command(weft, parent, adapter, file)
+	command.Stderr = os.Stderr
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	output := bufio.NewReader(stdout)
+	first, _ := output.ReadString('\n')
+	var given struct {
+		Cwd string            `json:"cwd"`
+		Env map[string]string `json:"env"`
+	}
+	joins := json.Unmarshal([]byte(first), &given) == nil
+	if joins {
+		first = ""
+		if err := os.Chdir(given.Cwd); err != nil {
+			t.Fatal(err)
+		}
+		for key, value := range given.Env {
+			os.Setenv(key, value)
+		}
+		Run(modules...)
+	}
+	rest, _ := io.ReadAll(output)
+	report := first + string(rest)
+	if err := command.Wait(); err != nil {
+		t.Fatalf("%v\n%s", err, report)
+	}
+	t.Log(report)
 }

@@ -4,7 +4,7 @@ use std::process;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{Reader, Short, Writer, receive, send};
+use crate::{OK, REFUSED, Reader, Short, Writer, receive, send};
 
 const AT: &str = "WEFT_TRANSPORT";
 const UNIX: &str = "unix:";
@@ -59,14 +59,14 @@ fn ask(message: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-pub fn said(call: u8, part: &[u8]) -> Result<String, String> {
-    let cut = |Short| CUT.to_string();
-    let reply = ask(&Writer::call(call, part).0)?;
+pub fn said(call: u8, part: &[u8]) -> Result<String, (i32, String)> {
+    let cut = |Short| (REFUSED, CUT.to_string());
+    let reply = ask(&Writer::call(call, part).0).map_err(|e| (REFUSED, e))?;
     let mut r = Reader(&reply);
     let code = r.code().map_err(cut)?;
     let text = String::from_utf8_lossy(r.bytes().map_err(cut)?).into_owned();
     match code {
-        0 => Ok(text),
-        _ => Err(text),
+        OK => Ok(text),
+        code => Err((code, text)),
     }
 }

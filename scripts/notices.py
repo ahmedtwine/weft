@@ -8,11 +8,8 @@ OTHERS = [
     ("Lucide", "ISC", "https://lucide.dev", ROOT / "crates/weft-draw/src/vendor/LICENSE-lucide"),
     ("koffi", "MIT", "https://koffi.dev", ROOT / "node_modules/koffi/LICENSE.txt"),
     ("zod", "MIT", "https://zod.dev", None),
-    ("Shiki", "MIT", "https://shiki.style", None),
-    ("oat", "MIT", "https://github.com/knadh/oat", None),
-    ("pretty-json-custom-element", "MIT", "https://github.com/mohsen1/pretty-json", None),
-    ("Inter", "OFL-1.1", "https://rsms.me/inter", None),
-    ("JetBrains Mono", "OFL-1.1", "https://www.jetbrains.com/lp/mono", None),
+    ("Perspective", "Apache-2.0", "https://perspective-dev.github.io", ROOT / "crates/weft-dashboard/site/vendor/client/LICENSE.md"),
+    ("pele", "MIT", "https://pele.run", ROOT / "crates/weft-dashboard/site/vendor/pele/LICENSE"),
 ]
 
 

@@ -4,9 +4,10 @@ use std::fmt::Write;
 
 use merman::ascii::AsciiRenderOptions;
 use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest};
+use sealmap_mermaid::{Arrow, Direction, EdgeStyle, Flowchart, Ident, NodeShape, SequenceDiagram};
 use serde_json::Value;
 use vendor::lucide::ICONS;
-use weft_parse::Diagram;
+use weft_parse::{Diagram, State};
 
 const WRAP: usize = 24;
 const PAD: f64 = 10.0;
@@ -616,6 +617,94 @@ fn points(e: &Value) -> Vec<(f64, f64)> {
         .as_array()
         .map(|a| a.iter().map(|q| (num(q, "x"), num(q, "y"))).collect())
         .unwrap_or_default()
+}
+
+const BREAK: &str = "<br/>";
+
+fn written(rows: &[Row]) -> String {
+    rows.iter()
+        .map(|[_, key, value]| format!("{key} = {value}"))
+        .collect::<Vec<_>>()
+        .join(BREAK)
+}
+
+
+pub struct Moment<'a> {
+    pub actions: &'a [(String, String)],
+    pub done: Option<&'a str>,
+    pub state: &'a State,
+    pub failed: &'a [String],
+}
+
+impl Moment<'_> {
+    fn done(&self, verb: &str) -> bool {
+        self.done == Some(verb)
+    }
+
+    fn target<'d>(&self, d: &'d Diagram) -> Option<&'d str> {
+        let to = self.done.and_then(|did| self.actions.iter().find(|(verb, _)| verb == did)).map(|(_, to)| to.as_str());
+        d.objects.iter().map(|o| o.name.as_str()).find(|name| Some(*name) == to).or(d.caller())
+    }
+
+    fn rows(&self, name: &str) -> Option<String> {
+        let rows: Vec<Row> = self
+            .state
+            .get(name)
+            .into_iter()
+            .flatten()
+            .map(|(key, value)| [guessed(value).to_string(), key.clone(), summary(value)])
+            .collect();
+        (!rows.is_empty()).then(|| written(&rows))
+    }
+
+    fn check(&self) -> Option<String> {
+        (!self.failed.is_empty()).then(|| format!("{}{BREAK}{}", stereotype(Kind::Failed), self.failed.join(BREAK)))
+    }
+
+    pub fn sequence(&self, d: &Diagram) -> String {
+        let mut m = SequenceDiagram::new();
+        for o in &d.objects {
+            m.participant(Ident::new(&o.name), &o.name);
+        }
+        for (verb, to) in self.actions {
+            let arrow = match self.done(verb) {
+                true => Arrow::Sync,
+                false => Arrow::Reply,
+            };
+            m.message(&Ident::new(d.caller().unwrap_or(to)), &Ident::new(to), arrow, &format!("«{verb}»"));
+        }
+        for o in &d.objects {
+            if let Some(rows) = self.rows(&o.name) {
+                m.note(&[&Ident::new(&o.name)], &rows);
+            }
+        }
+        if let (Some(to), Some(check)) = (self.target(d), self.check()) {
+            m.note(&[&Ident::new(to)], &check);
+        }
+        m.render()
+    }
+
+    pub fn flow(&self, d: &Diagram) -> String {
+        let mut f = Flowchart::new(Direction::LR);
+        let target = self.target(d);
+        for o in &d.objects {
+            let check = (target == Some(o.name.as_str())).then(|| self.check()).flatten();
+            let label = [Some(o.name.clone()), self.rows(&o.name), check].into_iter().flatten().collect::<Vec<_>>().join(BREAK);
+            let shape = match d.caller() == Some(o.name.as_str()) {
+                true => NodeShape::Stadium,
+                false => NodeShape::Round,
+            };
+            f.node(Ident::new(&o.name), &label, shape);
+        }
+        for (verb, to) in self.actions {
+            let style = match self.done(verb) {
+                true => EdgeStyle::Thick,
+                false => EdgeStyle::Dotted,
+            };
+            f.edge(&Ident::new(d.caller().unwrap_or(to)), &Ident::new(to), style, Some(&format!("«{verb}»")));
+        }
+        f.render()
+    }
 }
 
 pub fn svg(d: &Diagram, theme: Option<Theme>, code: &Code) -> Result<String, String> {

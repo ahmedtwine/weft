@@ -16,7 +16,7 @@ The `weft` command downloads the binary and libweft of its release on the first 
 ```sh
 mise trust && mise install
 mise //examples:test      # build weft and the four runners, then run each test
-mise //examples:report    # serve the report at http://127.0.0.1:7357
+mise //examples:report    # serve the dashboard at http://127.0.0.1:7357
 ```
 
 `examples/tests/*.weft.kdl` holds each test. `examples/runners/<lang>/` holds one runner for each language, with a folder of modules for each test. Weft starts the runner of each `impl` block, drives it through each case, and stops it at the end of the test.
@@ -121,6 +121,21 @@ api "courier" {
 
 The test fails by design: Hegel finds `choose_address(addr-ben)` and then `ship(o-ana)`.
 
+## Dashboard
+
+`weft --ui` runs each test and serves a live dashboard at http://127.0.0.1:7357. Each run sends OpenTelemetry spans: one for each test case, step and HTTP request. The dashboard reads them into [Perspective](https://perspective-dev.github.io) tables as they arrive. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to also export the spans to an OTLP collector.
+
+Click a test to open its trace:
+
+| Panel                                     | Shows                                                                                                                         |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Test cases                                | Each test case of the test, with its steps, its HTTP requests and its failed check. Click a row to open that test case       |
+| Test case                                 | One row for each step: the action, the result of each invariant, and one column for each state path, such as `courier.parcels[0].customer` |
+| Diagram                                   | The step as a sequence diagram, or as a flowchart through the plugin menu. Each possible action is dotted, the action of the step is solid, and a failed step is red |
+| Steps and HTTP requests in each test case | A line chart over the test cases                                                                                              |
+
+Click a step, or press the arrow keys, to move the diagram from step to step.
+
 ## Runners
 
 `weft.kdl` names one `runner` line for each language. Weft starts each command with these variables:
@@ -144,11 +159,12 @@ The `reset` functions run in the order of the `impl` blocks.
 | `weft-simulator` | Reads the hello of each runner, turns its schemas into generators, and runs each case        |
 | `weft-runner`    | Starts the runners, carries their messages, and forwards the HTTP calls between apps          |
 | `weft-wire`      | The framing of each message between weft and a runner                                        |
-| `weft-draw`      | Draws a test and its failing case as a sequence diagram                                      |
+| `weft-draw`      | Draws a test as a sequence diagram, and each step as a sequence diagram or a flowchart        |
 | `weft-c`         | libweft, the C ABI that each SDK loads                                                       |
-| `weft-cli`       | The `weft` command and its report                                                            |
+| `weft-dashboard` | Turns the spans of each run into Perspective tables and serves the dashboard                 |
+| `weft-cli`       | The `weft` command and the spans of each run                                                 |
 | `invariants`     | Narrows your annotation on any artifact to the weakest invariant that agrees with your reactions, and reports each part that violates an invariant; see [its README](crates/invariants/README.md) |
 
 ## License
 
-MIT. `mise run notices` writes `THIRD-PARTY-NOTICES.md`, the license of each part weft ships: Hegel and each crate it links, the Lucide icons, and the scripts and fonts of the report.
+MIT. `mise run notices` writes `THIRD-PARTY-NOTICES.md`, the license of each part weft ships: Hegel and each crate it links, the Lucide icons, Perspective and pele.

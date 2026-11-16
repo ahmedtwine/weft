@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft</title>
+<link rel="stylesheet" href="vendor/viewer/css/icons.css">
+<link rel="stylesheet" href="vendor/viewer/css/intl.css">
+<link rel="stylesheet" href="vendor/viewer/css/pro.css">
+<link rel="stylesheet" href="vendor/viewer/css/pro-dark.css">
+<style>
+:root {
+  color-scheme: light dark;
+  --pele-bg: #ffffff;
+  --pele-fg: #1f1f1f;
+  --pele-muted: #6e6e6e;
+  --pele-line: #8a8a8a;
+  --pele-surface: #f3f3f3;
+  --pele-surface-alt: #e6e6e6;
+  --pele-border: #d4d4d4;
+  --pele-accent: #c9772f;
+  --pele-critical: #e45756;
+  --pele-font: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --bg: #ffffff;
+  --fg: #1f1f1f;
+  --muted: #6e6e6e;
+  --border: #e3e3e3;
+  --surface: #f3f3f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pele-bg: #242629;
+    --pele-fg: #e6e6e6;
+    --pele-muted: #9a9a9a;
+    --pele-line: #6a6a6a;
+    --pele-surface: #2e3034;
+    --pele-surface-alt: #36383c;
+    --pele-border: #4a4c50;
+    --pele-accent: #e0904a;
+    --pele-critical: #f07574;
+    --bg: #161616;
+    --fg: #e6e6e6;
+    --muted: #9a9a9a;
+    --border: #2c2c2c;
+    --surface: #222222;
+  }
+}
+html, body { margin: 0; height: 100%; }
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+h1 { margin: 0; font-size: 15px; font-weight: 600; }
+h1 button { all: unset; cursor: pointer; }
+main { position: relative; flex: 1; min-height: 0; }
+:is(weft-sequence, weft-flow) .pele-edge:not(:has([stroke-dasharray])) path { stroke: var(--pele-accent); fill: none; }
+:is(weft-sequence, weft-flow) .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fill: var(--pele-accent); }
+:is(weft-sequence, weft-flow).failed .pele-edge:not(:has([stroke-dasharray])) path { stroke: var(--pele-critical); }
+:is(weft-sequence, weft-flow).failed .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fill: var(--pele-critical); }
+:is(weft-sequence, weft-flow) .failed :is(rect, path) { stroke: var(--pele-critical); }
+:is(weft-sequence, weft-flow) .failed text { fill: var(--pele-critical); }
+weft-sequence, weft-flow {
+  display: block;
+  height: 100%;
+  overflow: auto;
+  padding: 12px;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--fg);
+}
+perspective-viewer {
+  position: absolute;
+  inset: 0;
+}
+perspective-viewer[theme],
+perspective-viewer [theme] {
+  --psp-charts--series--color: var(--fg);
+  --psp-charts--series-1--color: var(--fg);
+  --psp-active--color: var(--muted);
+  --psp-active--background: color-mix(in srgb, var(--muted) 25%, transparent);
+  --psp-datagrid--pos-cell--color: var(--fg);
+  --psp-datagrid--neg-cell--color: var(--fg);
+}
+</style>
+</head>
+<body>
+<header>
+  <h1><button type="button" id="home">Weft</button></h1>
+</header>
+<main>
+  <perspective-viewer></perspective-viewer>
+</main>
+<script type="module">
+import "./vendor/viewer/cdn/perspective-viewer.js";
+import "./vendor/viewer-datagrid/cdn/perspective-viewer-datagrid.js";
+import "./vendor/viewer-charts/cdn/perspective-viewer-charts.js";
+import perspective from "./vendor/client/cdn/perspective.js";
+import { mount } from "./vendor/pele/pele.js";
+
+const FILE = "weft.file";
+const TEST_CASE = "hegel.test_case";
+const CHECK = "weft.check";
+const DIAGRAM = "weft.diagram";
+const FLOW = "weft.flow";
+const FAILED = "weft.failed";
+const FAILS = "«fails»";
+const STEP = "weft.step";
+const STATUS = "weft.status";
+const RUNNING = "running";
+
+class Drawing extends (await customElements.whenDefined("perspective-viewer-plugin")) {
+  get_static_config() {
+    return {
+      name: this.constructor.name,
+      category: "Basic",
+      select_mode: "toggle",
+      config_column_names: ["Columns"],
+      group_rollup_modes: ["flat"],
+      split_rollup_modes: ["flat"],
+      priority: 0,
+      can_render_column_styles: false,
+    };
+  }
+  async draw(view) {
+    const [step] = await view.to_json({ end_row: 1 });
+    const text = step?.[this.constructor.column];
+    if (!text) return;
+    this.classList.toggle("failed", step[FAILED] === true);
+    if (this.mounted) this.mounted.update(text);
+    else this.mounted = mount(this, text, { fontSize: 13, maxWidth: Number.MAX_SAFE_INTEGER, onRender: () => this.marked() });
+  }
+  marked() {
+    for (const note of this.querySelectorAll(".pele-node, .pele-note")) note.classList.toggle("failed", note.textContent.startsWith(FAILS));
+  }
+  async clear() {}
+  async resize() {
+    this.mounted?.refresh();
+  }
+  async delete() {
+    this.mounted?.destroy();
+  }
+}
+class Sequence extends Drawing {
+  static column = DIAGRAM;
+}
+class Flow extends Drawing {
+  static column = FLOW;
+}
+for (const plugin of [Sequence, Flow]) {
+  const tag = `weft-${plugin.name.toLowerCase()}`;
+  customElements.define(tag, plugin);
+  await customElements.get("perspective-viewer").registerPlugin(tag);
+}
+
+const viewer = document.querySelector("perspective-viewer");
+const dark = matchMedia("(prefers-color-scheme: dark)");
+const theme = () => (dark.matches ? "Pro Dark" : "Pro Light");
+perspective.init_server(fetch("vendor/server/wasm/perspective-server.wasm"));
+const client = await perspective.worker();
+const schema = await (await fetch("schema")).json();
+const tables = Object.fromEntries(
+  await Promise.all(
+    Object.entries(schema).map(async ([name, columns]) => [
+      name,
+      await client.table(columns, { name, ...(name === "files" ? { index: FILE } : name === "tests" ? { index: "id" } : {}) }),
+    ]),
+  ),
+);
+await viewer.load(client);
+let last = Promise.resolve();
+let connected = false;
+const events = new EventSource("events");
+events.onopen = () => (connected ? location.reload() : (connected = true));
+events.onmessage = ({ data }) => {
+  const update = JSON.parse(data);
+  if (update.reload) return location.reload();
+  last = last
+    .then(() => Promise.all(Object.entries(update).filter(([, rows]) => rows.length).map(([name, rows]) => tables[name].update(rows))))
+    .catch(console.error);
+};
+
+const LABELS = {
+  [FILE]: "Test",
+  [STATUS]: "Status",
+  "weft.test_cases": "Test cases",
+  [TEST_CASE]: "Test case",
+  "weft.steps": "Steps",
+  "weft.calls": "HTTP requests",
+  "weft.checks": "Checks",
+  [CHECK]: "Check",
+};
+const label = (column) => LABELS[column] ?? column;
+const panel = ({ columns = [], group_by = [], ...rest }) => ({
+  theme: theme(),
+  ...rest,
+  expressions: Object.fromEntries([...columns, ...group_by].map((column) => [label(column), `"${column}"`])),
+  columns: columns.map(label),
+  group_by: group_by.map(label),
+});
+
+const cell = (tabs) => ({ type: "tab-layout", tabs, selected: 0 });
+
+const sized = (widths) => Object.fromEntries(Object.entries(widths).map(([column, size]) => [label(column), { column_size_override: size }]));
+
+const tests = () =>
+  viewer.restoreWorkspace({
+    panels: {
+      files: panel({
+        table: "files",
+        title: "Tests",
+        plugin: "Datagrid",
+        columns: [FILE, STATUS, "weft.test_cases", "weft.steps", "weft.checks", CHECK],
+        sort: [["start", "desc"]],
+        columns_config: sized({ [CHECK]: 480 }),
+      }),
+    },
+    layout: cell(["files"]),
+  });
+
+const first = async (table, config, wait) => {
+  const view = await tables[table].view(config);
+  let wake;
+  view.on_update(() => wake?.());
+  let [row] = await view.to_json({ end_row: 1 });
+  while (wait && !row) {
+    await new Promise((done) => (wake = done));
+    [row] = await view.to_json({ end_row: 1 });
+  }
+  await view.delete();
+  return row;
+};
+
+const ended = (file, wait) => first("files", { columns: [STATUS], filter: [[FILE, "==", file], [STATUS, "!=", RUNNING]] }, wait);
+
+const chosen = async (file, done) => {
+  const newest = (filter) => first("tests", { columns: [TEST_CASE, CHECK], filter: [[FILE, "==", file], ...filter], sort: [[TEST_CASE, "desc"]] }, true);
+  return done ? newest([]) : newest([["weft.steps", ">", 0]]);
+};
+
+const STEP_COLUMN = "Step";
+const CHECK_COLUMN = "Check";
+const CHECKED = { [CHECK_COLUMN]: { column_size_override: 90, fg_mode: "series", fg_color: "linear-gradient(to right, #7fb069, #e45756, #e45756, #e45756, #e45756, #e45756, #e45756, #e45756)" } };
+let pinned = [];
+const moment = (step) => ({ filter: [...pinned, ["action", "==", step]] });
+let moments = [];
+let at = 0;
+const filmed = async () => {
+  await first("steps", { columns: ["action"], filter: pinned }, true);
+  const view = await tables.steps.view({ columns: ["action"], filter: pinned, sort: [[STEP, "asc"]] });
+  moments = (await view.to_json()).map((row) => row.action);
+  await view.delete();
+  at = moments.length - 1;
+  return moment(moments[at]);
+};
+const play = (step) => {
+  at = moments.indexOf(step);
+  return viewer.restore(moment(step), { panel: "sequence" });
+};
+
+const path = ({ object, key, item, field }) =>
+  [object, key, item, field].filter(Boolean).reduce((all, part) => (part.startsWith("[") ? `${all}${part}` : `${all}.${part}`));
+let traced;
+const tabled = async (title) => {
+  const view = await tables.states.view({ columns: ["action", CHECK, "object", "key", "item", "field", "value"], filter: pinned, sort: [[STEP, "asc"]] });
+  const rows = await view.to_json();
+  await view.delete();
+  const steps = new Map();
+  const paths = new Set();
+  for (const row of rows) {
+    if (!steps.has(row.action)) steps.set(row.action, { [STEP_COLUMN]: row.action, [CHECK_COLUMN]: row[CHECK] });
+    const at = path(row);
+    paths.add(at);
+    steps.get(row.action)[at] = row.value;
+  }
+  const columns = [STEP_COLUMN, CHECK_COLUMN, ...paths];
+  const previous = traced;
+  traced = await client.table(Object.fromEntries(columns.map((column) => [column, "string"])), { name: `trace ${pinned.map(([, , value]) => value).join(" ")}` });
+  await traced.update([...steps.values()]);
+  return {
+    config: { table: await traced.get_name(), title, plugin: "Datagrid", theme: theme(), columns, group_by: [], split_by: [], expressions: {}, filter: [], sort: [], aggregates: {}, columns_config: CHECKED, plugin_config: { edit_mode: "SELECT_ROW" } },
+    retire: () => previous?.delete().catch(() => {}),
+  };
+};
+
+const titled = (file, test) => `${file} · test case ${test}`;
+
+const select = async (file, test) => {
+  pinned = [[FILE, "==", file], [TEST_CASE, "==", test]];
+  const { config, retire } = await tabled(titled(file, test));
+  await viewer.restore(config, { panel: "trace" });
+  await retire();
+  await viewer.restore(await filmed(), { panel: "sequence" });
+};
+
+const trace = async (file) => {
+  const running = !(await ended(file, false));
+  const test = (await chosen(file, !running))[TEST_CASE];
+  pinned = [[FILE, "==", file], [TEST_CASE, "==", test]];
+  const { config, retire } = await tabled(titled(file, test));
+  await viewer.restoreWorkspace({
+    panels: {
+      trace: config,
+      sequence: { table: "steps", title: "Diagram", plugin: "Sequence", theme: theme(), columns: [DIAGRAM, FLOW, FAILED], ...(await filmed()) },
+      cases: panel({
+        table: "tests",
+        title: "Test cases",
+        plugin: "Datagrid",
+        filter: [[FILE, "==", file]],
+        columns: [TEST_CASE, "weft.steps", "weft.calls", CHECK],
+        sort: [[TEST_CASE, "asc"]],
+        plugin_config: { edit_mode: "SELECT_ROW" },
+        columns_config: sized({ [CHECK]: 1200 }),
+      }),
+      search: panel({
+        table: "tests",
+        title: "Steps and HTTP requests in each test case",
+        plugin: "Y Line",
+        filter: [[FILE, "==", file]],
+        group_by: [TEST_CASE],
+        columns: ["weft.steps", "weft.calls"],
+      }),
+    },
+    layout: {
+      type: "split-layout",
+      orientation: "horizontal",
+      sizes: [0.55, 0.45],
+      children: [
+        { type: "split-layout", orientation: "vertical", sizes: [0.25, 0.75], children: [cell(["cases"]), cell(["trace"])] },
+        { type: "split-layout", orientation: "vertical", sizes: [0.5, 0.5], children: [cell(["sequence"]), cell(["search"])] },
+      ],
+    },
+  });
+  await retire();
+  if (running) ended(file, true).then(() => history.state === file && trace(file));
+};
+
+const show = (file) => (file ? trace(file) : tests());
+viewer.addEventListener("perspective-click", ({ detail }) => {
+  const step = detail.row?.[STEP_COLUMN];
+  if (detail.panel === "trace" && step) play(step);
+  const test = detail.row?.[label(TEST_CASE)];
+  if (detail.panel === "cases" && test !== undefined) select(history.state, test);
+  const file = detail.row?.[label(FILE)];
+  if (detail.panel === "files" && file) {
+    history.pushState(file, "", `#${encodeURIComponent(file)}`);
+    show(file);
+  }
+});
+document.getElementById("home").addEventListener("click", () => {
+  history.pushState(null, "", location.pathname);
+  show(null);
+});
+addEventListener("keydown", (event) => {
+  const by = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key];
+  if (!by || !moments.length) return;
+  event.preventDefault();
+  play(moments[Math.min(Math.max(at + by, 0), moments.length - 1)]);
+});
+addEventListener("popstate", () => show(history.state));
+const opened = decodeURIComponent(location.hash.slice(1)) || null;
+history.replaceState(opened, "", location.href);
+await show(opened);
+dark.addEventListener("change", () => location.reload());
+</script>
+</body>
+</html>

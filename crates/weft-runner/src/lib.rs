@@ -1,5 +1,6 @@
 mod process;
 mod proxy;
+mod reaper;
 mod transport;
 
 use std::path::{Component, Path, PathBuf};
@@ -8,8 +9,9 @@ use std::time::Duration;
 
 use serde_json::{Value as Json, json};
 use weft_parse::{Adapter, Config, Diagram, Start};
-use weft_simulator::{Member, Outcome, simulate};
+use weft_simulator::{Member, Outcome, Stream, simulate};
 
+pub use reaper::{REAP, guard, reap};
 use transport::{HUB, listen};
 
 const WAIT: Duration = Duration::from_secs(60);
@@ -43,11 +45,13 @@ fn code(d: &Diagram, file: &Path) -> String {
     .to_string()
 }
 
-pub fn run(
+pub fn run<'a>(
     config: &Config,
-    d: &Diagram,
+    d: &'a Diagram,
     file: &Path,
     key: Option<&str>,
+    parent: Option<&str>,
+    stream: &'a mut Stream<'a>,
 ) -> Result<Outcome, String> {
     let file = file.strip_prefix(".").unwrap_or(file);
     if d.impls.is_empty() {
@@ -72,17 +76,19 @@ pub fn run(
     let mut started = Vec::new();
     let mut proxies = Vec::new();
     for i in &d.impls {
+        let joins = parent == Some(i.adapter.as_str());
         let line = config
             .runners
             .iter()
-            .find(|(adapter, _)| *adapter == i.adapter)
+            .find(|(adapter, _)| *adapter == i.adapter && !joins)
             .map(|(_, start)| start.clone())
             .or_else(|| {
-                (i.adapter == "bun" && config.adapter == Adapter::Bun).then_some(Start::Bun)
+                (i.adapter == "bun" && config.adapter == Adapter::Bun && !joins)
+                    .then_some(Start::Bun)
             });
-        let Some(line) = line else {
+        if line.is_none() && !joins {
             continue;
-        };
+        }
         let app = i
             .modules
             .first()
@@ -117,13 +123,15 @@ pub fn run(
         };
         proxies.push(proxy);
         let runner = match line {
-            Start::Command(line) => process::command(&line, r),
-            Start::Bun => process::bun(r),
+            Some(Start::Command(line)) => process::command(&line, r).map(Some),
+            Some(Start::Bun) => process::bun(r).map(Some),
+            None => process::parent(&r).map(|()| None),
         };
         match runner {
-            Ok(runner) => started.push(runner),
+            Ok(runner) => started.extend(runner),
             Err(e) => {
                 HUB.close(&name);
+                process::ended(started);
                 return Err(e);
             }
         }
@@ -135,16 +143,13 @@ pub fn run(
                 .into_iter()
                 .map(|remote| Box::new(remote) as Box<dyn Member>)
                 .collect();
-            Ok(simulate(d, &mut members, config.cases, key))
+            Ok(simulate(d, &mut members, config.cases, key, stream))
         }
         Err(e) => Err(e),
     };
     HUB.close(&name);
     drop(proxies);
-    let logs: Vec<String> = started
-        .into_iter()
-        .filter_map(|runner| runner.join().ok())
-        .collect();
+    let logs = process::ended(started);
     match outcome {
         Ok(outcome) => outcome,
         Err(e) if !logs.is_empty() => Err(format!("{e}: {}", logs.join("; "))),
@@ -162,7 +167,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
-    use weft_wire::{DONE, JOIN, Reader, TURN, Writer, receive, send};
+    use weft_wire::{
+        ASSUME, DONE, JOIN, OK, POOL_ADD, POOL_GENERATE, REFUSED, Reader, STOP_TEST, TARGET, TURN,
+        Writer, receive, send,
+    };
 
     static FILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -199,7 +207,7 @@ impl "other" {
     }
 
     type App = Arc<Mutex<Page>>;
-    type Play = fn(&App, &Json) -> Json;
+    type Play = fn(&App, &Json, &mut Link) -> Json;
 
     enum Link {
         Unix(UnixStream),
@@ -237,21 +245,27 @@ impl "other" {
     }
 
     impl Link {
-        fn said(&mut self, call: u8, part: &str) -> Result<String, String> {
+        fn asked(&mut self, call: u8, part: &str) -> Result<String, (i32, String)> {
+            let refused = |e: String| (REFUSED, e);
             let message = Writer::call(call, part.as_bytes()).0;
             let reply = match self {
                 Link::Unix(stream) => send(stream, &message)
                     .and_then(|()| receive(stream))
-                    .map_err(|e| e.to_string())?,
-                Link::Http(url) => post(url, &message)?,
+                    .map_err(|e| refused(e.to_string()))?,
+                Link::Http(url) => post(url, &message).map_err(refused)?,
             };
             let mut r = Reader(&reply);
-            let code = r.code().map_err(|_| "short")?;
-            let text = String::from_utf8_lossy(r.bytes().map_err(|_| "short")?).into_owned();
+            let code = r.code().map_err(|_| refused("short".into()))?;
+            let text = String::from_utf8_lossy(r.bytes().map_err(|_| refused("short".into()))?)
+                .into_owned();
             match code {
-                0 => Ok(text),
-                _ => Err(text),
+                OK => Ok(text),
+                code => Err((code, text)),
             }
+        }
+
+        fn said(&mut self, call: u8, part: &str) -> Result<String, String> {
+            self.asked(call, part).map_err(|(_, e)| e)
         }
     }
 
@@ -289,7 +303,7 @@ impl "other" {
             if turn.get("done").is_some() {
                 break;
             }
-            report = play(&app, &turn);
+            report = play(&app, &turn, &mut link);
         }
         let span = json!([{ "file": "src/page.ts", "from": 1, "to": 2 }]);
         link.said(
@@ -306,7 +320,7 @@ impl "other" {
         }
     }
 
-    fn sender(app: &App, turn: &Json) -> Json {
+    fn sender(app: &App, turn: &Json, _: &mut Link) -> Json {
         match (
             turn["step"].as_str(),
             turn["calls"][0]["input"]["n"].as_i64(),
@@ -318,15 +332,62 @@ impl "other" {
         state(app)
     }
 
-    fn reloader(app: &App, turn: &Json) -> Json {
+    fn reloader(app: &App, turn: &Json, _: &mut Link) -> Json {
         if turn["step"] == "reload" {
             set(app, |n| if n > 5 { -1 } else { n });
         }
         json!({ "states": {} })
     }
 
-    fn reloader_with_no_change(_: &App, _: &Json) -> Json {
+    fn reloader_with_no_change(_: &App, _: &Json, _: &mut Link) -> Json {
         json!({ "states": {} })
+    }
+
+    fn ended(asked: Result<String, (i32, String)>, state: Json) -> Json {
+        match asked {
+            Ok(_) => state,
+            Err((ASSUME, _)) => json!({ "refused": "assume" }),
+            Err((STOP_TEST, _)) => json!({ "refused": "stop_test" }),
+            Err((_, e)) => json!({ "thrown": e }),
+        }
+    }
+
+    fn adder(app: &App, turn: &Json, link: &mut Link) -> Json {
+        let Some(n) = turn["calls"][0]["input"]["n"].as_i64() else {
+            if turn["step"] == "start" {
+                set(app, |_| 0);
+            }
+            return state(app);
+        };
+        let added = link
+            .asked(
+                POOL_ADD,
+                &json!({ "pool": "numbers", "value": n }).to_string(),
+            )
+            .and_then(|_| {
+                link.asked(
+                    TARGET,
+                    &json!({ "value": n, "label": "n" }).to_string(),
+                )
+            });
+        ended(added, state(app))
+    }
+
+    fn consumer(app: &App, turn: &Json, link: &mut Link) -> Json {
+        if turn["step"] != "reload" {
+            return json!({ "states": {} });
+        }
+        let generated = link.asked(
+            POOL_GENERATE,
+            &json!({ "pool": "numbers", "consume": true }).to_string(),
+        );
+        if let Ok(n) = &generated {
+            set(app, |_| match n.parse::<i64>() {
+                Ok(n) if n > 5 => -1,
+                _ => 0,
+            });
+        }
+        ended(generated, json!({ "states": {} }))
     }
 
     fn schema(text: &str) -> Json {
@@ -350,7 +411,7 @@ impl "other" {
         json!({ "adapter": "other", "actions": [{ "function": ["tab", "reload"], "input": schema(NONE) }] })
     }
 
-    fn two(transport: &str, draw: &str, sends: Json, reload: Play) -> Result<Outcome, String> {
+    fn two(transport: &str, draw: &str, sends: Json, plays: [Play; 2]) -> Result<Outcome, String> {
         let config = weft_parse::config(&format!(
             "{CONFIG}{transport}\nadapter \"default\" cases=100\n"
         ))
@@ -360,11 +421,15 @@ impl "other" {
         let at = listen(config.transport.as_ref())?;
         let app = App::default();
         let name = file();
-        let runners = [(sends, sender as Play), (reloads(), reload)].map(|(hello, play)| {
-            let (at, app, joined) = (at.clone(), app.clone(), name.clone());
-            thread::spawn(move || runner(&at, &joined, hello, app, play, ["send", "reload"]))
-        });
-        let outcome = run(&config, &d, Path::new(&name), None);
+        let runners: Vec<_> = [sends, reloads()]
+            .into_iter()
+            .zip(plays)
+            .map(|(hello, play)| {
+                let (at, app, joined) = (at.clone(), app.clone(), name.clone());
+                thread::spawn(move || runner(&at, &joined, hello, app, play, ["send", "reload"]))
+            })
+            .collect();
+        let outcome = run(&config, &d, Path::new(&name), None, None, &mut |_| {});
         for r in runners {
             let _ = r.join().map_err(|_| "a runner panics")?;
         }
@@ -386,7 +451,7 @@ impl "other" {
 
     #[test]
     fn two_runners_on_a_unix_socket_get_each_input_from_weft() -> Result<(), String> {
-        let o = two(&socket("pass"), "", sends(), reloader_with_no_change)?;
+        let o = two(&socket("pass"), "", sends(), [sender, reloader_with_no_change])?;
         assert!(!o.failed);
         assert!(o.tally.iter().all(|t| t.steps > 0), "each verb runs");
         Ok(())
@@ -394,7 +459,7 @@ impl "other" {
 
     #[test]
     fn a_failing_case_of_two_runners_shrinks_to_the_least_value_and_steps() -> Result<(), String> {
-        let o = two(&socket("shrink"), "", sends(), reloader)?;
+        let o = two(&socket("shrink"), "", sends(), [sender, reloader])?;
         assert!(o.failed);
         assert_eq!(
             steps(&o),
@@ -408,19 +473,34 @@ impl "other" {
     }
 
     #[test]
+    fn a_value_that_one_runner_adds_to_a_pool_is_generated_for_the_other() -> Result<(), String> {
+        let o = two(&socket("pool"), "", sends(), [adder, consumer])?;
+        assert!(o.failed);
+        assert_eq!(
+            steps(&o),
+            [
+                ("start".to_string(), String::new()),
+                ("send to=page".to_string(), "n=6".to_string()),
+                ("reload to=tab".to_string(), "numbers=6".to_string()),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_draw_line_gives_the_values_of_a_field() -> Result<(), String> {
         let o = two(
             &socket("low"),
             "\n    draw {\n      n 1 2\n    }",
             sends(),
-            reloader,
+            [sender, reloader],
         )?;
         assert!(!o.failed);
         let o = two(
             &socket("high"),
             "\n    draw {\n      n 7 9\n    }",
             sends(),
-            reloader,
+            [sender, reloader],
         )?;
         assert_eq!(steps(&o)[1].1, "n=7");
         Ok(())
@@ -432,7 +512,7 @@ impl "other" {
             "transport \"http\" url=\"http://127.0.0.1:7413\"",
             "",
             sends(),
-            reloader_with_no_change,
+            [sender, reloader_with_no_change],
         )?;
         assert!(!o.failed);
         Ok(())
@@ -462,7 +542,7 @@ impl "other" {
             &socket("field"),
             "\n    draw {\n      m 1\n    }",
             sends(),
-            reloader,
+            [sender, reloader],
         )
         .err()
         .unwrap_or_default();

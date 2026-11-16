@@ -5,6 +5,14 @@ use std::io::{self, Read, Write};
 pub const JOIN: u8 = 0;
 pub const TURN: u8 = 1;
 pub const DONE: u8 = 2;
+pub const GENERATE: u8 = 3;
+pub const POOL_ADD: u8 = 4;
+pub const POOL_GENERATE: u8 = 5;
+pub const TARGET: u8 = 6;
+pub const OK: i32 = 0;
+pub const REFUSED: i32 = 1;
+pub const STOP_TEST: i32 = 2;
+pub const ASSUME: i32 = 3;
 const MOST: usize = 1 << 28;
 
 #[derive(Debug)]
