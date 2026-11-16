@@ -641,42 +641,48 @@ fn fixed(text: &str) -> String {
     escape_text(&cut)
 }
 
-fn sign(op: Op) -> Option<&'static str> {
-    match op {
-        Op::Eq => Some("="),
-        Op::Neq => Some("≠"),
-        Op::Ilt => Some("<"),
-        Op::Ilte => Some("≤"),
-        Op::Igt => Some(">"),
-        Op::Igte => Some("≥"),
-        Op::In => Some("in"),
-        _ => None,
+fn sign(op: Op, holds: bool) -> &'static str {
+    match (op, holds) {
+        (Op::Eq, true) | (Op::Neq, false) => "=",
+        (Op::Neq, true) | (Op::Eq, false) => "≠",
+        (Op::Ilt, true) | (Op::Igte, false) => "<",
+        (Op::Ilte, true) | (Op::Igt, false) => "≤",
+        (Op::Igt, true) | (Op::Ilte, false) => ">",
+        (Op::Igte, true) | (Op::Ilt, false) => "≥",
+        (Op::In, true) => "∈",
+        (Op::In, false) => "∉",
+        _ => "?",
     }
 }
 
-fn read<'a>(now: &'a Now, keys: &mut Vec<(&'a str, &'a str)>, signs: &mut Vec<&'static str>) {
+fn read<'a>(now: &'a Now, keys: &mut Vec<(&'a str, &'a str)>) {
     match now {
         Now::Key(object, key) | Now::Start(object, key) => {
             if !keys.contains(&(object.as_str(), key.as_str())) {
                 keys.push((object, key));
             }
         }
-        Now::App(op, args, _) => {
-            signs.extend(sign(*op).filter(|s| !signs.contains(s)));
-            args.iter().for_each(|a| read(a, keys, signs));
-        }
+        Now::App(_, args, _) => args.iter().for_each(|a| read(a, keys)),
         Now::Each(_, _, set, body, _) => {
-            read(set, keys, signs);
-            read(body, keys, signs);
+            read(set, keys);
+            read(body, keys);
         }
         _ => {}
     }
 }
 
-fn reads(i: &Invariant) -> (Vec<(&str, &str)>, Vec<&'static str>) {
-    let (mut keys, mut signs) = (Vec::new(), Vec::new());
-    read(&i.body, &mut keys, &mut signs);
-    (keys, signs)
+fn reads(i: &Invariant) -> Vec<(&str, &str)> {
+    let mut keys = Vec::new();
+    read(&i.body, &mut keys);
+    keys
+}
+
+struct Checked {
+    objects: Vec<String>,
+    sign: &'static str,
+    line: String,
+    failing: bool,
+    color: usize,
 }
 
 pub struct Moment<'a> {
@@ -712,6 +718,27 @@ impl Moment<'_> {
                 self.failed.join(BREAK)
             )
         })
+    }
+
+    fn checked(&self, d: &Diagram) -> Vec<Checked> {
+        d.invariants()
+            .into_iter()
+            .enumerate()
+            .flat_map(|(n, i)| {
+                let broken = self.broken == Some(i.place().as_str());
+                i.compares(self.state).into_iter().map(move |c| {
+                    let failing = broken && c.holds == Some(false);
+                    let sign = sign(c.op, !failing);
+                    Checked {
+                        line: fixed(&format!("{} {sign} {}", c.sides[0], c.sides[1])),
+                        objects: c.objects,
+                        sign,
+                        failing,
+                        color: if broken { FAILED_SERIES } else { series(n) },
+                    }
+                })
+            })
+            .collect()
     }
 
     fn lines(&self, name: &str) -> Vec<String> {
@@ -761,6 +788,12 @@ impl Moment<'_> {
                 ));
             }
         }
+        for c in self.checked(d).iter().filter(|c| !c.failing) {
+            let over: Vec<String> = c.objects.iter().map(|o| Ident::new(o).to_string()).collect();
+            if !over.is_empty() {
+                out.push(format!("  Note over {}: {}", over.join(","), c.line));
+            }
+        }
         if let (Some(to), Some(check)) = (self.target(d), self.check()) {
             out.push(format!("  Note over {}: {check}", Ident::new(to)));
         }
@@ -781,11 +814,16 @@ impl Moment<'_> {
         let mut lines = self.lines(object);
         if lines.is_empty() {
             for i in d.invariants() {
-                for (_, key) in reads(i).0.into_iter().filter(|(o, _)| *o == object) {
+                for (_, key) in reads(i).into_iter().filter(|(o, _)| *o == object) {
                     if !lines.contains(&fixed(key)) {
                         lines.push(fixed(key));
                     }
                 }
+            }
+        }
+        for c in self.checked(d) {
+            if c.objects == [object] && !lines.contains(&c.line) {
+                lines.push(c.line);
             }
         }
         if lines.is_empty() {
@@ -829,29 +867,36 @@ impl Moment<'_> {
         for (n, i) in d.invariants().into_iter().enumerate() {
             let broken = self.broken == Some(i.place().as_str());
             let color = if broken { FAILED_SERIES } else { series(n) };
-            let (keys, signs) = reads(i);
-            let mut objects: Vec<&str> = Vec::new();
-            for (object, key) in &keys {
+            for (object, key) in reads(i) {
                 let state = Ident::new(&format!("s_{object}"));
-                body.push(format!("  %% check {state} {key} {color}"));
-                if !objects.contains(object) {
-                    objects.push(object);
-                    if broken {
-                        marked.push(format!("  class {state} {FAILS}"));
-                    }
+                body.push(format!("  %% check {state} {color} {key}"));
+                if broken {
+                    marked.push(format!("  class {state} {FAILS}"));
                 }
             }
-            for (j, pair) in objects.windows(2).enumerate() {
-                let link = format!("c_{n}_{j}");
-                body.push(format!(
-                    "  {} {link}@---|\"{}\"| {}",
-                    Ident::new(&format!("s_{}", pair[0])),
-                    signs.join(" "),
-                    Ident::new(&format!("s_{}", pair[1]))
-                ));
-                body.push(format!("  %% link {link} {color}"));
+        }
+        for (j, c) in self.checked(d).into_iter().enumerate() {
+            match c.objects.as_slice() {
+                [object] => body.push(format!(
+                    "  %% check {} {} {}",
+                    Ident::new(&format!("s_{object}")),
+                    c.color,
+                    c.line
+                )),
+                [from, to, ..] => {
+                    let link = format!("c_{j}");
+                    body.push(format!(
+                        "  {} {link}@---|\"{}\"| {}",
+                        Ident::new(&format!("s_{from}")),
+                        c.sign,
+                        Ident::new(&format!("s_{to}"))
+                    ));
+                    body.push(format!("  %% link {link} {}", c.color));
+                }
+                [] => {}
             }
         }
+        marked.dedup();
         body.extend(marked);
         (1..=groups.len().max(1))
             .map(|columns| {

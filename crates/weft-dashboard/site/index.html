@@ -183,7 +183,7 @@ const FAILED = "weft.failed";
 const FAILS = "«fails»";
 const LAYOUTS = "\n%% layout\n";
 const RUNNERS = /^\s*%% runner (\S+) (\d+)$/gm;
-const CHECKS = /^\s*%% check (\S+) (\S+) (\d+)$/gm;
+const CHECKS = /^\s*%% check (\S+) (\d+) (.+)$/gm;
 const LINKS = /^\s*%% link (\S+) (\d+)$/gm;
 const unchecked = (part) => part.classList.remove(...[...part.classList].filter((c) => c.startsWith("check-")));
 const SHOWN = { fontSize: 13, monospace: ["messages"], autoDirection: false };
@@ -295,7 +295,8 @@ class Machine extends Drawing {
       else text.textContent = lines[0] ?? "";
     }
     for (const part of this.querySelectorAll("[class*='check-']")) unchecked(part);
-    for (const [, id, key, n] of this.text.matchAll(CHECKS)) {
+    for (const [, id, n, written] of this.text.matchAll(CHECKS)) {
+      const key = decoded(written);
       const label = this.querySelector(`.pele-node[data-id="${CSS.escape(id)}"] .pele-label`);
       const lines = label?.querySelectorAll("tspan").length ? label.querySelectorAll("tspan") : label ? [label] : [];
       for (const line of lines) if (line.textContent.trim() === key || line.textContent.startsWith(`${key} =`)) line.classList.add(`check-${n}`);

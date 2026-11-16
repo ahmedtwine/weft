@@ -235,7 +235,7 @@ flowchart TB
 | `api "<object>"`              | A section                                           |
 | `impl "<lang>"`               | The label `<object> · <lang>` of the section        |
 | Each action of the module     | A node from the state of its section                |
-| `invariant { … }`             | Its keys, in one color, in the state box of each object it reads, and a link between two state boxes it compares; red when it fails |
+| `invariant { … }`             | Its keys and each comparison, such as `customer = recipient`, in one color in the state box of the object; a link with the sign between two state boxes it compares; red with the sign of the failing values, such as `customer ≠ recipient`, when it fails |
 | The first `person`            | The caller in the sequence diagram below            |
 
 A run adds the test cases and the trace. Each step highlights its action, writes the state values into the section, and turns a broken invariant red. A hover on an action lists its steps.

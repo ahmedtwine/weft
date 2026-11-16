@@ -610,6 +610,100 @@ impl Invariant {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Compare {
+    pub op: Op,
+    pub sides: [String; 2],
+    pub objects: Vec<String>,
+    pub holds: Option<bool>,
+}
+
+impl Now {
+    fn owner<'a>(&'a self, outer: &[&'a Now]) -> Option<(&'a str, String)> {
+        match self {
+            Now::Key(o, k) => Some((o, k.clone())),
+            Now::Start(o, k) => Some((o, format!("start {k}"))),
+            Now::Var(v, path) => outer.iter().rev().find_map(|e| match e {
+                Now::Each(_, n, set, ..) if n == v => {
+                    let (object, label) = set.owner(outer)?;
+                    Some((object, match path.is_empty() {
+                        true => label,
+                        false => path.join("."),
+                    }))
+                }
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+
+    fn side(args: &[Now], outer: &[&Now], objects: &mut Vec<String>) -> String {
+        let shown: Vec<String> = args
+            .iter()
+            .map(|a| match a.owner(outer) {
+                Some((object, label)) => {
+                    if !objects.iter().any(|o| o == object) {
+                        objects.push(object.to_string());
+                    }
+                    label
+                }
+                None => match a {
+                    Now::Value(v) => v.to_string(),
+                    e => e.quint(),
+                },
+            })
+            .collect();
+        match shown.len() {
+            1 => shown.concat(),
+            _ => format!("{{{}}}", shown.join(", ")),
+        }
+    }
+
+    fn compares<'a>(&'a self, outer: &mut Vec<&'a Now>, now: &State, found: &mut Vec<Compare>) {
+        match self {
+            Now::App(op @ (Op::Eq | Op::Neq | Op::In | Op::Ilt | Op::Ilte | Op::Igt | Op::Igte), args, _)
+                if args.len() >= 2 =>
+            {
+                let mut objects = Vec::new();
+                let sides = [
+                    Now::side(&args[..1], outer, &mut objects),
+                    Now::side(&args[1..], outer, &mut objects),
+                ];
+                let wrapped = outer.iter().rev().fold(self.clone(), |inner, e| match e {
+                    Now::Each(q, v, set, _, at) => {
+                        Now::Each(*q, v.clone(), set.clone(), Box::new(inner), *at)
+                    }
+                    _ => inner,
+                });
+                let holds = wrapped
+                    .eval(&State::new(), now, &Vec::new())
+                    .and_then(|v| v.as_bool());
+                found.push(Compare {
+                    op: *op,
+                    sides,
+                    objects,
+                    holds,
+                });
+            }
+            Now::App(_, args, _) => args.iter().for_each(|a| a.compares(outer, now, found)),
+            Now::Each(_, _, _, body, _) => {
+                outer.push(self);
+                body.compares(outer, now, found);
+                outer.pop();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Invariant {
+    pub fn compares(&self, now: &State) -> Vec<Compare> {
+        let mut found = Vec::new();
+        self.body.compares(&mut Vec::new(), now, &mut found);
+        found
+    }
+}
+
 impl Object {
     fn keys(&self) -> Vec<(&String, &String)> {
         let o = &self.name;
