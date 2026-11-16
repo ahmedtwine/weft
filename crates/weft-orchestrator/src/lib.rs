@@ -196,7 +196,9 @@ pub fn run<'a>(
     }
     let joined = session.members(WAIT);
     let outcome = match joined {
-        Ok(mut members) => Ok(stateful::run(d, &name, &mut members, key, stream)),
+        Ok(mut members) => Ok(d
+            .actions(file.parent().unwrap_or(Path::new("")))
+            .and_then(|declared| stateful::run(d, &name, &mut members, key, &declared, stream))),
         Err(e) => Err(e),
     };
     HUB.close(&name);
@@ -244,10 +246,10 @@ setup {
   browser "tab"
 }
 impl "bun" {
-  module "page" "../src/page.ts"
+  module "page" "../fixtures/page.ts"
 }
 impl "other" {
-  module "tab" "../src/tab.ts"
+  module "tab" "../fixtures/tab.ts"
 }
 "#;
     const NONE: &str = r#"{"type":"object","properties":{},"additionalProperties":false}"#;
@@ -346,7 +348,7 @@ impl "other" {
             .ok_or("weft opens no diagram")?;
         let code: Json = serde_json::from_str(&joined).map_err(|e| e.to_string())?;
         assert_eq!(code[0]["adapter"], "bun");
-        assert_eq!(code[0]["modules"]["page"], "./src/page.ts");
+        assert_eq!(code[0]["modules"]["page"], "./fixtures/page.ts");
         let mut report = hello.to_string();
         loop {
             let turn: Json =
@@ -584,7 +586,7 @@ impl "other" {
         .map_err(|e| e.to_string())?;
         let page = PAGE
             .replace("DRAW", "")
-            .replace("../src/page.ts", "./page.ts");
+            .replace("../fixtures/page.ts", "./page.ts");
         let error = weft_parse::parse(&page, &config)
             .err()
             .map(|e| e.to_string())

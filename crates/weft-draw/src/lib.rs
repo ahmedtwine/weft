@@ -4,10 +4,10 @@ use std::fmt::Write;
 
 use merman::ascii::AsciiRenderOptions;
 use merman::{AsciiRequest, OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest};
-use sealmap_mermaid::{Arrow, Direction, EdgeStyle, Flowchart, Ident, NodeShape, SequenceDiagram};
+use sealmap_mermaid::{Ident, escape_text};
 use serde_json::Value;
 use vendor::lucide::ICONS;
-use weft_parse::{Diagram, State};
+use weft_parse::{Diagram, Invariant, State};
 
 const WRAP: usize = 24;
 const PAD: f64 = 10.0;
@@ -620,19 +620,16 @@ fn points(e: &Value) -> Vec<(f64, f64)> {
 }
 
 const BREAK: &str = "<br/>";
-
-fn written(rows: &[Row]) -> String {
-    rows.iter()
-        .map(|[_, key, value]| format!("{key} = {value}"))
-        .collect::<Vec<_>>()
-        .join(BREAK)
-}
+const INVARIANT: &str = "«invariant»";
+const DONE: &str = "done";
+const FAILS: &str = "fails";
 
 pub struct Moment<'a> {
     pub actions: &'a [(String, String)],
     pub done: Option<&'a str>,
     pub state: &'a State,
     pub failed: &'a [String],
+    pub broken: Option<&'a str>,
 }
 
 impl Moment<'_> {
@@ -652,17 +649,6 @@ impl Moment<'_> {
             .or(d.caller())
     }
 
-    fn rows(&self, name: &str) -> Option<String> {
-        let rows: Vec<Row> = self
-            .state
-            .get(name)
-            .into_iter()
-            .flatten()
-            .map(|(key, value)| [guessed(value).to_string(), key.clone(), summary(value)])
-            .collect();
-        (!rows.is_empty()).then(|| written(&rows))
-    }
-
     fn check(&self) -> Option<String> {
         (!self.failed.is_empty()).then(|| {
             format!(
@@ -673,65 +659,127 @@ impl Moment<'_> {
         })
     }
 
+    fn lines(&self, name: &str) -> Vec<String> {
+        self.state
+            .get(name)
+            .into_iter()
+            .flatten()
+            .map(|(key, value)| escape_text(&format!("{key} = {}", summary(value))))
+            .collect()
+    }
+
+    fn invariant(&self, i: &Invariant) -> String {
+        match self.broken == Some(i.name.as_str()) {
+            true => [stereotype(Kind::Failed), &i.name]
+                .into_iter()
+                .map(String::from)
+                .chain(self.failed.iter().cloned())
+                .map(|line| escape_text(&line))
+                .collect::<Vec<_>>()
+                .join(BREAK),
+            false => format!("{INVARIANT}{BREAK}{}", escape_text(&i.name)),
+        }
+    }
+
     pub fn sequence(&self, d: &Diagram) -> String {
-        let mut m = SequenceDiagram::new();
-        for o in &d.objects {
-            m.participant(Ident::new(&o.name), &o.name);
+        let mut out = vec!["sequenceDiagram".to_string()];
+        let ran: Vec<&str> = d
+            .impls
+            .iter()
+            .flat_map(|i| i.modules.iter().map(|(object, _)| object.as_str()))
+            .collect();
+        for o in d.objects.iter().filter(|o| !ran.contains(&o.name.as_str())) {
+            out.push(format!("  participant {}", Ident::new(&o.name)));
+        }
+        for i in &d.impls {
+            out.push(format!("  box {}", escape_text(&i.adapter)));
+            for (object, _) in &i.modules {
+                out.push(format!("    participant {}", Ident::new(object)));
+            }
+            out.push("  end".into());
         }
         for (verb, to) in self.actions {
             let arrow = match self.done(verb) {
-                true => Arrow::Sync,
-                false => Arrow::Reply,
+                true => "->>",
+                false => "-->>",
             };
-            m.message(
-                &Ident::new(d.caller().unwrap_or(to)),
-                &Ident::new(to),
-                arrow,
-                &format!("«{verb}»"),
-            );
+            out.push(format!(
+                "  {}{arrow}{}: «{}»",
+                Ident::new(d.caller().unwrap_or(to)),
+                Ident::new(to),
+                escape_text(verb)
+            ));
         }
         for o in &d.objects {
-            if let Some(rows) = self.rows(&o.name) {
-                m.note(&[&Ident::new(&o.name)], &rows);
+            let lines = self.lines(&o.name);
+            if !lines.is_empty() {
+                out.push(format!(
+                    "  Note over {}: {}",
+                    Ident::new(&o.name),
+                    lines.join(BREAK)
+                ));
             }
         }
-        if let (Some(to), Some(check)) = (self.target(d), self.check()) {
-            m.note(&[&Ident::new(to)], &check);
+        for o in &d.objects {
+            for i in &o.invariants {
+                out.push(format!(
+                    "  Note over {}: {}",
+                    Ident::new(&o.name),
+                    self.invariant(i)
+                ));
+            }
         }
-        m.render()
+        if let (None, Some(to), Some(check)) = (self.broken, self.target(d), self.check()) {
+            out.push(format!("  Note over {}: {check}", Ident::new(to)));
+        }
+        out.join("\n")
     }
 
-    pub fn flow(&self, d: &Diagram) -> String {
-        let mut f = Flowchart::new(Direction::LR);
-        let target = self.target(d);
-        for o in &d.objects {
-            let check = (target == Some(o.name.as_str()))
-                .then(|| self.check())
-                .flatten();
-            let label = [Some(o.name.clone()), self.rows(&o.name), check]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(BREAK);
-            let shape = match d.caller() == Some(o.name.as_str()) {
-                true => NodeShape::Stadium,
-                false => NodeShape::Round,
-            };
-            f.node(Ident::new(&o.name), &label, shape);
+    pub fn machine(&self, d: &Diagram) -> String {
+        let mut out = vec![
+            "stateDiagram-v2".to_string(),
+            format!("  classDef {DONE} font-weight:bold"),
+            format!("  classDef {FAILS} font-weight:bold"),
+        ];
+        let mut marked = Vec::new();
+        for i in &d.impls {
+            for (object, _) in &i.modules {
+                let o = Ident::new(object);
+                let state = Ident::new(&format!("s_{object}"));
+                out.push(format!(
+                    "  state \"{} · {}\" as {o} {{",
+                    escape_text(object),
+                    escape_text(&i.adapter)
+                ));
+                out.push("    direction LR".into());
+                out.push(format!("    [*] --> {state}"));
+                let mut lines = self.lines(object);
+                if lines.is_empty() {
+                    lines.push("state".into());
+                }
+                out.extend(lines.iter().map(|line| format!("    {state} : {line}")));
+                for (verb, _) in self.actions.iter().filter(|(_, to)| to == object) {
+                    let action = Ident::new(&format!("a_{object}_{verb}"));
+                    out.push(format!("    {state} --> {action}"));
+                    out.push(format!("    {action} : {}", escape_text(verb)));
+                    if self.done(verb) {
+                        marked.push(format!("  class {action} {DONE}"));
+                    }
+                }
+                out.push("  }".into());
+                let broken = d
+                    .objects
+                    .iter()
+                    .filter(|x| x.name == *object)
+                    .flat_map(|x| &x.invariants)
+                    .any(|i| self.broken == Some(i.name.as_str()));
+                if broken {
+                    marked.push(format!("  class {state} {FAILS}"));
+                }
+            }
         }
-        for (verb, to) in self.actions {
-            let style = match self.done(verb) {
-                true => EdgeStyle::Thick,
-                false => EdgeStyle::Dotted,
-            };
-            f.edge(
-                &Ident::new(d.caller().unwrap_or(to)),
-                &Ident::new(to),
-                style,
-                Some(&format!("«{verb}»")),
-            );
-        }
-        f.render()
+        out.extend(marked);
+        out.join("\n")
     }
 }
 

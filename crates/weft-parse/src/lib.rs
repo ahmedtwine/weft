@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 use kdl::KdlValue;
 pub use kdl::{KdlDocument, KdlEntry, KdlNode};
@@ -612,6 +614,49 @@ impl Object {
     }
 }
 
+const STARTS: [&str; 2] = ["reset", "url"];
+const EXPORTS: [&str; 3] = [
+    "export const ",
+    "export function ",
+    "export async function ",
+];
+
+fn word(text: &str) -> &str {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+        .next()
+        .unwrap_or_default()
+}
+
+fn exported(source: &str, path: &str) -> Vec<String> {
+    let names: Vec<&str> = match Path::new(path).extension().and_then(|e| e.to_str()) {
+        Some("py") => source
+            .lines()
+            .filter_map(|l| {
+                l.strip_prefix("def ")
+                    .or_else(|| l.strip_prefix("async def "))
+            })
+            .map(word)
+            .filter(|name| !name.starts_with('_'))
+            .collect(),
+        Some("go" | "rs") => source
+            .split("unction(\"")
+            .skip(1)
+            .filter_map(|part| part.split('"').next())
+            .collect(),
+        _ => source
+            .lines()
+            .filter_map(|l| EXPORTS.iter().find_map(|e| l.strip_prefix(e)))
+            .map(word)
+            .filter(|name| !name.ends_with("Schema"))
+            .collect(),
+    };
+    names
+        .into_iter()
+        .filter(|name| !name.is_empty() && !STARTS.contains(name))
+        .map(String::from)
+        .collect()
+}
+
 impl Diagram {
     fn object(&self, name: &str) -> Option<&Object> {
         self.objects.iter().find(|o| o.name == name)
@@ -628,6 +673,26 @@ impl Diagram {
             .iter()
             .find(|o| o.kind.is_person())
             .map(|o| o.name.as_str())
+    }
+
+    pub fn actions(&self, dir: &Path) -> Result<Vec<(String, String)>, String> {
+        let mut out = Vec::new();
+        for (object, path) in self.impls.iter().flat_map(|i| &i.modules) {
+            let mut at = PathBuf::new();
+            for part in dir.join(path).components() {
+                match part {
+                    Component::ParentDir if at.pop() => {}
+                    other => at.push(other),
+                }
+            }
+            let source = fs::read_to_string(&at).map_err(|e| format!("`{path}`: {e}"))?;
+            out.extend(
+                exported(&source, path)
+                    .into_iter()
+                    .map(|verb| (verb, object.clone())),
+            );
+        }
+        Ok(out)
     }
 
     pub fn invariants(&self) -> Vec<&Invariant> {
@@ -1846,5 +1911,18 @@ impl "bun" {
         for (from, to, want) in cases {
             assert_eq!(built(&base, from, to), want, "{to}");
         }
+    }
+
+    #[test]
+    fn each_language_exports_its_actions() {
+        let ts = "export const depositSchema = z.object({});\nexport const reset = () => {};\nexport const deposit = () => {};\nexport async function ship() {}\n";
+        assert_eq!(exported(ts, "bank.ts"), ["deposit", "ship"]);
+        let py = "def reset():\n    pass\ndef _call():\n    pass\ndef sign_up(tc):\n    def inner():\n        pass\n";
+        assert_eq!(exported(py, "shop.py"), ["sign_up"]);
+        let rs = "weft::module!()\n    .function(\"url\", url)\n    .function(\"reset\", reset)\n    .function(\"correct\", correct)";
+        assert_eq!(exported(rs, "addresses.rs"), ["correct"]);
+        let go =
+            "weft.NewModule().\n\t\tFunction(\"reset\", Reset).\n\t\tFunction(\"cancel\", Cancel)";
+        assert_eq!(exported(go, "orders.go"), ["cancel"]);
     }
 }

@@ -228,7 +228,16 @@ flowchart TB
 
 ## Dashboard
 
-`weft --ui` runs each test and serves a live dashboard at http://127.0.0.1:7357. Each run sends OpenTelemetry spans, one for each test case, step, check and HTTP request. The dashboard reads them into [Perspective](https://perspective-dev.github.io) tables as they arrive.
+`weft --ui [<file>…]` serves a live dashboard at http://127.0.0.1:7357 and runs each test when the page opens.
+
+| View          | Holds                                                                                                                                         |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Before a run  | The diagrams of the test, from its `.weft.kdl` file and the exports of its modules: a state diagram of each object in the group of its runner, and a sequence diagram of each action |
+| During a run  | The test cases and the trace of the chosen case beside the diagrams. Each step highlights its action and shows the state values after it     |
+
+A hover on an action lists each step of the case that runs it, with its input; a click on a step, or the arrow keys, moves to that step. Weft checks the actions of the module files against the actions of the runners before the first case.
+
+Each run sends OpenTelemetry spans, one for each test case, step, check and HTTP request, and the dashboard reads them into [Perspective](https://perspective-dev.github.io) tables as they arrive. The diagrams use [pele](https://pele.run) and its theme variables.
 
 ## Crates
 

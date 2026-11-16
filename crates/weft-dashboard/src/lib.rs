@@ -19,7 +19,7 @@ pub const STEPS: &str = "weft.steps";
 pub const CALLS: &str = "weft.calls";
 pub const CHECKS: &str = "weft.checks";
 pub const DIAGRAM: &str = "weft.diagram";
-pub const FLOW: &str = "weft.flow";
+pub const MACHINE: &str = "weft.machine";
 pub const FAILED: &str = "weft.failed";
 pub const TEST_CASE: &str = "hegel.test_case";
 pub const STEP: &str = "weft.step";
@@ -68,6 +68,8 @@ const FILES: (&str, &[(&str, &str)]) = (
         (CHECK, TEXT),
         (START, DATETIME),
         (DURATION, FLOAT),
+        (DIAGRAM, TEXT),
+        (MACHINE, TEXT),
     ],
 );
 
@@ -93,8 +95,9 @@ const STEPS_TABLE: (&str, &[(&str, &str)]) = (
         (STEP, INTEGER),
         (ACTION, TEXT),
         (CHECK, TEXT),
+        (INPUT, TEXT),
         (DIAGRAM, TEXT),
-        (FLOW, TEXT),
+        (MACHINE, TEXT),
         (FAILED, BOOLEAN),
     ],
 );
@@ -287,7 +290,7 @@ fn moment(span: &SpanData, row: &Map<String, Json>) -> Map<String, Json> {
         0 => INITIAL.to_string(),
         k => format!("{k} «{}»", span.name),
     };
-    [FILE, TEST_CASE, CHECK, DIAGRAM, FLOW]
+    [FILE, TEST_CASE, CHECK, INPUT, DIAGRAM, MACHINE]
         .into_iter()
         .map(|column| {
             (
@@ -326,7 +329,8 @@ fn states(moment: &Map<String, Json>, row: &Map<String, Json>) -> Vec<Json> {
         .map(|(object, key, item, field, value)| {
             let mut row = moment.clone();
             row.remove(DIAGRAM);
-            row.remove(FLOW);
+            row.remove(INPUT);
+            row.remove(MACHINE);
             row.remove(FAILED);
             row.extend(
                 [

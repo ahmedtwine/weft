@@ -20,7 +20,12 @@
   --pele-border: #d4d4d4;
   --pele-accent: #c9772f;
   --pele-critical: #e45756;
+  --pele-error: #e45756;
+  --pele-fg-on-light: #1f1f1f;
+  --pele-fg-on-dark: #ffffff;
+  --pele-radius: 6px;
   --pele-font: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --pele-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   --bg: #ffffff;
   --fg: #1f1f1f;
   --muted: #6e6e6e;
@@ -38,6 +43,7 @@
     --pele-border: #4a4c50;
     --pele-accent: #e0904a;
     --pele-critical: #f07574;
+    --pele-error: #f07574;
     --bg: #161616;
     --fg: #e6e6e6;
     --muted: #9a9a9a;
@@ -63,13 +69,17 @@ header {
 h1 { margin: 0; font-size: 15px; font-weight: 600; }
 h1 button { all: unset; cursor: pointer; }
 main { position: relative; flex: 1; min-height: 0; }
-:is(weft-sequence, weft-flow) .pele-edge:not(:has([stroke-dasharray])) path { stroke: var(--pele-accent); fill: none; }
-:is(weft-sequence, weft-flow) .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fill: var(--pele-accent); }
-:is(weft-sequence, weft-flow).failed .pele-edge:not(:has([stroke-dasharray])) path { stroke: var(--pele-critical); }
-:is(weft-sequence, weft-flow).failed .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fill: var(--pele-critical); }
-:is(weft-sequence, weft-flow) .failed :is(rect, path) { stroke: var(--pele-critical); }
-:is(weft-sequence, weft-flow) .failed text { fill: var(--pele-critical); }
-weft-sequence, weft-flow {
+weft-sequence .pele-edge:not(:has([stroke-dasharray])) path { stroke: var(--pele-accent); fill: none; }
+weft-sequence .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fill: var(--pele-accent); }
+weft-sequence.failed .pele-edge:not(:has([stroke-dasharray])) path { stroke: var(--pele-critical); }
+weft-sequence.failed .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fill: var(--pele-critical); }
+:is(weft-sequence, weft-machine) .pele-edge-label.done text { fill: var(--pele-accent); font-weight: bold; }
+:is(weft-sequence, weft-machine) .pele-node.done rect { stroke: var(--pele-accent); stroke-width: 2px; }
+:is(weft-sequence, weft-machine) .pele-node.done text { fill: var(--pele-accent); }
+:is(weft-sequence, weft-machine) :is(.failed, .fails) :is(rect, path) { stroke: var(--pele-critical); stroke-width: 2px; }
+:is(weft-sequence, weft-machine) :is(.failed, .fails) text { fill: var(--pele-critical); }
+:is(weft-sequence, weft-machine) .acted { cursor: pointer; }
+weft-sequence, weft-machine {
   display: block;
   height: 100%;
   overflow: auto;
@@ -78,6 +88,28 @@ weft-sequence, weft-flow {
   background: var(--bg);
   color: var(--fg);
 }
+#steps {
+  position: fixed;
+  z-index: 10;
+  display: none;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--pele-border);
+  border-radius: var(--pele-radius);
+  background: var(--pele-surface);
+  color: var(--pele-fg);
+  font: 12px/1.5 var(--pele-font-mono);
+}
+#steps button {
+  all: unset;
+  display: block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#steps button:hover, #steps button.at { background: var(--pele-surface-alt); color: var(--pele-accent); }
 perspective-viewer {
   position: absolute;
   inset: 0;
@@ -100,6 +132,7 @@ perspective-viewer [theme] {
 <main>
   <perspective-viewer></perspective-viewer>
 </main>
+<div id="steps"></div>
 <script type="module">
 import "./vendor/viewer/cdn/perspective-viewer.js";
 import "./vendor/viewer-datagrid/cdn/perspective-viewer-datagrid.js";
@@ -111,12 +144,14 @@ const FILE = "weft.file";
 const TEST_CASE = "hegel.test_case";
 const CHECK = "weft.check";
 const DIAGRAM = "weft.diagram";
-const FLOW = "weft.flow";
+const MACHINE = "weft.machine";
+const INPUT = "weft.input";
 const FAILED = "weft.failed";
 const FAILS = "«fails»";
 const STEP = "weft.step";
 const STATUS = "weft.status";
 const RUNNING = "running";
+const READY = "ready";
 
 class Drawing extends (await customElements.whenDefined("perspective-viewer-plugin")) {
   get_static_config() {
@@ -137,10 +172,20 @@ class Drawing extends (await customElements.whenDefined("perspective-viewer-plug
     if (!text) return;
     this.classList.toggle("failed", step[FAILED] === true);
     if (this.mounted) this.mounted.update(text);
-    else this.mounted = mount(this, text, { fontSize: 13, maxWidth: Number.MAX_SAFE_INTEGER, onRender: () => this.marked() });
+    else this.mounted = mount(this, text, { fontSize: 13, monospace: ["messages"], onRender: () => this.marked() });
   }
   marked() {
-    for (const note of this.querySelectorAll(".pele-node, .pele-note")) note.classList.toggle("failed", note.textContent.startsWith(FAILS));
+    for (const note of this.querySelectorAll(".pele-note")) note.classList.toggle("failed", note.textContent.startsWith(FAILS));
+    for (const edge of this.querySelectorAll(".pele-edge")) {
+      const solid = !edge.querySelector("[stroke-dasharray]");
+      this.querySelector(`.pele-edge-label[data-id="${edge.dataset.id}"]`)?.classList.toggle("done", solid && this.constructor.column === DIAGRAM);
+    }
+    for (const acted of this.querySelectorAll('.pele-edge-label, .pele-node.pele-state[data-id^="a_"]')) {
+      const verb = acted.textContent.trim().replace(/^«|»$/g, "");
+      acted.classList.add("acted");
+      acted.onmouseenter = () => listed(verb, acted.getBoundingClientRect());
+      acted.onmouseleave = () => unlisted();
+    }
   }
   async clear() {}
   async resize() {
@@ -153,10 +198,10 @@ class Drawing extends (await customElements.whenDefined("perspective-viewer-plug
 class Sequence extends Drawing {
   static column = DIAGRAM;
 }
-class Flow extends Drawing {
-  static column = FLOW;
+class Machine extends Drawing {
+  static column = MACHINE;
 }
-for (const plugin of [Sequence, Flow]) {
+for (const plugin of [Machine, Sequence]) {
   const tag = `weft-${plugin.name.toLowerCase()}`;
   customElements.define(tag, plugin);
   await customElements.get("perspective-viewer").registerPlugin(tag);
@@ -240,7 +285,7 @@ const first = async (table, config, wait) => {
   return row;
 };
 
-const ended = (file, wait) => first("files", { columns: [STATUS], filter: [[FILE, "==", file], [STATUS, "!=", RUNNING]] }, wait);
+const ended = (file, wait) => first("files", { columns: [STATUS], filter: [[FILE, "==", file], [STATUS, "not in", [RUNNING, READY]]] }, wait);
 
 const chosen = async (file, done) => {
   const newest = (filter) => first("tests", { columns: [TEST_CASE, CHECK], filter: [[FILE, "==", file], ...filter], sort: [[TEST_CASE, "desc"]] }, true);
@@ -250,21 +295,52 @@ const chosen = async (file, done) => {
 const STEP_COLUMN = "Step";
 const CHECK_COLUMN = "Check";
 const CHECKED = { [CHECK_COLUMN]: { column_size_override: 90, fg_mode: "series", fg_color: "linear-gradient(to right, #7fb069, #e45756, #e45756, #e45756, #e45756, #e45756, #e45756, #e45756)" } };
+const DRAWN = ["machine", "sequence"];
 let pinned = [];
 const moment = (step) => ({ filter: [...pinned, ["action", "==", step]] });
 let moments = [];
 let at = 0;
 const filmed = async () => {
   await first("steps", { columns: ["action"], filter: pinned }, true);
-  const view = await tables.steps.view({ columns: ["action"], filter: pinned, sort: [[STEP, "asc"]] });
-  moments = (await view.to_json()).map((row) => row.action);
+  const view = await tables.steps.view({ columns: ["action", INPUT], filter: pinned, sort: [[STEP, "asc"]] });
+  moments = await view.to_json();
   await view.delete();
   at = moments.length - 1;
-  return moment(moments[at]);
+  return moment(moments[at].action);
 };
-const play = (step) => {
-  at = moments.indexOf(step);
-  return viewer.restore(moment(step), { panel: "sequence" });
+const play = async (step) => {
+  at = moments.findIndex((m) => m.action === step);
+  for (const panel of DRAWN) await viewer.restore(moment(step), { panel });
+};
+
+const box = document.getElementById("steps");
+let leaving;
+const unlisted = () => (leaving = setTimeout(() => (box.style.display = "none"), 250));
+box.onmouseenter = () => clearTimeout(leaving);
+box.onmouseleave = unlisted;
+const shown = (input) => {
+  try {
+    return JSON.parse(input ?? "[]").filter((part) => part !== null).map((part) => (typeof part === "object" ? Object.entries(part).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ") : JSON.stringify(part))).join(" ");
+  } catch {
+    return input ?? "";
+  }
+};
+const listed = (verb, near) => {
+  clearTimeout(leaving);
+  const mine = moments.filter((m) => m.action.endsWith(`«${verb}»`));
+  if (!mine.length) return (box.style.display = "none");
+  box.replaceChildren(
+    ...mine.map((m) => {
+      const button = document.createElement("button");
+      button.textContent = `${m.action} ${shown(m[INPUT])}`.trim();
+      button.classList.toggle("at", moments[at] === m);
+      button.onclick = () => play(m.action);
+      return button;
+    }),
+  );
+  box.style.display = "block";
+  box.style.left = `${Math.min(near.left, innerWidth - box.offsetWidth - 8)}px`;
+  box.style.top = `${Math.min(near.bottom + 4, innerHeight - box.offsetHeight - 8)}px`;
 };
 
 const path = ({ object, key, item, field }) =>
@@ -299,18 +375,35 @@ const select = async (file, test) => {
   const { config, retire } = await tabled(titled(file, test));
   await viewer.restore(config, { panel: "trace" });
   await retire();
-  await viewer.restore(await filmed(), { panel: "sequence" });
+  const shot = await filmed();
+  for (const panel of DRAWN) await viewer.restore(shot, { panel });
+};
+
+const drawing = (plugin, title, rest) => ({ title, plugin, theme: theme(), ...rest });
+const stacked = (sizes, children) => ({ type: "split-layout", orientation: "vertical", sizes, children });
+const started = (file, wait) => first("tests", { columns: [TEST_CASE], filter: [[FILE, "==", file], ["weft.steps", ">", 0]] }, wait);
+
+const drawn = async (file) => {
+  moments = [];
+  const plan = { table: "files", columns: [DIAGRAM, MACHINE], filter: [[FILE, "==", file]] };
+  await viewer.restoreWorkspace({
+    panels: { machine: drawing("Machine", `${file} · states`, plan), sequence: drawing("Sequence", `${file} · sequence`, plan) },
+    layout: stacked([0.5, 0.5], [cell(["machine"]), cell(["sequence"])]),
+  });
+  await started(file, true);
+  if (history.state === file) await trace(file);
 };
 
 const trace = async (file) => {
+  if (!(await started(file, false))) return drawn(file);
   const running = !(await ended(file, false));
   const test = (await chosen(file, !running))[TEST_CASE];
   pinned = [[FILE, "==", file], [TEST_CASE, "==", test]];
   const { config, retire } = await tabled(titled(file, test));
+  const shot = await filmed();
+  const plan = { table: "steps", columns: [DIAGRAM, MACHINE, FAILED], ...shot };
   await viewer.restoreWorkspace({
     panels: {
-      trace: config,
-      sequence: { table: "steps", title: "Diagram", plugin: "Sequence", theme: theme(), columns: [DIAGRAM, FLOW, FAILED], ...(await filmed()) },
       cases: panel({
         table: "tests",
         title: "Test cases",
@@ -321,23 +414,15 @@ const trace = async (file) => {
         plugin_config: { edit_mode: "SELECT_ROW" },
         columns_config: sized({ [CHECK]: 1200 }),
       }),
-      search: panel({
-        table: "tests",
-        title: "Steps and HTTP requests in each test case",
-        plugin: "Y Line",
-        filter: [[FILE, "==", file]],
-        group_by: [TEST_CASE],
-        columns: ["weft.steps", "weft.calls"],
-      }),
+      trace: config,
+      machine: drawing("Machine", "States", plan),
+      sequence: drawing("Sequence", "Sequence", plan),
     },
     layout: {
       type: "split-layout",
       orientation: "horizontal",
-      sizes: [0.55, 0.45],
-      children: [
-        { type: "split-layout", orientation: "vertical", sizes: [0.25, 0.75], children: [cell(["cases"]), cell(["trace"])] },
-        { type: "split-layout", orientation: "vertical", sizes: [0.5, 0.5], children: [cell(["sequence"]), cell(["search"])] },
-      ],
+      sizes: [0.32, 0.68],
+      children: [stacked([0.3, 0.7], [cell(["cases"]), cell(["trace"])]), stacked([0.4, 0.6], [cell(["machine"]), cell(["sequence"])])],
     },
   });
   await retire();
@@ -364,7 +449,7 @@ addEventListener("keydown", (event) => {
   const by = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key];
   if (!by || !moments.length) return;
   event.preventDefault();
-  play(moments[Math.min(Math.max(at + by, 0), moments.length - 1)]);
+  play(moments[Math.min(Math.max(at + by, 0), moments.length - 1)].action);
 });
 addEventListener("popstate", () => show(history.state));
 const opened = decodeURIComponent(location.hash.slice(1)) || null;

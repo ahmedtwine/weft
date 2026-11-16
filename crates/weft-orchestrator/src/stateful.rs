@@ -604,9 +604,31 @@ pub(crate) fn run<'a>(
     file: &str,
     members: &mut Members,
     key: Option<&str>,
+    declared: &[(String, String)],
     stream: &'a mut Stream<'a>,
 ) -> Result<Outcome, String> {
     let steps = owners(d, members)?;
+    let given: BTreeSet<(&str, &str)> = steps
+        .iter()
+        .map(|s| (s.verb.as_str(), s.object.as_str()))
+        .collect();
+    let read: BTreeSet<(&str, &str)> = declared
+        .iter()
+        .map(|(verb, object)| (verb.as_str(), object.as_str()))
+        .collect();
+    if given != read {
+        let shown = |all: &BTreeSet<(&str, &str)>| {
+            all.iter()
+                .map(|(verb, object)| format!("{object}.{verb}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(format!(
+            "the runners give the actions {}, and the modules of the test export {}",
+            shown(&given),
+            shown(&read)
+        ));
+    }
     let mut run = Machine {
         d,
         tally: steps
@@ -633,12 +655,7 @@ pub(crate) fn run<'a>(
         order: Vec::new(),
         stream,
     };
-    let actions: Vec<(String, String)> = run
-        .steps
-        .iter()
-        .map(|s| (s.verb.clone(), s.object.clone()))
-        .collect();
-    (run.stream)(Event::Actions(&actions));
+    (run.stream)(Event::Actions(declared));
     let mut engine = Engine::start(d.run.cases, key)?;
     loop {
         let case = engine.case()?;

@@ -11,15 +11,16 @@ use opentelemetry::{Context, KeyValue};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider};
 use weft_dashboard::{
-    BODY, CALLS, CHECK, CHECKS, CODE, DIAGRAM, FILE, FLOW, FROM, HOPS, INPUT, METHOD, ORDER, PATH,
-    REFUSED, REPLY, STATE, STATUS, STEP, STEPS, TEST_CASE, TEST_CASES, TO,
+    BODY, CALLS, CHECK, CHECKS, CODE, DIAGRAM, FILE, FROM, HOPS, INPUT, MACHINE, METHOD, ORDER,
+    PATH, REFUSED, REPLY, STATE, STATUS, STEP, STEPS, TEST_CASE, TEST_CASES, TO,
 };
 use weft_draw::Moment;
 use weft_orchestrator::{Event, Line, brief, compact, sorted};
-use weft_parse::Diagram;
+use weft_parse::{Diagram, State};
 
 const SERVICE: &str = "weft";
 const ERROR: &str = "error";
+const READY: &str = "ready";
 const START: &str = "start";
 const PASSED: char = '✓';
 const FAILED: char = '✕';
@@ -60,6 +61,7 @@ pub(crate) struct Spans<'a> {
     lines: Vec<Line>,
     actions: Vec<(String, String)>,
     judged: BTreeMap<String, String>,
+    broken: Option<String>,
     file: String,
     run: i64,
     k: i64,
@@ -121,6 +123,29 @@ pub(crate) fn ended(file: &str, end: Ended) {
     }
 }
 
+pub(crate) fn drawn(file: &str, d: &Diagram, actions: &[(String, String)]) {
+    if let Some(provider) = PROVIDER.get() {
+        let moment = Moment {
+            actions,
+            done: None,
+            state: &State::new(),
+            failed: &[],
+            broken: None,
+        };
+        provider
+            .tracer(SERVICE)
+            .build(
+                SpanBuilder::from_name(file.to_string()).with_attributes(vec![
+                    KeyValue::new(FILE, file.to_string()),
+                    KeyValue::new(STATUS, READY),
+                    KeyValue::new(DIAGRAM, moment.sequence(d)),
+                    KeyValue::new(MACHINE, moment.machine(d)),
+                ]),
+            )
+            .end();
+    }
+}
+
 impl<'a> Spans<'a> {
     pub(crate) fn new(file: &str, d: &'a Diagram) -> Option<Spans<'a>> {
         PROVIDER.get().map(|provider| Spans {
@@ -129,6 +154,7 @@ impl<'a> Spans<'a> {
             lines: Vec::new(),
             actions: Vec::new(),
             judged: BTreeMap::new(),
+            broken: None,
             file: file.to_string(),
             run: 0,
             k: 0,
@@ -178,7 +204,7 @@ impl<'a> Spans<'a> {
         let Some(line) = self.lines.last() else {
             return [
                 KeyValue::new(DIAGRAM, String::new()),
-                KeyValue::new(FLOW, String::new()),
+                KeyValue::new(MACHINE, String::new()),
             ];
         };
         let failed: Vec<String> = brief(&line.evidence).pop().into_iter().collect();
@@ -187,10 +213,11 @@ impl<'a> Spans<'a> {
             done: line.action.as_ref().map(|(verb, _)| verb.as_str()),
             state: &line.state,
             failed: &failed,
+            broken: self.broken.as_deref(),
         };
         [
             KeyValue::new(DIAGRAM, moment.sequence(self.d)),
-            KeyValue::new(FLOW, moment.flow(self.d)),
+            KeyValue::new(MACHINE, moment.machine(self.d)),
         ]
     }
 
@@ -278,6 +305,7 @@ impl<'a> Spans<'a> {
                 self.close();
                 (self.run, self.k, self.order, self.calls, self.check) =
                     (run as i64, 0, 0, 0, None);
+                self.broken = None;
                 self.lines.clear();
                 let attributes = vec![
                     KeyValue::new(FILE, self.file.clone()),
@@ -305,6 +333,7 @@ impl<'a> Spans<'a> {
                     step.span().set_status(Status::error(check.clone()));
                 }
                 self.judge(name, format!("{FAILED} {check}"));
+                self.broken = Some(name.to_string());
                 self.check = Some(check);
             }
             Event::End(..) => {
