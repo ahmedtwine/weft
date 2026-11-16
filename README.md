@@ -5,7 +5,7 @@ A distributed runner for [Hegel](https://hegel.dev) property tests
 ## Install
 
 ```sh
-bun add -d git+ssh://git@github.com/ahmedtwine/weft.git#v0.5.1
+bun add -d git+ssh://git@github.com/ahmedtwine/weft.git#v0.6.0
 ```
 
 

@@ -7848,7 +7848,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "weft-c"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "cbindgen",
  "serde_json",
@@ -7860,7 +7860,7 @@ dependencies = [
 
 [[package]]
 name = "weft-cli"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "globset",
  "ignore",
@@ -7876,7 +7876,7 @@ dependencies = [
 
 [[package]]
 name = "weft-dashboard"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "include_dir",
  "opentelemetry",
@@ -7886,7 +7886,7 @@ dependencies = [
 
 [[package]]
 name = "weft-draw"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "merman",
  "sealmap-mermaid",
@@ -7896,7 +7896,7 @@ dependencies = [
 
 [[package]]
 name = "weft-hegel"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "hegeltest-c",
  "serde_json",
@@ -7904,7 +7904,7 @@ dependencies = [
 
 [[package]]
 name = "weft-invariants"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde_json",
  "weft-orchestrator",
@@ -7914,7 +7914,7 @@ dependencies = [
 
 [[package]]
 name = "weft-orchestrator"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "libc",
  "serde_json",
@@ -7926,7 +7926,7 @@ dependencies = [
 
 [[package]]
 name = "weft-parse"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "kdl",
  "miette",
@@ -7935,7 +7935,7 @@ dependencies = [
 
 [[package]]
 name = "weft-samples"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "futures",
  "rig",
@@ -7946,7 +7946,7 @@ dependencies = [
 
 [[package]]
 name = "weft-sdk"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "proc-macro2",
  "schemars 1.2.3",
@@ -7958,7 +7958,7 @@ dependencies = [
 
 [[package]]
 name = "weft-wire"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
