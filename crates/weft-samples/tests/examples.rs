@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use invariants::artifact::{Artifact, example};
-use invariants::{Result, THRESHOLD, scores};
+use weft_samples::artifact::{Artifact, example};
+use weft_samples::{Candidate, Result, THRESHOLD, measures};
 
 fn flow(file: &Path) -> Result<()> {
     let artifact = Artifact::open(file)?;
@@ -27,12 +27,13 @@ fn flow(file: &Path) -> Result<()> {
     let machines = artifact.narrow(&example, |marked, alternate| {
         let name = owner(marked)?;
         let measure = example.invariants.get(&name)?.clone();
-        let scored = scores(
-            &artifact.jev,
-            &BTreeMap::from([(name.clone(), measure)]),
-            &[alternate.text.as_str()],
-        )
-        .ok()?;
+        let scored = artifact
+            .model
+            .scores(
+                &BTreeMap::from([(name.clone(), measure)]),
+                &[alternate.text.as_str()],
+            )
+            .ok()?;
         Some(scored.first()?.get(&name)? >= &THRESHOLD)
     })?;
     println!("flow");
@@ -44,11 +45,15 @@ fn flow(file: &Path) -> Result<()> {
             continue;
         };
         let target = &expected[&name];
-        let flagged = artifact.flagged(&machine.invariants.iter().cloned().collect())?;
+        let flagged = artifact.flagged(&measures(&machine.invariants))?;
         let none = BTreeSet::new();
         let parts = |candidate: &str| flagged.get(candidate).unwrap_or(&none);
         let wrong = |candidate: &str| parts(candidate).symmetric_difference(target).count();
-        let Some((best, measure)) = machine.invariants.iter().min_by_key(|(c, _)| wrong(c)) else {
+        let Some(Candidate {
+            name: best,
+            measure,
+        }) = machine.invariants.iter().min_by_key(|c| wrong(&c.name))
+        else {
             continue;
         };
         let chosen = machine.invariant().map(|i| i.name);

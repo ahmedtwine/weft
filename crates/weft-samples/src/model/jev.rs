@@ -5,8 +5,8 @@ use rig::typesafeai::types::{Answer, Question};
 use rig::typesafeai::{DynamicQuery, Evaluate, Jev as Client};
 use serde_json::Value;
 
+use super::{cached, secret};
 use crate::Result;
-use crate::provider::{cached, secret};
 
 const PARALLEL: usize = 8;
 

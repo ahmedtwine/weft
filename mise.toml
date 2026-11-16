@@ -2,7 +2,7 @@ monorepo_root = true
 
 [monorepo]
 config_roots = [
-  "crates/invariants",
+  "crates/weft-samples",
   "examples",
   "examples/runners/*",
 ]

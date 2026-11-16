@@ -146,7 +146,8 @@ api "courier" {
 | `weft-c`         | libweft, the C ABI that each SDK loads                                                       |
 | `weft-dashboard` | Turns the spans of each run into Perspective tables and serves the dashboard                 |
 | `weft-cli`       | The `weft` command and the spans of each run                                                 |
-| `invariants`     | Some experiments; see [its README](crates/invariants/README.md) |
+| `weft-samples`   | Draws candidate invariants from examples with a model; see [its README](crates/weft-samples/README.md) |
+| `weft-invariants` | Experimental: keeps the candidates that the states of a test do not make false; see [its README](crates/weft-invariants/README.md) |
 
 ## License
 

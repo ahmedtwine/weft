@@ -1,8 +1,7 @@
 use serde_json::json;
 
-use crate::provider::gemini::{Gemini, MODEL};
-use crate::provider::jev::Jev;
-use crate::{Generator, Invariant, Medium, Result, Rule, THRESHOLD, scores};
+use crate::model::{self, Example, Given, MODEL, Model};
+use crate::{Candidate, Generator, Invariant, Medium, Result, Rule, THRESHOLD, measures};
 
 const STEPS: usize = 12;
 const SIZE: usize = 6;
@@ -17,12 +16,12 @@ pub struct Alternate {
 pub struct Machine {
     pub alternates: Vec<Alternate>,
     reactions: Vec<Option<bool>>,
-    pub invariants: Vec<(String, String)>,
+    pub invariants: Vec<Candidate>,
 }
 
 impl Machine {
     pub fn new(
-        (jev, gemini): (&Jev, &Gemini),
+        model: &Model,
         medium: &dyn Medium,
         artifact: &str,
         (marked, note): (&str, &str),
@@ -36,39 +35,40 @@ impl Machine {
             .find(|p| p.span.start <= at && at + marked.len() <= p.span.end)
             .ok_or(format!("{marked:?} is in no part"))?;
         let offset = at - part.span.start;
-        let model = Rule {
+        let annotation = Given {
+            examples: vec![Example {
+                text: marked.to_string(),
+                note: note.to_string(),
+            }],
+            context: json!({"artifact": artifact, "part": part.text}),
+        };
+        let alternate = Rule {
             verb: "alternate".into(),
-            drawn: Generator::Model(
-                MODEL.into(),
-                json!({
-                    "artifact": artifact,
-                    "part": part.text,
-                    "marked": marked,
-                    "note": note,
-                    "size": SIZE
-                }),
-            ),
+            drawn: Generator::Model(MODEL.into(), model::alternate(&annotation, SIZE)),
         };
         let mut drawn = vec![(part.text.clone(), "annotation", note.to_string())];
-        let mut candidates = vec![(
-            marked.to_string(),
-            format!("Each part is free of the text {marked:?}."),
-        )];
-        for rule in std::iter::once(model).chain(medium.rules(
+        let mut candidates = vec![Candidate {
+            name: marked.to_string(),
+            measure: format!("Each part is free of the text {marked:?}."),
+        }];
+        for rule in std::iter::once(alternate).chain(medium.rules(
             artifact,
             part,
             offset..offset + marked.len(),
         )) {
             let kind = rule.drawn.kind();
-            for value in rule.drawn.values(gemini)? {
+            for value in rule.drawn.values(model)? {
                 if let Some(text) = value["text"].as_str() {
                     let change = value["measure"].as_str().unwrap_or_default();
                     drawn.push((text.to_string(), kind, change.to_string()));
                     if let (Some(name), Some(measure)) =
                         (value["name"].as_str(), value["measure"].as_str())
-                        && !candidates.iter().any(|(known, _)| known == name)
+                        && !candidates.iter().any(|known| known.name == name)
                     {
-                        candidates.push((name.to_string(), measure.to_string()));
+                        candidates.push(Candidate {
+                            name: name.to_string(),
+                            measure: measure.to_string(),
+                        });
                     }
                     continue;
                 }
@@ -100,21 +100,21 @@ impl Machine {
         }
         let invariants = candidates;
         let texts: Vec<&str> = unique.iter().map(|(text, ..)| text.as_str()).collect();
-        let alternates: Vec<Alternate> =
-            scores(jev, &invariants.iter().cloned().collect(), &texts)?
-                .into_iter()
-                .zip(unique)
-                .map(|(scores, (text, kind, change))| Alternate {
-                    text,
-                    kind,
-                    change,
-                    invariants: scores
-                        .into_iter()
-                        .filter(|(_, score)| *score >= THRESHOLD)
-                        .map(|(name, _)| name)
-                        .collect(),
-                })
-                .collect();
+        let alternates: Vec<Alternate> = model
+            .scores(&measures(&invariants), &texts)?
+            .into_iter()
+            .zip(unique)
+            .map(|(scores, (text, kind, change))| Alternate {
+                text,
+                kind,
+                change,
+                invariants: scores
+                    .into_iter()
+                    .filter(|(_, score)| *score >= THRESHOLD)
+                    .map(|(name, _)| name)
+                    .collect(),
+            })
+            .collect();
         let mut reactions = vec![None; alternates.len()];
         reactions[0] = Some(true);
         Ok(Self {
@@ -124,15 +124,17 @@ impl Machine {
         })
     }
 
-    fn agreeing(&self) -> Vec<&(String, String)> {
+    fn agreeing(&self) -> Vec<&Candidate> {
         self.invariants
             .iter()
-            .filter(|(name, _)| {
+            .filter(|candidate| {
                 self.reactions
                     .iter()
                     .zip(&self.alternates)
                     .all(|(reaction, alternate)| {
-                        reaction.is_none_or(|reject| reject == alternate.invariants.contains(name))
+                        reaction.is_none_or(|reject| {
+                            reject == alternate.invariants.contains(&candidate.name)
+                        })
                     })
             })
             .collect()
@@ -143,7 +145,7 @@ impl Machine {
         let votes = |round: usize| {
             agreeing
                 .iter()
-                .filter(|(name, _)| self.alternates[round].invariants.contains(name))
+                .filter(|candidate| self.alternates[round].invariants.contains(&candidate.name))
                 .count()
         };
         (0..self.alternates.len())
@@ -159,10 +161,10 @@ impl Machine {
     }
 
     pub fn invariant(&self) -> Option<Invariant> {
-        let (name, measure) = self.agreeing().into_iter().min_by_key(|(name, _)| {
+        let Candidate { name, measure } = self.agreeing().into_iter().min_by_key(|candidate| {
             self.alternates
                 .iter()
-                .filter(|alternate| alternate.invariants.contains(name))
+                .filter(|alternate| alternate.invariants.contains(&candidate.name))
                 .count()
         })?;
         let texts = |reject: bool| {

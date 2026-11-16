@@ -137,7 +137,7 @@ fn cleaned(text: String) -> String {
 }
 
 fn valid(text: &str) -> bool {
-    let dir = std::env::temp_dir().join("invariants");
+    let dir = std::env::temp_dir().join(env!("CARGO_PKG_NAME"));
     let file = dir.join(format!("{}.rs", std::process::id()));
     std::fs::create_dir_all(&dir).is_ok()
         && std::fs::write(&file, text).is_ok()

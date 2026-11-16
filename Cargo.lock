@@ -3180,17 +3180,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "invariants"
-version = "0.5.1"
-dependencies = [
- "futures",
- "rig",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "io-uring"
 version = "0.7.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7914,6 +7903,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "weft-invariants"
+version = "0.5.1"
+dependencies = [
+ "serde_json",
+ "weft-parse",
+ "weft-runner",
+ "weft-samples",
+ "weft-simulator",
+]
+
+[[package]]
 name = "weft-parse"
 version = "0.5.1"
 dependencies = [
@@ -7932,6 +7932,17 @@ dependencies = [
  "weft-parse",
  "weft-simulator",
  "weft-wire",
+]
+
+[[package]]
+name = "weft-samples"
+version = "0.5.1"
+dependencies = [
+ "futures",
+ "rig",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

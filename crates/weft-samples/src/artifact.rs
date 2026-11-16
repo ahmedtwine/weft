@@ -4,8 +4,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::machine::{Alternate, Machine};
-use crate::provider::gemini::Gemini;
-use crate::provider::jev::Jev;
+use crate::model::Model;
 use crate::{Medium, Part, Result, lint, medium};
 
 #[derive(Deserialize)]
@@ -22,8 +21,7 @@ pub struct Artifact<'a> {
     pub text: String,
     pub medium: Box<dyn Medium + Send + Sync>,
     pub parts: Vec<Part>,
-    pub jev: Jev,
-    pub gemini: Gemini,
+    pub model: Model,
 }
 
 pub fn read(path: &Path) -> Result<String> {
@@ -43,8 +41,7 @@ impl<'a> Artifact<'a> {
             parts: medium.parts(&text),
             text,
             medium,
-            jev: Jev::open()?,
-            gemini: Gemini::open()?,
+            model: Model::open()?,
         })
     }
 
@@ -63,7 +60,7 @@ impl<'a> Artifact<'a> {
         &self,
         invariants: &BTreeMap<String, String>,
     ) -> Result<Vec<(usize, String)>> {
-        let found = lint(&self.jev, invariants, &self.parts)?;
+        let found = lint(&self.model, invariants, &self.parts)?;
         for v in &found {
             println!(
                 "{}  {}  {:.2}  {:?}",
@@ -118,7 +115,7 @@ impl<'a> Artifact<'a> {
         for (marked, note) in &example.annotations {
             println!("annotation  {marked:?}  {note:?}");
             let mut machine = Machine::new(
-                (&self.jev, &self.gemini),
+                &self.model,
                 self.medium.as_ref(),
                 &self.text,
                 (marked, note),
@@ -167,7 +164,7 @@ impl<'a> Artifact<'a> {
         invariants: &BTreeMap<String, String>,
     ) -> Result<BTreeMap<String, BTreeSet<usize>>> {
         let mut flagged: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-        for v in lint(&self.jev, invariants, &self.parts)? {
+        for v in lint(&self.model, invariants, &self.parts)? {
             flagged.entry(v.invariant).or_default().insert(v.part);
         }
         Ok(flagged)

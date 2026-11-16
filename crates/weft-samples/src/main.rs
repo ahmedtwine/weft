@@ -3,11 +3,11 @@ use std::io::BufRead;
 use std::path::Path;
 use std::process::ExitCode;
 
-use invariants::Result;
-use invariants::artifact::{Artifact, example};
-use invariants::machine::{Alternate, Machine};
+use weft_samples::Result;
+use weft_samples::artifact::{Artifact, example};
+use weft_samples::machine::{Alternate, Machine};
 
-const USAGE: &str = "usage: invariants check <file> <invariants.json> | narrow <file>";
+const USAGE: &str = "usage: weft-samples check <file> <invariants.json> | narrow <file>";
 
 fn asked(_: &str, alternate: &Alternate) -> Option<bool> {
     println!(
@@ -39,7 +39,12 @@ fn narrow(file: &Path) -> Result<()> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let done = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+    let done = match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["check", file, invariants] => Artifact::open(Path::new(file)).and_then(|artifact| {
             artifact
                 .violations(&example(Path::new(invariants))?.invariants)
