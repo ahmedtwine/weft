@@ -230,10 +230,12 @@ flowchart TB
 
 `weft --ui [<file>…]` serves a live dashboard at http://127.0.0.1:7357 and runs each test when the page opens.
 
-| View          | Holds                                                                                                                                         |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Before a run  | The diagrams of the test, from its `.weft.kdl` file and the exports of its modules: a state diagram of each object in the group of its runner, and a sequence diagram of each action |
-| During a run  | The test cases and the trace of the chosen case beside the diagrams. Each step highlights its action and shows the state values after it     |
+| View | Holds |
+| ---- | ----- |
+| Before a run | One diagram of the test, from its `.weft.kdl` file and the exports of its modules: a section for each object in the color of its runner, with its state, its actions and its invariants. The sequence of the actions is in a second tab |
+| During a run | The test cases and the trace of the chosen case beside the diagram. Each step highlights its action, writes the state values into the same boxes, and marks a broken invariant |
+
+Weft writes the diagram in each count of columns, and the page keeps the one that shows the largest text in its panel. Each state value has a fixed width, so the layout stays the same from step to step.
 
 A hover on an action lists each step of the case that runs it, with its input; a click on a step, or the arrow keys, moves to that step. Weft checks the actions of the module files against the actions of the runners before the first case.
 

@@ -26,6 +26,14 @@
   --pele-radius: 6px;
   --pele-font: ui-monospace, SFMono-Regular, Menlo, monospace;
   --pele-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --pele-series-1: #4c78a8;
+  --pele-series-2: #f58518;
+  --pele-series-3: #54a24b;
+  --pele-series-4: #e45756;
+  --pele-series-5: #72b7b2;
+  --pele-series-6: #eeca3b;
+  --pele-series-7: #b279a2;
+  --pele-series-8: #9d755d;
   --bg: #ffffff;
   --fg: #1f1f1f;
   --muted: #6e6e6e;
@@ -74,11 +82,36 @@ weft-sequence .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fill: var(
 weft-sequence.failed .pele-edge:not(:has([stroke-dasharray])) path { stroke: var(--pele-critical); }
 weft-sequence.failed .pele-edge:not(:has([stroke-dasharray])) .pele-marker { fill: var(--pele-critical); }
 :is(weft-sequence, weft-machine) .pele-edge-label.done text { fill: var(--pele-accent); font-weight: bold; }
-:is(weft-sequence, weft-machine) .pele-node.done rect { stroke: var(--pele-accent); stroke-width: 2px; }
+:is(weft-sequence, weft-machine) .pele-node.done :is(rect, path, polygon) { stroke: var(--pele-accent); stroke-width: 2px; }
 :is(weft-sequence, weft-machine) .pele-node.done text { fill: var(--pele-accent); }
 :is(weft-sequence, weft-machine) :is(.failed, .fails) :is(rect, path) { stroke: var(--pele-critical); stroke-width: 2px; }
 :is(weft-sequence, weft-machine) :is(.failed, .fails) text { fill: var(--pele-critical); }
 :is(weft-sequence, weft-machine) .acted { cursor: pointer; }
+weft-machine .pele-cluster.runner-1 > rect { stroke: var(--pele-series-1); stroke-width: 2px; }
+weft-machine .pele-cluster.runner-1 .pele-cluster-label { fill: var(--pele-series-1); }
+weft-machine .pele-cluster.runner-2 > rect { stroke: var(--pele-series-2); stroke-width: 2px; }
+weft-machine .pele-cluster.runner-2 .pele-cluster-label { fill: var(--pele-series-2); }
+weft-machine .pele-cluster.runner-3 > rect { stroke: var(--pele-series-3); stroke-width: 2px; }
+weft-machine .pele-cluster.runner-3 .pele-cluster-label { fill: var(--pele-series-3); }
+weft-machine .pele-cluster.runner-4 > rect { stroke: var(--pele-series-4); stroke-width: 2px; }
+weft-machine .pele-cluster.runner-4 .pele-cluster-label { fill: var(--pele-series-4); }
+weft-machine .pele-cluster.runner-5 > rect { stroke: var(--pele-series-5); stroke-width: 2px; }
+weft-machine .pele-cluster.runner-5 .pele-cluster-label { fill: var(--pele-series-5); }
+weft-machine .pele-cluster.runner-6 > rect { stroke: var(--pele-series-6); stroke-width: 2px; }
+weft-machine .pele-cluster.runner-6 .pele-cluster-label { fill: var(--pele-series-6); }
+weft-machine .pele-cluster.runner-7 > rect { stroke: var(--pele-series-7); stroke-width: 2px; }
+weft-machine .pele-cluster.runner-7 .pele-cluster-label { fill: var(--pele-series-7); }
+weft-machine .pele-cluster.runner-8 > rect { stroke: var(--pele-series-8); stroke-width: 2px; }
+weft-machine .pele-cluster.runner-8 .pele-cluster-label { fill: var(--pele-series-8); }
+weft-sequence .pele-actor.runner-1 rect { stroke: var(--pele-series-1); stroke-width: 2px; }
+weft-sequence .pele-actor.runner-2 rect { stroke: var(--pele-series-2); stroke-width: 2px; }
+weft-sequence .pele-actor.runner-3 rect { stroke: var(--pele-series-3); stroke-width: 2px; }
+weft-sequence .pele-actor.runner-4 rect { stroke: var(--pele-series-4); stroke-width: 2px; }
+weft-sequence .pele-actor.runner-5 rect { stroke: var(--pele-series-5); stroke-width: 2px; }
+weft-sequence .pele-actor.runner-6 rect { stroke: var(--pele-series-6); stroke-width: 2px; }
+weft-sequence .pele-actor.runner-7 rect { stroke: var(--pele-series-7); stroke-width: 2px; }
+weft-sequence .pele-actor.runner-8 rect { stroke: var(--pele-series-8); stroke-width: 2px; }
+weft-machine svg.pele { display: block; max-height: 100%; }
 weft-sequence, weft-machine {
   display: block;
   height: 100%;
@@ -138,7 +171,7 @@ import "./vendor/viewer/cdn/perspective-viewer.js";
 import "./vendor/viewer-datagrid/cdn/perspective-viewer-datagrid.js";
 import "./vendor/viewer-charts/cdn/perspective-viewer-charts.js";
 import perspective from "./vendor/client/cdn/perspective.js";
-import { mount } from "./vendor/pele/pele.js";
+import { mount, render } from "./vendor/pele/pele.js";
 
 const FILE = "weft.file";
 const TEST_CASE = "hegel.test_case";
@@ -148,6 +181,30 @@ const MACHINE = "weft.machine";
 const INPUT = "weft.input";
 const FAILED = "weft.failed";
 const FAILS = "«fails»";
+const LAYOUTS = "\n%% layout\n";
+const RUNNERS = /^\s*%% runner (\S+) (\d+)$/gm;
+const SHOWN = { fontSize: 13, monospace: ["messages"], autoDirection: false };
+
+const WIDTH = 28;
+const BREAK = "<br/>";
+const STATES = /^(\s*)(s_\S+)\("(.*)"\)$/gm;
+const MARKS = /^\s*class (\S+) (done|fails)$/gm;
+const decoded = (text) => text.replace(/#(quot|\d+);/g, (_, code) => (code === "quot" ? '"' : String.fromCharCode(Number(code))));
+
+const fitted = (element, all) => {
+  const width = element.clientWidth - 24;
+  const height = element.clientHeight - 24;
+  let best = 0;
+  let most = -1;
+  all.forEach((one, at) => {
+    try {
+      const { width: w, height: h } = render(one, SHOWN);
+      const scale = Math.min(width / w, height / h);
+      if (scale > most) [best, most] = [at, scale];
+    } catch {}
+  });
+  return best;
+};
 const STEP = "weft.step";
 const STATUS = "weft.status";
 const RUNNING = "running";
@@ -168,19 +225,39 @@ class Drawing extends (await customElements.whenDefined("perspective-viewer-plug
   }
   async draw(view) {
     const [step] = await view.to_json({ end_row: 1 });
-    const text = step?.[this.constructor.column];
-    if (!text) return;
+    this.given = step?.[this.constructor.column];
+    if (!this.given) return;
     this.classList.toggle("failed", step[FAILED] === true);
-    if (this.mounted) this.mounted.update(text);
-    else this.mounted = mount(this, text, { fontSize: 13, monospace: ["messages"], onRender: () => this.marked() });
+    this.shown();
+  }
+  static templated(text) {
+    return text;
+  }
+  filled() {}
+  shown(again) {
+    const all = this.given.split(LAYOUTS);
+    const shapes = all.map((one) => this.constructor.templated(one));
+    if (again || this.layouts !== all.length) {
+      this.layouts = all.length;
+      this.layout = shapes.length > 1 ? fitted(this, shapes) : 0;
+    }
+    this.text = all[this.layout] ?? all[0];
+    const shape = shapes[this.layout] ?? shapes[0];
+    if (this.mounted?.source === shape) return this.filled();
+    if (this.mounted) this.mounted.update(shape);
+    else this.mounted = mount(this, shape, { ...SHOWN, onRender: () => this.marked() });
   }
   marked() {
+    this.filled();
+    for (const [, id, n] of (this.text ?? "").matchAll(RUNNERS)) {
+      for (const part of this.querySelectorAll(`.pele-actor.${CSS.escape(id)}, .pele-cluster[data-id="${CSS.escape(id)}"]`)) part.classList.add(`runner-${n}`);
+    }
     for (const note of this.querySelectorAll(".pele-note")) note.classList.toggle("failed", note.textContent.startsWith(FAILS));
     for (const edge of this.querySelectorAll(".pele-edge")) {
       const solid = !edge.querySelector("[stroke-dasharray]");
       this.querySelector(`.pele-edge-label[data-id="${edge.dataset.id}"]`)?.classList.toggle("done", solid && this.constructor.column === DIAGRAM);
     }
-    for (const acted of this.querySelectorAll('.pele-edge-label, .pele-node.pele-state[data-id^="a_"]')) {
+    for (const acted of this.querySelectorAll('.pele-edge-label, .pele-node[data-id^="a_"]')) {
       const verb = acted.textContent.trim().replace(/^«|»$/g, "");
       acted.classList.add("acted");
       acted.onmouseenter = () => listed(verb, acted.getBoundingClientRect());
@@ -189,7 +266,7 @@ class Drawing extends (await customElements.whenDefined("perspective-viewer-plug
   }
   async clear() {}
   async resize() {
-    this.mounted?.refresh();
+    if (this.given) this.shown(true);
   }
   async delete() {
     this.mounted?.destroy();
@@ -200,6 +277,23 @@ class Sequence extends Drawing {
 }
 class Machine extends Drawing {
   static column = MACHINE;
+  static templated(text) {
+    return text
+      .replace(STATES, (_, pad, id, label) => `${pad}${id}("${label.split(BREAK).map(() => "0".repeat(WIDTH)).join(BREAK)}")`)
+      .replace(MARKS, "");
+  }
+  filled() {
+    for (const [, , id, label] of this.text.matchAll(STATES)) {
+      const text = this.querySelector(`.pele-node[data-id="${CSS.escape(id)}"] .pele-label`);
+      if (!text) continue;
+      const lines = label.split(BREAK).map(decoded);
+      const spans = text.querySelectorAll("tspan");
+      if (spans.length) spans.forEach((span, at) => (span.textContent = lines[at] ?? ""));
+      else text.textContent = lines[0] ?? "";
+    }
+    for (const node of this.querySelectorAll(".pele-node.done, .pele-node.fails")) node.classList.remove("done", "fails");
+    for (const [, id, mark] of this.text.matchAll(MARKS)) this.querySelector(`.pele-node[data-id="${CSS.escape(id)}"]`)?.classList.add(mark);
+  }
 }
 for (const plugin of [Machine, Sequence]) {
   const tag = `weft-${plugin.name.toLowerCase()}`;
@@ -388,7 +482,7 @@ const drawn = async (file) => {
   const plan = { table: "files", columns: [DIAGRAM, MACHINE], filter: [[FILE, "==", file]] };
   await viewer.restoreWorkspace({
     panels: { machine: drawing("Machine", `${file} · states`, plan), sequence: drawing("Sequence", `${file} · sequence`, plan) },
-    layout: stacked([0.5, 0.5], [cell(["machine"]), cell(["sequence"])]),
+    layout: cell(["machine", "sequence"]),
   });
   await started(file, true);
   if (history.state === file) await trace(file);
@@ -422,7 +516,7 @@ const trace = async (file) => {
       type: "split-layout",
       orientation: "horizontal",
       sizes: [0.32, 0.68],
-      children: [stacked([0.3, 0.7], [cell(["cases"]), cell(["trace"])]), stacked([0.4, 0.6], [cell(["machine"]), cell(["sequence"])])],
+      children: [stacked([0.3, 0.7], [cell(["cases"]), cell(["trace"])]), cell(["machine", "sequence"])],
     },
   });
   await retire();

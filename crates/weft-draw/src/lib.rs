@@ -622,7 +622,45 @@ fn points(e: &Value) -> Vec<(f64, f64)> {
 const BREAK: &str = "<br/>";
 const INVARIANT: &str = "«invariant»";
 const DONE: &str = "done";
+pub const LAYOUTS: &str = "\n%% layout\n";
+const RUNNERS: [usize; 7] = [1, 2, 3, 5, 6, 7, 8];
+
+fn series(n: usize) -> usize {
+    RUNNERS[n % RUNNERS.len()]
+}
 const FAILS: &str = "fails";
+
+const WIDTH: usize = 28;
+const ROWS: usize = 3;
+const RULE: usize = 22;
+
+fn fixed(text: &str) -> String {
+    let cut: String = match text.chars().count() > WIDTH {
+        true => text.chars().take(WIDTH - 1).chain(['…']).collect(),
+        false => text.to_string(),
+    };
+    escape_text(&cut)
+}
+
+fn block(text: &str) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match rows.last_mut() {
+            Some(row) if row.chars().count() + 1 + word.chars().count() <= RULE => {
+                row.push(' ');
+                row.push_str(word);
+            }
+            _ => rows.push(word.to_string()),
+        }
+    }
+    if rows.len() > ROWS {
+        rows.truncate(ROWS);
+        if let Some(last) = rows.last_mut() {
+            last.push_str(" …");
+        }
+    }
+    rows.iter().map(|row| fixed(row)).collect()
+}
 
 pub struct Moment<'a> {
     pub actions: &'a [(String, String)],
@@ -664,21 +702,20 @@ impl Moment<'_> {
             .get(name)
             .into_iter()
             .flatten()
-            .map(|(key, value)| escape_text(&format!("{key} = {}", summary(value))))
+            .map(|(key, value)| fixed(&format!("{key} = {}", summary(value))))
             .collect()
     }
 
     fn invariant(&self, i: &Invariant) -> String {
-        match self.broken == Some(i.name.as_str()) {
-            true => [stereotype(Kind::Failed), &i.name]
-                .into_iter()
-                .map(String::from)
-                .chain(self.failed.iter().cloned())
-                .map(|line| escape_text(&line))
-                .collect::<Vec<_>>()
-                .join(BREAK),
-            false => format!("{INVARIANT}{BREAK}{}", escape_text(&i.name)),
-        }
+        let (head, text) = match self.broken == Some(i.name.as_str()) {
+            true => (stereotype(Kind::Failed), self.failed.join(" ")),
+            false => (INVARIANT, i.name.clone()),
+        };
+        [fixed(head)]
+            .into_iter()
+            .chain(block(&text))
+            .collect::<Vec<_>>()
+            .join(BREAK)
     }
 
     pub fn sequence(&self, d: &Diagram) -> String {
@@ -691,12 +728,11 @@ impl Moment<'_> {
         for o in d.objects.iter().filter(|o| !ran.contains(&o.name.as_str())) {
             out.push(format!("  participant {}", Ident::new(&o.name)));
         }
-        for i in &d.impls {
-            out.push(format!("  box {}", escape_text(&i.adapter)));
+        for (n, i) in d.impls.iter().enumerate() {
             for (object, _) in &i.modules {
-                out.push(format!("    participant {}", Ident::new(object)));
+                out.push(format!("  participant {}", Ident::new(object)));
+                out.push(format!("  %% runner {} {}", Ident::new(object), series(n)));
             }
-            out.push("  end".into());
         }
         for (verb, to) in self.actions {
             let arrow = match self.done(verb) {
@@ -735,51 +771,99 @@ impl Moment<'_> {
         out.join("\n")
     }
 
-    pub fn machine(&self, d: &Diagram) -> String {
+    fn group(
+        &self,
+        d: &Diagram,
+        object: &str,
+        adapter: &str,
+        n: usize,
+    ) -> (Vec<String>, Vec<String>) {
+        let state = Ident::new(&format!("s_{object}"));
+        let section = Ident::new(&format!("o_{object}"));
         let mut out = vec![
-            "stateDiagram-v2".to_string(),
-            format!("  classDef {DONE} font-weight:bold"),
-            format!("  classDef {FAILS} font-weight:bold"),
+            format!(
+                "  subgraph {section} [\"{} · {}\"]",
+                escape_text(object),
+                escape_text(adapter)
+            ),
+            "    direction LR".into(),
         ];
-        let mut marked = Vec::new();
-        for i in &d.impls {
-            for (object, _) in &i.modules {
-                let o = Ident::new(object);
-                let state = Ident::new(&format!("s_{object}"));
-                out.push(format!(
-                    "  state \"{} · {}\" as {o} {{",
-                    escape_text(object),
-                    escape_text(&i.adapter)
-                ));
-                out.push("    direction LR".into());
-                out.push(format!("    [*] --> {state}"));
-                let mut lines = self.lines(object);
-                if lines.is_empty() {
-                    lines.push("state".into());
-                }
-                out.extend(lines.iter().map(|line| format!("    {state} : {line}")));
-                for (verb, _) in self.actions.iter().filter(|(_, to)| to == object) {
-                    let action = Ident::new(&format!("a_{object}_{verb}"));
-                    out.push(format!("    {state} --> {action}"));
-                    out.push(format!("    {action} : {}", escape_text(verb)));
-                    if self.done(verb) {
-                        marked.push(format!("  class {action} {DONE}"));
-                    }
-                }
-                out.push("  }".into());
-                let broken = d
-                    .objects
-                    .iter()
-                    .filter(|x| x.name == *object)
-                    .flat_map(|x| &x.invariants)
-                    .any(|i| self.broken == Some(i.name.as_str()));
-                if broken {
-                    marked.push(format!("  class {state} {FAILS}"));
-                }
+        let mut lines = self.lines(object);
+        if lines.is_empty() {
+            lines.push(fixed("state"));
+        }
+        out.push(format!("    {state}(\"{}\")", lines.join(BREAK)));
+        let mut marked = vec![format!("  %% runner {section} {}", series(n))];
+        for (verb, _) in self.actions.iter().filter(|(_, to)| to == object) {
+            let action = Ident::new(&format!("a_{object}_{verb}"));
+            out.push(format!(
+                "    {state} --> {action}([\"{}\"])",
+                escape_text(verb)
+            ));
+            if self.done(verb) {
+                marked.push(format!("  class {action} {DONE}"));
             }
         }
-        out.extend(marked);
-        out.join("\n")
+        let invariants = d
+            .objects
+            .iter()
+            .filter(|o| o.name == object)
+            .flat_map(|o| &o.invariants);
+        for (k, i) in invariants.enumerate() {
+            let rule = Ident::new(&format!("i_{object}_{k}"));
+            out.push(format!(
+                "    {state} -.- {rule}[[\"{}\"]]",
+                block(&i.name).join(BREAK)
+            ));
+            if self.broken == Some(i.name.as_str()) {
+                marked.push(format!("  class {state} {FAILS}"));
+                marked.push(format!("  class {rule} {FAILS}"));
+            }
+        }
+        out.push("  end".into());
+        (out, marked)
+    }
+
+    pub fn machine(&self, d: &Diagram) -> String {
+        let groups: Vec<&str> = d
+            .impls
+            .iter()
+            .flat_map(|i| i.modules.iter().map(|(object, _)| object.as_str()))
+            .collect();
+        let mut body = vec![
+            "flowchart TB".to_string(),
+            format!("  classDef {DONE} stroke-width:2px"),
+            format!("  classDef {FAILS} stroke-width:2px"),
+        ];
+        let mut marked = Vec::new();
+        for (n, i) in d.impls.iter().enumerate() {
+            for (object, _) in &i.modules {
+                let (lines, marks) = self.group(d, object, &i.adapter, n);
+                body.extend(lines);
+                marked.extend(marks);
+            }
+        }
+        body.extend(marked);
+        (1..=groups.len().max(1))
+            .map(|columns| {
+                let below = groups
+                    .iter()
+                    .zip(groups.iter().skip(columns))
+                    .map(|(up, down)| {
+                        format!(
+                            "  {} ~~~ {}",
+                            Ident::new(&format!("o_{up}")),
+                            Ident::new(&format!("o_{down}"))
+                        )
+                    });
+                body.iter()
+                    .cloned()
+                    .chain(below)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect::<Vec<_>>()
+            .join(LAYOUTS)
     }
 }
 
