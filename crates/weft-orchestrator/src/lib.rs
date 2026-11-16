@@ -1,11 +1,13 @@
 mod hub;
+mod invariant;
 mod process;
+mod protocol;
 mod proxy;
 mod reaper;
 mod report;
 mod schema;
 mod shape;
-mod simulate;
+mod stateful;
 mod transport;
 
 use std::path::{Component, Path, PathBuf};
@@ -14,12 +16,12 @@ use std::time::Duration;
 use std::{env, fs};
 
 use serde_json::{Value as Json, json};
-use simulate::simulate;
 use weft_parse::{Adapter, Config, Diagram, Start};
 
+pub use proxy::Hop;
 pub use reaper::{REAP, guard, reap};
 pub use report::{brief, checks, compact, sorted, summary};
-pub use simulate::{Event, Hop, Line, Outcome, Stream, Tally, view};
+pub use stateful::{Event, Line, Outcome, Stream, Tally, view};
 use transport::{HUB, listen};
 
 const WAIT: Duration = Duration::from_secs(60);
@@ -194,14 +196,7 @@ pub fn run<'a>(
     }
     let joined = session.members(WAIT);
     let outcome = match joined {
-        Ok(mut members) => Ok(simulate(
-            d,
-            &mut members,
-            config.cases,
-            config.steps,
-            key,
-            stream,
-        )),
+        Ok(mut members) => Ok(stateful::run(d, &name, &mut members, key, stream)),
         Err(e) => Err(e),
     };
     HUB.close(&name);
@@ -464,7 +459,7 @@ impl "other" {
 
     fn two(transport: &str, draw: &str, sends: Json, plays: [Play; 2]) -> Result<Outcome, String> {
         let config = weft_parse::config(&format!(
-            "{CONFIG}{transport}\nadapter \"default\" cases=100\n"
+            "{CONFIG}{transport}\nrun cases=100 steps=50 check=\"sampled\"\n"
         ))
         .map_err(|e| e.to_string())?;
         let d =
@@ -517,6 +512,13 @@ impl "other" {
     fn a_failing_case_of_two_runners_shrinks_to_the_least_value_and_steps() -> Result<(), String> {
         let o = two(&socket("shrink"), "", sends(), [sender, reloader])?;
         assert!(o.failed);
+        assert!(
+            o.origin.as_deref().is_some_and(|origin| {
+                origin.starts_with("igte at invariants/page-") && origin.ends_with(".weft.kdl:6:7")
+            }),
+            "{:?}",
+            o.origin
+        );
         assert_eq!(
             steps(&o),
             [
@@ -576,8 +578,10 @@ impl "other" {
 
     #[test]
     fn weft_refuses_a_module_in_the_directory_of_the_diagram() -> Result<(), String> {
-        let config = weft_parse::config(&format!("{CONFIG}adapter \"default\" cases=50\n"))
-            .map_err(|e| e.to_string())?;
+        let config = weft_parse::config(&format!(
+            "{CONFIG}run cases=50 steps=50 check=\"sampled\"\n"
+        ))
+        .map_err(|e| e.to_string())?;
         let page = PAGE
             .replace("DRAW", "")
             .replace("../src/page.ts", "./page.ts");

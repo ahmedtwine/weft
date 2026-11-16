@@ -351,7 +351,7 @@ impl Case {
     pub fn machine(
         &mut self,
         rules: &[String],
-        invariants: &[String],
+        invariants: &[(&str, bool)],
         steps: i64,
     ) -> Result<(), Halt> {
         let (ctx, tc) = (self.ctx, self.tc);
@@ -372,14 +372,14 @@ impl Case {
                 )
             )?;
         }
-        for invariant in invariants {
+        for (invariant, always) in invariants {
             hegel!(
                 ctx,
                 hegel_state_machine_add_invariant(
                     tc,
                     self.machine,
                     text(invariant.as_bytes()),
-                    true
+                    *always
                 )
             )?;
         }

@@ -5,7 +5,7 @@ A distributed runner for [Hegel](https://hegel.dev) property tests
 ## Install
 
 ```sh
-bun add -d git+ssh://git@github.com/ahmedtwine/weft.git#v0.6.1
+bun add -d git+ssh://git@github.com/ahmedtwine/weft.git#v0.7.0
 ```
 
 
@@ -18,6 +18,36 @@ mise //examples:report    # serve the dashboard at http://127.0.0.1:7357
 ```
 
 `examples/tests/*.weft.kdl` has the example tests. `examples/runners/<lang>/` shows the runners in the supported languages. Register the runners in the `impl` block
+
+### Config
+
+`examples/weft.kdl` sets each value of a run. No value has a default:
+
+```kdl
+include "tests/*.weft.kdl"
+run cases=5 steps=50 check="sampled"
+```
+
+| Key     | Value                                                                                                                                     |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `cases` | The count of test cases for each test                                                                                                     |
+| `steps` | The largest count of steps in a test case                                                                                                 |
+| `check` | `"sampled"` checks an invariant after a step with the probability 1/`steps`, and `"always"` checks it after each step. Both check each invariant on the first state and on the last state |
+
+A test changes a value with its own `run` line, and an invariant changes `check` with its `check` key:
+
+```kdl
+run cases=200
+setup {
+  api "bank" {
+    invariant "the balance never goes below zero" check="always" {
+      igte "bank.balance" 0
+    }
+  }
+}
+```
+
+A check that fails gives its operator and its place as the origin of the failure, for example `igte at tests/bank.bun.weft.kdl:5:7`. Two checks that fail are two different failures
 
 ### Test
 
@@ -62,7 +92,7 @@ export const withdraw = ({ amount }: z.infer<typeof withdrawSchema>) => {
 };
 ```
 
-Hegel draws `deposit` and `withdraw` in any order with amounts from 1 to 100, and checks the balance after each step with shrinking:
+Hegel draws `deposit` and `withdraw` in any order with amounts from 1 to 100. weft checks the balance on the first state, after the steps that `check` selects and on the last state, and Hegel shrinks the failing case:
 
 ```text
 ✕ tests/bank.bun.weft.kdl · "the balance never goes below zero" · bank.balance = -1 < 0
@@ -106,7 +136,7 @@ flowchart TB
 
   run <--> database
   hegel -- "hegel_next_test_case<br/>hegel_mark_complete" --> run
-  hegel -- "hegel_state_machine_next_rule" --> machine
+  hegel -- "hegel_state_machine_next_rule<br/>hegel_state_machine_should_check_invariant" --> machine
   hegel -- "hegel_generate_*<br/>hegel_pool_*" --> draws
   orchestrator --> hegel
   orchestrator <-- "turns" --> runners
@@ -145,7 +175,7 @@ api "courier" {
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `weft-parse`        | Reads `weft.kdl` and each test into objects, invariants and modules, and evaluates invariants                                                                               |
 | `weft-hegel`        | Drives Hegel through its C ABI: cases, the state machine, generators and shrinking                                                                                          |
-| `weft-orchestrator` | Starts the runners and the reaper, turns the schemas of each runner into generators, runs each case with Hegel, forwards the HTTP calls between apps, and writes the report |
+| `weft-orchestrator` | Starts the runners and the reaper, turns the schemas of each runner into generators, runs the rounds of each case, checks the invariants, forwards the HTTP calls between apps, and writes the report |
 | `weft-wire`         | The framing of each message between weft and a runner                                                                                                                       |
 | `weft-draw`         | Draws a test as a sequence diagram, and each step as a sequence diagram or a flowchart                                                                                      |
 | `weft-c`            | libweft, the C ABI that each SDK loads, and the thread mode of `weft/test`                                                                                                  |

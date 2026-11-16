@@ -5,7 +5,8 @@ use std::time::Duration;
 use serde_json::Value as Json;
 use weft_parse::{Config, Diagram, Ran, Span};
 
-use crate::simulate::{Hop, Outcome, Tally, view};
+use crate::proxy::Hop;
+use crate::stateful::{Outcome, Tally, view};
 
 const INPUT: usize = 80;
 const DRAWN: &str = "* draw ";
@@ -145,7 +146,7 @@ pub fn checks(o: &Outcome) -> u64 {
 
 fn headline(d: &Diagram, config: &Config, o: &Outcome, took: Duration) -> String {
     format!(
-        "{}{} · {} cases · {} runs · {} steps · {} checks{}{} [{:.2}s]",
+        "{}{} · {} cases · {} runs · {} steps · {} checks{}{}{} [{:.2}s]",
         d.impls
             .iter()
             .map(|i| i.adapter.as_str())
@@ -165,6 +166,9 @@ fn headline(d: &Diagram, config: &Config, o: &Outcome, took: Duration) -> String
             (true, 1) => " · fails after 1 step".to_string(),
             (true, n) => format!(" · fails after {n} steps"),
         },
+        o.origin
+            .as_ref()
+            .map_or(String::new(), |origin| format!(" · {origin}")),
         o.caveat
             .as_ref()
             .map_or(String::new(), |c| format!(" · {c}")),

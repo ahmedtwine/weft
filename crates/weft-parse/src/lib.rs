@@ -10,10 +10,48 @@ pub type Pairs = BTreeMap<String, Json>;
 
 pub type State = BTreeMap<String, Pairs>;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Diagram {
     pub objects: Vec<Object>,
     pub impls: Vec<Impl>,
+    pub run: Run,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    Always,
+    Sampled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Run {
+    pub cases: u64,
+    pub steps: u64,
+    pub check: Check,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct At {
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Assert {
+    pub op: &'static str,
+    pub at: At,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub assert: Assert,
+    pub evidence: Vec<String>,
+}
+
+impl Assert {
+    pub fn origin(&self, file: &str) -> String {
+        format!("{} at {file}:{}:{}", self.op, self.at.line, self.at.column)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,8 +119,8 @@ pub enum Now {
     Start(String, String),
     Value(Json),
     Var(String, Vec<String>),
-    App(Op, Vec<Now>),
-    Each(Quant, String, Box<Now>, Box<Now>),
+    App(Op, Vec<Now>, At),
+    Each(Quant, String, Box<Now>, Box<Now>, At),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,7 +152,8 @@ fn items(v: Json) -> Option<Vec<Json>> {
 pub struct Invariant {
     pub name: String,
     pub body: Now,
-    pub line: usize,
+    pub at: At,
+    pub check: Check,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,11 +367,11 @@ impl Now {
         };
         match (part(self), self) {
             (Some(s), _) => s,
-            (None, Now::App(Op::In, args)) => {
+            (None, Now::App(Op::In, args, _)) => {
                 format!("in({}, Set({}))", args[0].show(part), each(&args[1..]))
             }
-            (None, Now::App(op, args)) => format!("{}({})", op.name(), each(args)),
-            (None, Now::Each(q, v, set, body)) => format!(
+            (None, Now::App(op, args, _)) => format!("{}({})", op.name(), each(args)),
+            (None, Now::Each(q, v, set, body, _)) => format!(
                 "{}.{}({v} => {})",
                 set.show(part),
                 q.name(),
@@ -352,14 +391,14 @@ impl Now {
 
     fn valued(&self, start: &State, now: &State, env: &Env) -> String {
         self.show(&|e| match e {
-            Now::App(op, _) if op.boolean() => None,
+            Now::App(op, ..) if op.boolean() => None,
             Now::Each(..) => None,
             e => Some(found(e.eval(start, now, env).as_ref())),
         })
     }
 
     fn bound(&self, start: &State, now: &State, env: &Env) -> Option<Vec<Env>> {
-        let Now::Each(_, v, set, _) = self else {
+        let Now::Each(_, v, set, ..) = self else {
             return None;
         };
         let label = set.named(env);
@@ -394,19 +433,19 @@ impl Now {
                 .find(|(n, _, _)| n == v)
                 .and_then(|(_, _, item)| path.iter().try_fold(item, |node, part| node.get(part)))
                 .cloned(),
-            Now::App(Op::And, all) => first(all, false),
-            Now::App(Op::Or, all) => first(all, true),
-            Now::App(Op::Implies, all) => match all[0].eval(start, now, env)? {
+            Now::App(Op::And, all, _) => first(all, false),
+            Now::App(Op::Or, all, _) => first(all, true),
+            Now::App(Op::Implies, all, _) => match all[0].eval(start, now, env)? {
                 Json::Bool(false) => Some(json!(true)),
                 Json::Bool(true) => all[1].eval(start, now, env).filter(Json::is_boolean),
                 _ => None,
             },
-            Now::App(op, all) => op.apply(
+            Now::App(op, all, _) => op.apply(
                 &all.iter()
                     .map(|e| e.eval(start, now, env))
                     .collect::<Option<Vec<_>>>()?,
             ),
-            Now::Each(q, _, _, body) => {
+            Now::Each(q, _, _, body, _) => {
                 let seen = self
                     .bound(start, now, env)?
                     .iter()
@@ -424,39 +463,68 @@ impl Now {
         self.eval(start, now, env) == Some(json!(true))
     }
 
-    fn evidence(&self, start: &State, now: &State, env: &Env) -> Vec<String> {
+    fn assert(&self) -> Option<Assert> {
+        match self {
+            Now::App(op, _, at) => Some(Assert {
+                op: op.name(),
+                at: *at,
+            }),
+            Now::Each(q, .., at) => Some(Assert {
+                op: q.name(),
+                at: *at,
+            }),
+            _ => None,
+        }
+    }
+
+    fn failure(&self, outer: Assert, start: &State, now: &State, env: &Env) -> Failure {
+        let assert = self.assert().unwrap_or(outer);
         let witness = match self {
-            Now::Each(Quant::Forall, _, _, body) => self
+            Now::Each(Quant::Forall, _, _, body, _) => self
                 .bound(start, now, env)
                 .unwrap_or_default()
                 .into_iter()
                 .find(|inner| !body.passes(start, now, inner))
-                .map(|inner| body.evidence(start, now, &inner)),
+                .map(|inner| body.failure(assert, start, now, &inner)),
             _ => None,
         };
         match (witness, self) {
             (Some(found), _) => found,
-            (None, Now::App(Op::And, all)) => all
-                .iter()
-                .find(|e| !e.passes(start, now, env))
-                .map_or_else(Vec::new, |e| e.evidence(start, now, env)),
-            (None, Now::App(Op::Implies, all)) => [
-                vec![format!("{} = true", all[0].valued(start, now, env))],
-                all[1].evidence(start, now, env),
-            ]
-            .concat(),
-            (None, e) => vec![format!(
-                "{} = {} = false",
-                e.named(env),
-                e.valued(start, now, env)
-            )],
+            (None, Now::App(Op::And, all, _)) => {
+                all.iter().find(|e| !e.passes(start, now, env)).map_or_else(
+                    || Failure {
+                        assert,
+                        evidence: Vec::new(),
+                    },
+                    |e| e.failure(assert, start, now, env),
+                )
+            }
+            (None, Now::App(Op::Implies, all, _)) => {
+                let then = all[1].failure(assert, start, now, env);
+                Failure {
+                    evidence: [
+                        vec![format!("{} = true", all[0].valued(start, now, env))],
+                        then.evidence,
+                    ]
+                    .concat(),
+                    ..then
+                }
+            }
+            (None, e) => Failure {
+                assert,
+                evidence: vec![format!(
+                    "{} = {} = false",
+                    e.named(env),
+                    e.valued(start, now, env)
+                )],
+            },
         }
     }
 
     fn all(&self) -> Vec<&Now> {
         match self {
-            Now::App(_, args) => [vec![self], args.iter().flat_map(Now::all).collect()].concat(),
-            Now::Each(_, _, set, body) => [vec![self], set.all(), body.all()].concat(),
+            Now::App(_, args, _) => [vec![self], args.iter().flat_map(Now::all).collect()].concat(),
+            Now::Each(_, _, set, body, _) => [vec![self], set.all(), body.all()].concat(),
             e => vec![e],
         }
     }
@@ -475,7 +543,7 @@ impl Now {
         self.all()
             .into_iter()
             .filter_map(|e| match e {
-                Now::Each(_, v, set, body) => match set.as_ref() {
+                Now::Each(_, v, set, body, _) => match set.as_ref() {
                     Now::Key(o, k) | Now::Start(o, k) => Some((o, k, v, body)),
                     _ => None,
                 },
@@ -517,10 +585,19 @@ impl Invariant {
         })
     }
 
-    pub fn judge(&self, start: &State, now: &State) -> Option<Vec<String>> {
+    pub fn judge(&self, start: &State, now: &State) -> Option<Failure> {
         let env = Vec::new();
-        (!self.body.passes(start, now, &env))
-            .then(|| [vec![self.source()], self.body.evidence(start, now, &env)].concat())
+        let outer = Assert {
+            op: "invariant",
+            at: self.at,
+        };
+        (!self.body.passes(start, now, &env)).then(|| {
+            let found = self.body.failure(outer, start, now, &env);
+            Failure {
+                evidence: [vec![self.source()], found.evidence].concat(),
+                ..found
+            }
+        })
     }
 }
 
@@ -687,8 +764,82 @@ fn lines(n: &KdlNode) -> &[KdlNode] {
     n.children().map_or(&[], KdlDocument::nodes)
 }
 
-fn line(src: &str, n: &KdlNode) -> usize {
-    src[..n.span().offset()].matches('\n').count() + 1
+fn at(src: &str, n: &KdlNode) -> At {
+    let before = &src[..n.span().offset()];
+    let begun = before.rfind('\n').map_or(0, |i| i + 1);
+    At {
+        line: before.matches('\n').count() + 1,
+        column: before[begun..].chars().count() + 1,
+    }
+}
+
+const RUN: &str =
+    "`run` takes `cases=<count>`, `steps=<count>` and `check=\"always\"` or `check=\"sampled\"`";
+
+#[derive(Clone, Copy)]
+struct Given {
+    cases: Option<u64>,
+    steps: Option<u64>,
+    check: Option<Check>,
+}
+
+fn count(n: &KdlNode, key: &str) -> Result<Option<u64>, String> {
+    n.get(key)
+        .map(|v| match v {
+            KdlValue::Integer(k) => u64::try_from(*k).ok().filter(|k| *k > 0).ok_or(RUN),
+            _ => Err(RUN),
+        })
+        .transpose()
+        .map_err(String::from)
+}
+
+fn check(n: &KdlNode) -> Result<Option<Check>, String> {
+    n.get("check")
+        .map(|v| match v.as_string() {
+            Some("always") => Ok(Check::Always),
+            Some("sampled") => Ok(Check::Sampled),
+            _ => Err(format!(
+                "`{}` takes `check=\"always\"` or `check=\"sampled\"`",
+                name(n)
+            )),
+        })
+        .transpose()
+}
+
+fn given(n: &KdlNode) -> Result<Given, String> {
+    shape(n, 0, &["cases", "steps", "check"], false)?;
+    match keys(n).is_empty() {
+        true => Err(RUN.into()),
+        false => Ok(Given {
+            cases: count(n, "cases")?,
+            steps: count(n, "steps")?,
+            check: check(n)?,
+        }),
+    }
+}
+
+fn ran(doc: &KdlDocument) -> Result<Option<&KdlNode>, String> {
+    match doc
+        .nodes()
+        .iter()
+        .filter(|n| name(n) == "run")
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [] => Ok(None),
+        [one] => Ok(Some(one)),
+        _ => Err("`run` is set twice".into()),
+    }
+}
+
+impl Run {
+    fn over(self, given: Given) -> Run {
+        Run {
+            cases: given.cases.unwrap_or(self.cases),
+            steps: given.steps.unwrap_or(self.steps),
+            check: given.check.unwrap_or(self.check),
+        }
+    }
 }
 
 const DRAW: &str = "`draw` has `<key> <value>…` lines; a line with `{ }` has the lines of the keys of its part, and no values";
@@ -803,7 +954,13 @@ fn term(e: &KdlEntry, names: &[String], bound: &[String]) -> Result<Now, String>
     }
 }
 
-fn each(n: &KdlNode, q: Quant, names: &[String], bound: &[String]) -> Result<Now, String> {
+fn each(
+    n: &KdlNode,
+    q: Quant,
+    names: &[String],
+    bound: &[String],
+    src: &str,
+) -> Result<Now, String> {
     let wrong = || {
         format!(
             "`{}` is `{} \"<name>\" in=\"<object>.<key>\" {{ <condition> }}`: {INVARIANT}",
@@ -825,22 +982,28 @@ fn each(n: &KdlNode, q: Quant, names: &[String], bound: &[String]) -> Result<Now
     match (named.as_slice(), set, lines(n), n.entries().len()) {
         ([v], Some(set), [one], 2) if !names.contains(v) && !bound.contains(v) => {
             let inner = [bound, std::slice::from_ref(v)].concat();
-            let body = condition(one, names, &inner)?;
+            let body = condition(one, names, &inner, src)?;
             match &body {
-                Now::App(op, _) if op.boolean() => {}
+                Now::App(op, ..) if op.boolean() => {}
                 Now::Each(..) => {}
                 _ => return Err(wrong()),
             }
-            Ok(Now::Each(q, v.clone(), Box::new(set), Box::new(body)))
+            Ok(Now::Each(
+                q,
+                v.clone(),
+                Box::new(set),
+                Box::new(body),
+                at(src, n),
+            ))
         }
         _ => Err(wrong()),
     }
 }
 
-fn condition(n: &KdlNode, names: &[String], bound: &[String]) -> Result<Now, String> {
+fn condition(n: &KdlNode, names: &[String], bound: &[String], src: &str) -> Result<Now, String> {
     match name(n) {
-        "forall" => return each(n, Quant::Forall, names, bound),
-        "exists" => return each(n, Quant::Exists, names, bound),
+        "forall" => return each(n, Quant::Forall, names, bound, src),
+        "exists" => return each(n, Quant::Exists, names, bound, src),
         _ => {}
     }
     let op =
@@ -849,12 +1012,12 @@ fn condition(n: &KdlNode, names: &[String], bound: &[String]) -> Result<Now, Str
         .entries()
         .iter()
         .map(|e| term(e, names, bound))
-        .chain(lines(n).iter().map(|c| condition(c, names, bound)))
+        .chain(lines(n).iter().map(|c| condition(c, names, bound, src)))
         .collect::<Result<Vec<_>, _>>()?;
     let (min, max) = op.arity();
-    let app = Now::App(op, args);
+    let app = Now::App(op, args, at(src, n));
     match &app {
-        Now::App(_, args) if args.len() < min || args.len() > max => {
+        Now::App(_, args, _) if args.len() < min || args.len() > max => {
             Err(format!("`{}` takes {}: {INVARIANT}", op.name(), op.takes()))
         }
         _ if op.compares() && !app.refers() => Err(format!(
@@ -865,31 +1028,37 @@ fn condition(n: &KdlNode, names: &[String], bound: &[String]) -> Result<Now, Str
     }
 }
 
-fn invariant(n: &KdlNode, names: &[String], src: &str) -> Result<Invariant, String> {
-    let named = shape(n, 1, &[], true)?.remove(0);
+fn invariant(n: &KdlNode, names: &[String], src: &str, run: Run) -> Result<Invariant, String> {
+    let named = shape(n, 1, &["check"], true)?.remove(0);
     let body = match lines(n) {
-        [one] => condition(one, names, &[])?,
+        [one] => condition(one, names, &[], src)?,
         _ => return Err(INVARIANT.into()),
     };
     match &body {
-        Now::App(op, _) if op.boolean() => Ok(Invariant {
-            name: named,
-            body,
-            line: line(src, n),
-        }),
-        Now::Each(..) => Ok(Invariant {
-            name: named,
-            body,
-            line: line(src, n),
-        }),
-        _ => Err(format!(
-            "`invariant \"{named}\"` has a condition, not `{}`: {INVARIANT}",
-            body.quint()
-        )),
+        Now::App(op, ..) if op.boolean() => {}
+        Now::Each(..) => {}
+        _ => {
+            return Err(format!(
+                "`invariant \"{named}\"` has a condition, not `{}`: {INVARIANT}",
+                body.quint()
+            ));
+        }
     }
+    Ok(Invariant {
+        name: named,
+        body,
+        at: at(src, n),
+        check: check(n)?.unwrap_or(run.check),
+    })
 }
 
-fn object(n: &KdlNode, config: &Config, names: &[String], src: &str) -> Result<Object, String> {
+fn object(
+    n: &KdlNode,
+    config: &Config,
+    names: &[String],
+    src: &str,
+    run: Run,
+) -> Result<Object, String> {
     let kind = Kind::parse(name(n))?;
     let icon = config
         .styles
@@ -904,30 +1073,38 @@ fn object(n: &KdlNode, config: &Config, names: &[String], src: &str) -> Result<O
     let named = shape(n, 1, &keys(n), true)
         .map_err(|e| format!("{kind}: {e}"))?
         .remove(0);
-    let at = |e: String| format!("{kind} {named}: {e}");
+    let fail = |e: String| format!("{kind} {named}: {e}");
     let mut o = Object {
         name: named.clone(),
         kind: kind.clone(),
         icon,
-        line: line(src, n),
-        start: pairs(n).map_err(at)?,
+        line: at(src, n).line,
+        start: pairs(n).map_err(fail)?,
         invariants: Vec::new(),
         draws: Vec::new(),
     };
     for c in n.iter_children() {
         match name(c) {
-            "invariant" => invariant(c, names, src).map(|found| o.invariants.push(found)),
+            "invariant" => invariant(c, names, src, run).map(|found| o.invariants.push(found)),
             "draw" if !o.draws.is_empty() => Err("has one `draw`".into()),
             "draw" => draw(c, &[], &mut o.draws),
             other => Err(format!("has `draw` and `invariant`, not `{other}`")),
         }
-        .map_err(at)?;
+        .map_err(fail)?;
     }
     Ok(o)
 }
 
 fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, String> {
-    let mut d = Diagram::default();
+    let run = match ran(doc)? {
+        Some(n) => config.run.over(given(n)?),
+        None => config.run,
+    };
+    let mut d = Diagram {
+        objects: Vec::new(),
+        impls: Vec::new(),
+        run,
+    };
     let mut seen = HashSet::new();
     let names: Vec<String> = doc
         .nodes()
@@ -938,6 +1115,9 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
         .collect();
     for n in doc.nodes() {
         let parent = name(n);
+        if parent == "run" {
+            continue;
+        }
         if parent == "impl" {
             let found = implemented(n)?;
             if d.impls.iter().any(|i| i.adapter == found.adapter) {
@@ -947,14 +1127,14 @@ fn build(doc: &KdlDocument, src: &str, config: &Config) -> Result<Diagram, Strin
             continue;
         }
         if parent != "setup" {
-            return Err(format!("`{parent}` is not setup or impl"));
+            return Err(format!("`{parent}` is not run, setup or impl"));
         }
         shape(n, 0, &[], true)?;
         if !seen.insert(parent) {
             return Err(format!("`{parent}` is set twice"));
         }
         for c in n.iter_children() {
-            d.objects.push(object(c, config, &names, src)?);
+            d.objects.push(object(c, config, &names, src, run)?);
         }
     }
     if d.objects.is_empty() {
@@ -1090,8 +1270,7 @@ pub struct Config {
     pub styles: Vec<(Kind, String)>,
     pub adapter: Adapter,
     pub transport: Option<Transport>,
-    pub cases: u64,
-    pub steps: u64,
+    pub run: Run,
     pub runners: Vec<(String, Start)>,
 }
 
@@ -1103,13 +1282,25 @@ pub enum Start {
 
 pub fn config(src: &str) -> Result<Config, Error> {
     let doc = document(src)?;
+    let found = ran(&doc)
+        .map_err(Error)?
+        .map(given)
+        .transpose()
+        .map_err(Error)?;
+    let run = match found.map(|g| (g.cases, g.steps, g.check)) {
+        Some((Some(cases), Some(steps), Some(check))) => Run {
+            cases,
+            steps,
+            check,
+        },
+        _ => return Err(Error(format!("needs {RUN}"))),
+    };
     let mut c = Config {
         include: Vec::new(),
         styles: Vec::new(),
         adapter: Adapter::Default,
         transport: None,
-        cases: 100,
-        steps: 50,
+        run,
         runners: Vec::new(),
     };
     let mut set = false;
@@ -1152,28 +1343,11 @@ pub fn config(src: &str) -> Result<Config, Error> {
                     Some("bun") => Adapter::Bun,
                     _ => return Err(Error("`adapter` is `\"default\"` or `\"bun\"`".into())),
                 };
-                let name = shape(n, 1, &["cases", "steps"], false)
-                    .map_err(Error)?
-                    .remove(0);
-                let count = |key: &str, default: Option<u64>| {
-                    match (n.get(key), default) {
-                        (Some(KdlValue::Integer(k)), _) => {
-                            u64::try_from(*k).ok().filter(|k| *k > 0)
-                        }
-                        (None, default) => default,
-                        _ => None,
-                    }
-                    .ok_or_else(|| {
-                        Error(format!(
-                            "`adapter \"{name}\"` takes `{key}=<count>`, a count above 0"
-                        ))
-                    })
-                };
+                shape(n, 1, &[], false).map_err(Error)?;
                 c.adapter = adapter;
-                c.cases = count("cases", None)?;
-                c.steps = count("steps", Some(c.steps))?;
                 set = true;
             }
+            "run" => {}
             "runner" => {
                 let adapter = shape(n, 1, &["command", "harness"], false)
                     .map_err(Error)?
@@ -1194,7 +1368,7 @@ pub fn config(src: &str) -> Result<Config, Error> {
             }
             other => {
                 return Err(Error(format!(
-                    "`{other}` is not include, style, adapter, transport or runner"
+                    "`{other}` is not include, style, adapter, run, transport or runner"
                 )));
             }
         }
@@ -1214,6 +1388,7 @@ mod tests {
     use super::*;
 
     const CONFIG: &str = r#"include "**/*.weft.kdl"
+run cases=100 steps=50 check="sampled"
 style "person" icon="user"
 style "browser" icon="app-window"
 style "element" icon="square-dashed-mouse-pointer""#;
@@ -1268,15 +1443,58 @@ impl "bun" {
     }
 
     #[test]
-    fn an_adapter_takes_the_count_of_cases_and_steps() {
-        let steps = |line: &str| config(&format!("{CONFIG}\n{line}")).map(|c| (c.cases, c.steps));
-        assert_eq!(steps(r#"adapter "bun" cases=5"#).ok(), Some((5, 50)));
+    fn the_config_sets_each_value_of_a_run() {
+        let run = |line: &str| {
+            config(&CONFIG.replace(r#"run cases=100 steps=50 check="sampled""#, line))
+                .map(|c| c.run)
+                .map_err(|e| e.0)
+        };
         assert_eq!(
-            steps(r#"adapter "bun" cases=5 steps=20"#).ok(),
-            Some((5, 20))
+            run(r#"run cases=5 steps=20 check="always""#),
+            Ok(Run {
+                cases: 5,
+                steps: 20,
+                check: Check::Always,
+            })
         );
-        assert!(steps(r#"adapter "bun" cases=5 steps=0"#).is_err());
-        assert!(steps(r#"adapter "bun" steps=20"#).is_err());
+        assert_eq!(run(""), Err(format!("needs {RUN}")));
+        assert_eq!(run("run cases=5 steps=20"), Err(format!("needs {RUN}")));
+        assert_eq!(
+            run(r#"run cases=5 steps=0 check="always""#),
+            Err(RUN.to_string())
+        );
+        assert_eq!(
+            run(r#"run cases=5 steps=20 check="often""#),
+            Err("`run` takes `check=\"always\"` or `check=\"sampled\"`".to_string())
+        );
+        assert_eq!(
+            run("run cases=5 steps=20 check=\"always\"\nrun cases=5 steps=20 check=\"always\""),
+            Err("`run` is set twice".to_string())
+        );
+    }
+
+    #[test]
+    fn a_test_and_an_invariant_change_the_values_of_the_config() -> Result<(), String> {
+        let config = config(CONFIG).map_err(|e| e.0)?;
+        let d = parse(POOL, &config).map_err(|e| e.0)?;
+        assert_eq!(d.run, config.run);
+        assert_eq!(d.invariants()[0].check, Check::Sampled);
+        let changed = POOL.replace("setup {", "run steps=5\nsetup {").replace(
+            "invariant \"closed\"",
+            "invariant \"closed\" check=\"always\"",
+        );
+        let d = parse(&changed, &config).map_err(|e| e.0)?;
+        assert_eq!(
+            d.run,
+            Run {
+                cases: 100,
+                steps: 5,
+                check: Check::Sampled,
+            }
+        );
+        assert_eq!(d.invariants()[0].check, Check::Always);
+        assert_eq!(built(POOL, "setup {", "run\nsetup {"), Err(RUN.to_string()));
+        Ok(())
     }
 
     #[test]
@@ -1288,7 +1506,7 @@ impl "bun" {
             (
                 "impl \"bun\" {",
                 "rules {\n}\nimpl \"bun\" {",
-                Err("`rules` is not setup or impl"),
+                Err("`rules` is not run, setup or impl"),
             ),
             (
                 "  module \"page\" \"../src/page.ts\"\n",
@@ -1325,11 +1543,17 @@ impl "bun" {
         assert_eq!(closed.judge(&page(0, 0), &page(6, 1)), None);
         assert_eq!(
             closed.judge(&page(0, 0), &page(6, 0)),
-            Some(vec![
-                closed.source(),
-                "eq(0, 0) = true".to_string(),
-                "eq(page.count, start(page.count)) = eq(6, 0) = false".to_string(),
-            ])
+            Some(Failure {
+                assert: Assert {
+                    op: "eq",
+                    at: At { line: 8, column: 9 },
+                },
+                evidence: vec![
+                    closed.source(),
+                    "eq(0, 0) = true".to_string(),
+                    "eq(page.count, start(page.count)) = eq(6, 0) = false".to_string(),
+                ],
+            })
         );
         let at = |e: String| Err(format!("browser page: {e}"));
         let cases = [
@@ -1481,7 +1705,7 @@ impl "bun" {
         };
         for (src, start, now, passes) in cases {
             let doc = document(src).unwrap();
-            let body = condition(&doc.nodes()[0], &["page".to_string()], &[]).unwrap();
+            let body = condition(&doc.nodes()[0], &["page".to_string()], &[], src).unwrap();
             assert_eq!(
                 body.passes(&page(start), &page(now), &Vec::new()),
                 passes,

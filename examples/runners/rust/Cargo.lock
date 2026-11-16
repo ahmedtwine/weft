@@ -279,7 +279,7 @@ checksum = "b8c0a043c9540bae7c578c88f91dda8bd82e59ae27c21baca69c8b191aaf5a6e"
 
 [[package]]
 name = "weft-sdk"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "proc-macro2",
  "schemars",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "weft-wire"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "serde",
  "serde_json",

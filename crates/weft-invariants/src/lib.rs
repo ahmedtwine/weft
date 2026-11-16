@@ -177,8 +177,8 @@ pub fn mine(dir: &Path, test: &Path, options: &Options) -> Result<()> {
         .map_err(|e| e.to_string())?;
     std::env::set_current_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut world = World::open(test)?;
-    world.config.cases = options.cases.unwrap_or(world.config.cases);
-    world.config.steps = options.steps.unwrap_or(world.config.steps);
+    world.diagram.run.cases = options.cases.unwrap_or(world.diagram.run.cases);
+    world.diagram.run.steps = options.steps.unwrap_or(world.diagram.run.steps);
     let seen = world.run()?;
     let states: Vec<&State> = seen.iter().map(|seen| &seen.state).collect();
     let space = Space::of(&states)?;
@@ -241,7 +241,7 @@ pub fn mine(dir: &Path, test: &Path, options: &Options) -> Result<()> {
 mod tests {
     use super::*;
 
-    const CONFIG: &str = "include \"*.weft.kdl\"\nstyle \"api\" icon=\"server\"\n";
+    const CONFIG: &str = "include \"*.weft.kdl\"\nrun cases=100 steps=50 check=\"sampled\"\nstyle \"api\" icon=\"server\"\n";
     const TEST: &str =
         "setup {\n  api \"door\"\n}\nimpl \"bun\" {\n  module \"door\" \"../door.ts\"\n}\n";
 

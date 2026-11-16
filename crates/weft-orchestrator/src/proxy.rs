@@ -6,12 +6,23 @@ use std::thread;
 use std::time::Duration;
 
 use crate::hub::Session;
-use crate::simulate::Hop;
 
 const WAIT: Duration = Duration::from_secs(60);
 const IDLE: Duration = Duration::from_millis(20);
 const SKIPPED: [&str; 4] = ["host", "content-length", "connection", "transfer-encoding"];
 
+#[derive(Clone, Debug)]
+pub struct Hop {
+    pub from: String,
+    pub to: String,
+    pub method: String,
+    pub path: String,
+    pub body: String,
+    pub status: u16,
+    pub reply: String,
+    pub sent: usize,
+    pub answered: usize,
+}
 pub(crate) struct Proxy {
     pub url: String,
     closed: Arc<AtomicBool>,

@@ -1017,6 +1017,7 @@ impl "bun" {
     }
 
     const CONFIG: &str = r#"include "**/*.weft.kdl"
+run cases=100 steps=50 check="sampled"
 style "person" icon="user"
 style "browser" icon="app-window"
 style "element" icon="square-dashed-mouse-pointer""#;

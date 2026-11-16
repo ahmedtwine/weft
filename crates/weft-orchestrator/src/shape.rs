@@ -1,4 +1,7 @@
 use serde_json::{Map, Value as Json, json};
+use weft_parse::Diagram;
+
+use crate::stateful::Members;
 
 const DEPTH: usize = 16;
 
@@ -73,6 +76,52 @@ pub(crate) fn item(schema: &Json) -> Option<&Json> {
     let s = plain(schema);
     s.get("items")
         .or_else(|| s.get("additionalProperties").filter(|a| a.is_object()))
+}
+
+fn registered<'a>(members: &'a Members, o: &str, k: &str) -> Result<Option<&'a Json>, String> {
+    let tag = format!("{o}.{k}");
+    let all = || members.iter().flat_map(|m| &m.hello().schemas);
+    if let Some((_, s)) = all().find(|(key, _)| *key == tag) {
+        return Ok(Some(s));
+    }
+    match all().find(|(key, _)| key == o) {
+        Some((_, s)) => match field(s, k) {
+            Field::Found(s) => Ok(Some(s)),
+            Field::Open => Ok(None),
+            Field::Missing(fields) => Err(format!(
+                "the diagram names `{tag}`, and `weft.state(\"{o}\", …)` has the fields {}",
+                fields.join(", ")
+            )),
+        },
+        None => Err(format!(
+            "the diagram names `{tag}`, and no runner calls `weft.state(\"{tag}\", …)`"
+        )),
+    }
+}
+
+pub(crate) fn shaped(d: &Diagram, members: &Members) -> Result<(), String> {
+    for (o, k) in d.keys() {
+        registered(members, o, k)?;
+    }
+    for (o, k, path) in d.fields() {
+        let Some(mut at) = registered(members, o, k)?.and_then(item) else {
+            continue;
+        };
+        for (n, part) in path.iter().enumerate() {
+            match field(at, part) {
+                Field::Found(s) => at = s,
+                Field::Open => break,
+                Field::Missing(fields) => {
+                    return Err(format!(
+                        "the invariant reads `{}` of each item of `{o}.{k}`, and an item has the fields {}",
+                        path[..=n].join("."),
+                        fields.join(", ")
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

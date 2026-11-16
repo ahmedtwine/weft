@@ -1,73 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
-use weft_hegel::{Case, Engine, Generator, Halt, INTERESTING, INVALID, OVERRUN, VALID};
+use weft_hegel::{Case, Engine, Halt, INTERESTING, INVALID, OVERRUN, VALID};
 use weft_parse::{Diagram, Ran, Span, State, shown};
 
 use crate::hub::Remote;
-use crate::shape::{Field, field, item};
+use crate::invariant::{Invariants, Moment};
+use crate::protocol::{Ask, Call, Report, START, Turn};
+use crate::proxy::Hop;
+use crate::shape::shaped;
 
-#[derive(Clone, Debug)]
-pub struct Hop {
-    pub from: String,
-    pub to: String,
-    pub method: String,
-    pub path: String,
-    pub body: String,
-    pub status: u16,
-    pub reply: String,
-    pub sent: usize,
-    pub answered: usize,
-}
 const TRIES: usize = 4;
-const START: &str = "start";
-
-pub(crate) struct Start {
-    pub line: usize,
-    pub input: Option<Generator>,
-}
-
-pub(crate) struct Action {
-    pub object: String,
-    pub verb: String,
-    pub line: usize,
-    pub drawn: Generator,
-}
-
-#[derive(Default)]
-pub(crate) struct Hello {
-    pub schemas: Vec<(String, Json)>,
-    pub start: Vec<Start>,
-    pub actions: Vec<Action>,
-}
-
-pub(crate) struct Call<'a> {
-    pub line: usize,
-    pub input: &'a Json,
-}
-
-pub(crate) enum Turn<'a> {
-    Start(&'a [Call<'a>]),
-    Run(&'a str, Call<'a>),
-    Read,
-    Done,
-}
-
-pub(crate) enum Report {
-    State(State),
-    Thrown(String),
-    Refused(String),
-}
-
-pub(crate) enum Ask {
-    Generate(Arc<Generator>),
-    PoolAdd(String, Json),
-    PoolGenerate(String, bool),
-    Target(f64, String),
-}
-
-pub(crate) type Answer<'a> = dyn FnMut(Ask) -> Result<Option<Json>, Halt> + 'a;
 
 #[derive(Clone, Copy)]
 pub enum Event<'a> {
@@ -146,6 +89,7 @@ pub struct Outcome {
     pub counts: Counts,
     pub tally: Vec<Tally>,
     pub trace: Vec<Line>,
+    pub origin: Option<String>,
     pub failed: bool,
     pub caveat: Option<String>,
     pub output: Vec<String>,
@@ -159,15 +103,15 @@ struct Step {
     action: usize,
 }
 
-struct Run<'a> {
+struct Machine<'a> {
     d: &'a Diagram,
     steps: Vec<Step>,
     limit: i64,
-    machine: bool,
+    invariants: Invariants<'a>,
     runs: u64,
     first: State,
     tally: Vec<Tally>,
-    found: Option<Vec<Line>>,
+    found: Option<(Vec<Line>, String)>,
     trace: Vec<Line>,
     story: Vec<Line>,
     refused: BTreeMap<String, BTreeSet<String>>,
@@ -182,27 +126,7 @@ enum Stepped {
     Failed(String),
 }
 
-type Members = [Remote];
-
-impl Call<'_> {
-    fn json(&self) -> Json {
-        json!({ "use": self.line, "input": self.input })
-    }
-}
-
-impl Turn<'_> {
-    pub(crate) fn json(&self) -> String {
-        match self {
-            Turn::Start(calls) => {
-                json!({ "step": START, "calls": calls.iter().map(Call::json).collect::<Vec<_>>() })
-            }
-            Turn::Run(verb, call) => json!({ "step": verb, "calls": [call.json()] }),
-            Turn::Read => json!({ "calls": [] }),
-            Turn::Done => json!({ "done": true }),
-        }
-        .to_string()
-    }
-}
+pub(crate) type Members = [Remote];
 
 pub fn view(s: &State) -> String {
     s.iter()
@@ -299,7 +223,7 @@ fn merged(mut state: State, part: State) -> State {
     state
 }
 
-impl Run<'_> {
+impl Machine<'_> {
     fn heard(&mut self, case: &Case, members: &mut Members) -> Result<Vec<Hop>, Halt> {
         let hops: Vec<Hop> = members.iter_mut().flat_map(Remote::hops).collect();
         for hop in &hops {
@@ -420,42 +344,32 @@ impl Run<'_> {
         self.trace.push(line);
         self.told();
         self.first = real.clone();
-        let judged = match started {
-            Some(_) => Some(START.to_string()),
-            None => self.judged(case, None, &real)?,
-        };
-        Ok(judged.map_or(Ok(real), Err))
+        if started.is_some() {
+            return Ok(Err(START.to_string()));
+        }
+        let broken = self.judged(case, Moment::Initial, None, &real)?;
+        Ok(broken.map_or(Ok(real), Err))
     }
 
     fn judged(
         &mut self,
         case: &Case,
+        moment: Moment,
         rule: Option<usize>,
         real: &State,
     ) -> Result<Option<String>, Halt> {
-        let d = self.d;
-        for (index, invariant) in d.invariants().into_iter().enumerate() {
-            if self.machine && !case.invariant(index)? {
-                continue;
-            }
-            if let Some(rule) = rule {
-                self.tally[rule].checks += 1;
-            }
-            let checked = &mut self.counts.invariants[index];
-            checked.checks += 1;
-            checked.items = invariant
-                .items(real)
-                .map(|items| checked.items.unwrap_or(0) + items as u64);
-            let evidence = invariant.judge(&self.first, real);
-            (self.stream)(Event::Check(&invariant.name, evidence.as_deref()));
-            if let Some(evidence) = evidence {
-                if let Some(line) = self.trace.last_mut() {
-                    line.evidence = evidence;
-                }
-                return Ok(Some(invariant.name.clone()));
-            }
+        let judged = self
+            .invariants
+            .judged(case, moment, &self.first, real, self.stream)?;
+        if let Some(rule) = rule {
+            self.tally[rule].checks += judged.checks;
         }
-        Ok(None)
+        Ok(judged.broken.map(|broken| {
+            if let Some(line) = self.trace.last_mut() {
+                line.evidence = broken.evidence;
+            }
+            broken.origin
+        }))
     }
 
     fn step(
@@ -528,20 +442,12 @@ impl Run<'_> {
     }
 
     fn stepped(&mut self, case: &mut Case, members: &mut Members) -> Result<Option<String>, Halt> {
-        self.machine = false;
         let mut real = match self.started(case, members)? {
             Ok(real) => real,
             Err(origin) => return Ok(Some(origin)),
         };
         let rules: Vec<String> = self.tally.iter().map(|t| t.step.clone()).collect();
-        let invariants: Vec<String> = self
-            .d
-            .invariants()
-            .into_iter()
-            .map(|i| i.name.clone())
-            .collect();
-        case.machine(&rules, &invariants, self.limit)?;
-        self.machine = true;
+        case.machine(&rules, &self.invariants.declared(), self.limit)?;
         while case.round()? {
             let mut rejected = false;
             let mut last = None;
@@ -559,12 +465,12 @@ impl Run<'_> {
                 }
             }
             case.close(rejected)?;
-            if let Some(origin) = self.judged(case, last, &real)? {
+            if let Some(origin) = self.judged(case, Moment::Round, last, &real)? {
                 return Ok(Some(origin));
             }
         }
         case.close(false)?;
-        Ok(None)
+        self.judged(case, Moment::Final, None, &real)
     }
 
     fn case(&mut self, mut case: Case, members: &mut Members) -> Result<(), String> {
@@ -596,7 +502,7 @@ impl Run<'_> {
             }
         }
         match status == INTERESTING {
-            true => self.found = Some(self.trace.clone()),
+            true => self.found = origin.clone().map(|o| (self.trace.clone(), o)),
             false => {
                 let found = telling(&self.trace);
                 if covered(&found) > covered(&self.story)
@@ -657,52 +563,6 @@ pub(crate) fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
     })
 }
 
-fn registered<'a>(members: &'a Members, o: &str, k: &str) -> Result<Option<&'a Json>, String> {
-    let tag = format!("{o}.{k}");
-    let all = || members.iter().flat_map(|m| &m.hello().schemas);
-    if let Some((_, s)) = all().find(|(key, _)| *key == tag) {
-        return Ok(Some(s));
-    }
-    match all().find(|(key, _)| key == o) {
-        Some((_, s)) => match field(s, k) {
-            Field::Found(s) => Ok(Some(s)),
-            Field::Open => Ok(None),
-            Field::Missing(fields) => Err(format!(
-                "the diagram names `{tag}`, and `weft.state(\"{o}\", …)` has the fields {}",
-                fields.join(", ")
-            )),
-        },
-        None => Err(format!(
-            "the diagram names `{tag}`, and no runner calls `weft.state(\"{tag}\", …)`"
-        )),
-    }
-}
-
-fn shaped(d: &Diagram, members: &Members) -> Result<(), String> {
-    for (o, k) in d.keys() {
-        registered(members, o, k)?;
-    }
-    for (o, k, path) in d.fields() {
-        let Some(mut at) = registered(members, o, k)?.and_then(item) else {
-            continue;
-        };
-        for (n, part) in path.iter().enumerate() {
-            match field(at, part) {
-                Field::Found(s) => at = s,
-                Field::Open => break,
-                Field::Missing(fields) => {
-                    return Err(format!(
-                        "the invariant reads `{}` of each item of `{o}.{k}`, and an item has the fields {}",
-                        path[..=n].join("."),
-                        fields.join(", ")
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
     shaped(d, members)?;
     if members.iter().all(|m| m.hello().start.is_empty()) {
@@ -739,16 +599,15 @@ fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
     }
 }
 
-pub(crate) fn simulate<'a>(
+pub(crate) fn run<'a>(
     d: &'a Diagram,
+    file: &str,
     members: &mut Members,
-    cases: u64,
-    limit: u64,
     key: Option<&str>,
     stream: &'a mut Stream<'a>,
 ) -> Result<Outcome, String> {
     let steps = owners(d, members)?;
-    let mut run = Run {
+    let mut run = Machine {
         d,
         tally: steps
             .iter()
@@ -762,26 +621,15 @@ pub(crate) fn simulate<'a>(
             })
             .collect(),
         steps,
-        limit: i64::try_from(limit).map_err(|e| e.to_string())?,
-        machine: false,
+        limit: i64::try_from(d.run.steps).map_err(|e| e.to_string())?,
+        invariants: Invariants::new(d, file),
         runs: 0,
         first: State::new(),
         found: None,
         trace: Vec::new(),
         story: Vec::new(),
         refused: BTreeMap::new(),
-        counts: Counts {
-            invariants: d
-                .invariants()
-                .into_iter()
-                .map(|i| Checked {
-                    name: i.name.clone(),
-                    checks: 0,
-                    items: None,
-                })
-                .collect(),
-            ..Counts::default()
-        },
+        counts: Counts::default(),
         order: Vec::new(),
         stream,
     };
@@ -791,7 +639,7 @@ pub(crate) fn simulate<'a>(
         .map(|s| (s.verb.clone(), s.object.clone()))
         .collect();
     (run.stream)(Event::Actions(&actions));
-    let mut engine = Engine::start(cases, key)?;
+    let mut engine = Engine::start(d.run.cases, key)?;
     loop {
         let case = engine.case()?;
         for line in engine.heard() {
@@ -839,17 +687,21 @@ pub(crate) fn simulate<'a>(
         actions: rans.into_iter().flat_map(|r| r.actions).collect(),
     };
     let ran = listed(ran, &run.tally)?;
-    let trace = match (ended.failed, run.found) {
-        (true, Some(found)) => found,
+    let (trace, origin) = match (ended.failed, run.found) {
+        (true, Some((found, origin))) => (found, Some(origin)),
         (true, None) => return Err("Hegel fails the run with no failing case".into()),
-        (false, _) => run.story,
+        (false, _) => (run.story, None),
     };
     Ok(Outcome {
-        cases,
+        cases: d.run.cases,
         runs: run.runs,
-        counts: run.counts,
+        counts: Counts {
+            invariants: run.invariants.checked,
+            ..run.counts
+        },
         failed: ended.failed,
         trace,
+        origin,
         tally: run.tally,
         caveat: ended.caveat,
         output: ended.output,

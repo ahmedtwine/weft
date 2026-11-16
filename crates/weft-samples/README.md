@@ -89,18 +89,12 @@ To add a medium, implement `parts`, `rules` and `run` of the `Medium` trait. To 
 |---|---|
 | `weft-samples check <file> <invariants.json>` | Each violation, with its place and invariant name |
 | `weft-samples narrow <file>` | Your reactions for each annotation in `<file>.json`, then each invariant and its violations |
-| `cargo nextest run -p weft-samples` | For each example: the wrong violations of the golden invariants, then the flow of each annotation, with no model request |
 
-## Test
+## To do
 
-[tests/examples.rs](tests/examples.rs) runs one test for each example with `Golden`, a mock of the `Model` trait. A part violates a golden invariant when it holds one of the golden violations of that invariant. The alternates are the part with the violations of each golden invariant removed. The test reacts for you: it rejects an alternate when the golden invariant of the annotation reports it. The golden invariant of an annotation is the one whose violations hold the annotated part. For each annotation, the flow gives one result:
-
-| Result | Meaning |
+| Point | State |
 |---|---|
-| `pass` | The reactions chose an invariant with the golden violations |
-| `golden` | The annotated part is in no golden violation |
-| `draw` | No drawn invariant has the golden violations; the nearest one follows, with each missed and false part |
-| `reactions` | A drawn invariant has the golden violations, but the reactions chose another |
+| The flow test of each example | It is removed until it passes. The golden invariants give 0 wrong violations, but the annotated part of 1 of 1 annotations of `examples/code.rs` and of 4 of 6 annotations of `examples/writing.md` is in no golden violation, so the flow fails for them. The last version is `tests/examples.rs` of commit `0792b1b`. It used `Golden`, a mock of the `Model` trait, and sent no model request. |
 
 ## Examples
 

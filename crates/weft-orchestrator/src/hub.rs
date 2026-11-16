@@ -10,9 +10,10 @@ use weft_wire::{
     TARGET, TURN, Writer,
 };
 
+use crate::protocol::{Action, Answer, Ask, Hello, Report, Start, Turn};
+use crate::proxy::Hop;
 use crate::schema::{live, narrowed, whole};
 use crate::shape::resolved;
-use crate::simulate::{Action, Answer, Ask, Hello, Hop, Report, Start, Turn};
 
 const CUT: &str = "the message of the runner is too short";
 const DRAW: &str = "`tc.draw`";
