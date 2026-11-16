@@ -66,6 +66,7 @@ pub fn brief(evidence: &[String]) -> Vec<String> {
                     Some("ilte") => " > ",
                     Some("igt") => " ≤ ",
                     Some("igte") => " < ",
+                    Some("in") => " ∉ ",
                     _ => " · ",
                 };
                 parts(terms)

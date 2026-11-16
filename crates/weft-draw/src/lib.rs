@@ -649,8 +649,8 @@ fn sign(op: Op, holds: bool) -> &'static str {
         (Op::Ilte, true) | (Op::Igt, false) => "≤",
         (Op::Igt, true) | (Op::Ilte, false) => ">",
         (Op::Igte, true) | (Op::Ilt, false) => "≥",
-        (Op::In, true) => "∈",
-        (Op::In, false) => "∉",
+        (Op::In | Op::Contains, true) => "∈",
+        (Op::In | Op::Contains, false) => "∉",
         _ => "?",
     }
 }
