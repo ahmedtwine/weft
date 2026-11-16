@@ -15,14 +15,13 @@ enum Link {
     Http(ureq::Agent, String),
 }
 
-static LINK: Mutex<Option<Link>> = Mutex::new(None);
+static LINK: Mutex<Option<(String, Link)>> = Mutex::new(None);
 
 fn held<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
     lock.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn connect() -> Result<Link, String> {
-    let at = env::var(AT).map_err(|_| format!("{AT} is not set"))?;
+fn connect(at: &str) -> Result<Link, String> {
     match at.strip_prefix(UNIX) {
         Some(path) => UnixStream::connect(path)
             .map(Link::Unix)
@@ -42,11 +41,13 @@ fn connect() -> Result<Link, String> {
 }
 
 fn ask(message: &[u8]) -> Result<Vec<u8>, String> {
+    let at = env::var(AT).map_err(|_| format!("{AT} is not set"))?;
     let mut link = held(&LINK);
-    if link.is_none() {
-        *link = Some(connect()?);
+    if !matches!(&*link, Some((known, _)) if *known == at) {
+        let linked = connect(&at)?;
+        *link = Some((at, linked));
     }
-    match link.as_mut() {
+    match link.as_mut().map(|(_, linked)| linked) {
         Some(Link::Unix(stream)) => send(stream, message)
             .and_then(|()| receive(stream))
             .map_err(|e| format!("weft: {e}")),

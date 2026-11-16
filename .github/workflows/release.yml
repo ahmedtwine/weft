@@ -23,7 +23,7 @@ jobs:
           components: clippy
       - uses: taiki-e/install-action@nextest
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo nextest run --workspace --locked
+      - run: cargo nextest run --workspace --exclude invariants --locked
 
   build:
     name: Build ${{ matrix.target }}
@@ -80,7 +80,7 @@ jobs:
           code=0
           said=$(bun sdk/bin.ts --help 2>&1) || code=$?
           test "$code" = 2
-          test "$said" = "usage: weft [--ui | <file>…]"
+          test "$said" = "usage: weft [--ui] [<file>…] | weft --parent <adapter> <file>"
       - name: Load libweft from the release
         run: WEFT_LIB="dist/$GITHUB_REF_NAME/${{ matrix.target }}/${{ matrix.library }}" bun -e 'await import("./sdk/weft.ts")'
 

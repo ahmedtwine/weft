@@ -74,3 +74,10 @@ export const poolGenerate = (pool: string, consume: boolean): unknown =>
   asked("poolGenerate", given(pool), consume);
 export const target = (value: number, label: string) =>
   checked(call().target(call().ctx, value, given(label)));
+export const setenv = (env: Record<string, string>) => {
+  const set = koffi.load(null).func("int setenv(const char *name, const char *value, int overwrite)");
+  for (const [name, value] of Object.entries(env)) {
+    process.env[name] = value;
+    set(name, value, 1);
+  }
+};

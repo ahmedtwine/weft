@@ -1,17 +1,15 @@
 # weft
 
-A distributed runner for property tests, built on [Hegel](https://hegel.dev) and [KDL](https://kdl.dev). A test names its objects, the invariants that hold over their state, and the module of each object. Hegel draws every sequence of the functions of those modules with inputs from their native types, checks each invariant after each step, and shrinks a failing case to the fewest steps and the least values, as `quint run --invariant` does for a Quint spec.
+A distributed runner for [Hegel](https://hegel.dev) property tests
 
 ## Install
 
 ```sh
-bun add -d git+ssh://git@github.com/ahmedtwine/weft.git#v0.4.0
-GH_TOKEN=<token> bunx weft tests/*.weft.kdl
+bun add -d git+ssh://git@github.com/ahmedtwine/weft.git#v0.5.0
 ```
 
-The `weft` command downloads the binary and libweft of its release on the first run. `GH_TOKEN` gives read access to `ahmedtwine/weft`.
 
-## Run the examples
+## Run 
 
 ```sh
 mise trust && mise install
@@ -19,9 +17,9 @@ mise //examples:test      # build weft and the four runners, then run each test
 mise //examples:report    # serve the dashboard at http://127.0.0.1:7357
 ```
 
-`examples/tests/*.weft.kdl` holds each test. `examples/runners/<lang>/` holds one runner for each language, with a folder of modules for each test. Weft starts the runner of each `impl` block, drives it through each case, and stops it at the end of the test.
+`examples/tests/*.weft.kdl` has the example tests. `examples/runners/<lang>/` shows the runners in the supported languages. Register the runners in the `impl` block
 
-## A test
+### Test
 
 `examples/tests/bank.bun.weft.kdl`:
 
@@ -39,21 +37,7 @@ impl "bun" {
 }
 ```
 
-| Line                                 | Gives                                                                                  |
-| ------------------------------------ | -------------------------------------------------------------------------------------- |
-| `<kind> "<object>"`                  | An object; a kind is any word with `style "<kind>" icon="<lucide icon>"` in `weft.kdl` |
-| `invariant "<name>" { <condition> }` | A Quint builtin over the state: `eq`, `implies`, `forall`, `exists` and more           |
-| `impl "<lang>" { module … }`         | The runner of a language and the module of each of its objects                         |
-
-An `impl` block holds `module` lines only. The module gives the rest:
-
-| Export of the module | Is                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------- |
-| `reset`              | The function that sets the state before each case                                  |
-| `url`                | The function that gives the url of an HTTP app                                     |
-| each other function  | An action; its name is the verb, the type of its input the schema Hegel draws from |
-
-The input of an action is the native type of its parameter: a `JsonSchema` type in Rust, a struct with `minimum` and `maximum` tags in Go, a dataclass with `Literal` or `Annotated[int, range(…)]` in Python, and the zod schema `<function>Schema` in TypeScript. The first person of `setup` calls each action in the diagram.
+### Runner
 
 `examples/runners/bun/bank/bank.ts`:
 
@@ -78,30 +62,55 @@ export const withdraw = ({ amount }: z.infer<typeof withdrawSchema>) => {
 };
 ```
 
-Hegel draws `deposit` and `withdraw` in any order with amounts from 1 to 100, and checks the balance after each step. With the `if` gone from `withdraw`, the test fails and Hegel shrinks the case to one step:
+Hegel draws `deposit` and `withdraw` in any order with amounts from 1 to 100, and checks the balance after each step with shrinking:
 
 ```text
 ✕ tests/bank.bun.weft.kdl · "the balance never goes below zero" · bank.balance = -1 < 0
 ```
 
-The same bank runs in each language: `runners/rust/bank/bank.rs`, `runners/go/bank/bank.go` and `runners/python/bank/bank.py`.
 
-## State
+## Multiple Runner Example (For multi-service invariant testing)
 
-A runner gives its state to weft with one call. The call takes a native value, or a function that reads it, under `"<object>"` for a record of keys or `"<object>.<key>"` for one key. The SDK sends the JSON Schema of the native type, and weft checks each key and field that an invariant reads against it before the first case:
+`tests/parcel.weft.kdl` runs four apps, one in each runner: `orders` in Go keeps each order in Redis in a testcontainer, `shop` in Python lets a customer choose the address of an order, and `courier` in TypeScript ships an order to its address. 
 
-| Language   | SDK          | Call                                                       | Start in `weft.kdl`                        |
-| ---------- | ------------ | ---------------------------------------------------------- | ------------------------------------------ |
-| TypeScript | `sdk/`       | `state("courier.parcels", () => parcels, z.array(Parcel))` | `adapter "bun"`                            |
-| Rust       | `sdk/rust`   | `weft_sdk::state("bank", now)` with `JsonSchema`           | `runner "rust" command="<binary>"`         |
-| Go         | `sdk/go`     | `weft.State("bank", func() Bank { return bank })`          | `runner "go" command="<binary>"`           |
-| Python     | `sdk/python` | `weft.state("bank", lambda: bank)` with a dataclass        | `runner "python" command="python -m weft"` |
+App reach each other at `WEFT_<MODULE>_URL`; 
 
-The Diagram tab of the report draws the state after `reset` as a table of type, key and value under each object, each step with the keys it changes, and the failing condition. The Run tab holds each step of the case and the state after it.
+```mermaid
+flowchart TB
+  database[("Hegel database")]
+  subgraph weft["weft process"]
+    subgraph libhegel["libhegel"]
+      run["run<br/>reuse · generate · target · shrink"]
+      machine["state machine"]
+      draws["generators · pools"]
+    end
+    hegel["weft-hegel"]
+    simulator["weft-simulator"]
+    runner["weft-runner"]
+    proxy["proxy"]
+  end
+  reaper["reaper process"]
+  subgraph runners["runner processes"]
+    python["python · shop"]
+    bun["bun · courier"]
+    go["go · orders"]
+    rust["rust · addresses"]
+  end
+  redis[("Redis container")]
 
-## A shop of four apps
-
-`tests/parcel.weft.kdl` runs four apps, one in each runner: `orders` in Go keeps each order in Redis in a testcontainer, `addresses` in Rust keeps the address book, `shop` in Python lets a customer choose the address of an order, and `courier` in TypeScript ships an order to its address. An app reaches another app at `WEFT_<MODULE>_URL`; weft forwards each request and draws it in the color of the app that sends it.
+  run <--> database
+  hegel -- "hegel_next_test_case<br/>hegel_mark_complete" --> run
+  hegel -- "hegel_state_machine_next_rule" --> machine
+  hegel -- "hegel_generate_*<br/>hegel_pool_*" --> draws
+  simulator --> hegel
+  simulator <-- "turns" --> runners
+  runner -- "spawns" --> runners
+  runner -- "spawns" --> reaper
+  reaper -. "stops when weft ends" .-> runners
+  python & bun -- "HTTP" --> proxy
+  proxy -- "HTTP" --> go & rust
+  go -- "starts" --> redis
+```
 
 The orders app checks that the customer owns the order, and the address book trusts the courier, so a customer can choose the address of another customer:
 
@@ -119,36 +128,10 @@ api "courier" {
 ✕ tests/parcel.weft.kdl · "a parcel goes only to the address of its own customer" · courier.parcels[0].customer = "ana" ≠ courier.parcels[0].recipient = "ben"
 ```
 
-The test fails by design: Hegel finds `choose_address(addr-ben)` and then `ship(o-ana)`.
-
 ## Dashboard
 
-`weft --ui` runs each test and serves a live dashboard at http://127.0.0.1:7357. Each run sends OpenTelemetry spans: one for each test case, step and HTTP request. The dashboard reads them into [Perspective](https://perspective-dev.github.io) tables as they arrive. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to also export the spans to an OTLP collector.
+`weft --ui` runs each test and serves a live dashboard at http://127.0.0.1:7357. Each run sends OpenTelemetry spans: one for each test case, step and HTTP request. The dashboard reads them into [Perspective](https://perspective-dev.github.io) tables as they arrive
 
-Click a test to open its trace:
-
-| Panel                                     | Shows                                                                                                                         |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Test cases                                | Each test case of the test, with its steps, its HTTP requests and its failed check. Click a row to open that test case       |
-| Test case                                 | One row for each step: the action, the result of each invariant, and one column for each state path, such as `courier.parcels[0].customer` |
-| Diagram                                   | The step as a sequence diagram, or as a flowchart through the plugin menu. Each possible action is dotted, the action of the step is solid, and a failed step is red |
-| Steps and HTTP requests in each test case | A line chart over the test cases                                                                                              |
-
-Click a step, or press the arrow keys, to move the diagram from step to step.
-
-## Runners
-
-`weft.kdl` names one `runner` line for each language. Weft starts each command with these variables:
-
-| Variable            | Value                                                            |
-| ------------------- | ---------------------------------------------------------------- |
-| `WEFT_DIAGRAM`      | The path of the test                                             |
-| `WEFT_ADAPTER`      | The name of the `impl` block                                     |
-| `WEFT_TRANSPORT`    | The socket or url of weft                                        |
-| `WEFT_LIB`          | The path of libweft, the C ABI over Hegel                        |
-| `WEFT_<MODULE>_URL` | The url of the app of a module with a `url` export, through weft |
-
-The `reset` functions run in the order of the `impl` blocks.
 
 ## Crates
 
@@ -163,7 +146,7 @@ The `reset` functions run in the order of the `impl` blocks.
 | `weft-c`         | libweft, the C ABI that each SDK loads                                                       |
 | `weft-dashboard` | Turns the spans of each run into Perspective tables and serves the dashboard                 |
 | `weft-cli`       | The `weft` command and the spans of each run                                                 |
-| `invariants`     | Narrows your annotation on any artifact to the weakest invariant that agrees with your reactions, and reports each part that violates an invariant; see [its README](crates/invariants/README.md) |
+| `invariants`     | Some experiments; see [its README](crates/invariants/README.md) |
 
 ## License
 
