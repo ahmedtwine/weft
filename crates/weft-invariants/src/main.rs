@@ -20,12 +20,12 @@ fn given(mut options: Options, option: &str) -> Result<Options> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args == [weft_runner::REAP] {
-        weft_runner::reap();
+    if args == [weft_orchestrator::REAP] {
+        weft_orchestrator::reap();
         return ExitCode::SUCCESS;
     }
     let done = match args.as_slice() {
-        [directory, test, options @ ..] => weft_runner::guard()
+        [directory, test, options @ ..] => weft_orchestrator::guard()
             .and_then(|()| {
                 options
                     .iter()

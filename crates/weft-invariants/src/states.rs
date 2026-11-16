@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use weft_orchestrator::Event;
 use weft_parse::{Config, Diagram, Invariant, State};
 use weft_samples::{Candidate, Result};
-use weft_simulator::Event;
 
 pub struct Seen {
     pub run: u64,
@@ -57,7 +57,7 @@ impl World {
     pub fn run(&self) -> Result<Vec<Seen>> {
         let mut seen = Vec::new();
         let mut run = 0;
-        weft_runner::run(
+        weft_orchestrator::run(
             &self.config,
             &self.diagram,
             &self.test,

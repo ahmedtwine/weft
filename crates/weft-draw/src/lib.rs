@@ -218,7 +218,7 @@ fn label(text: &str) -> Vec<String> {
     }
 }
 
-fn note(p: &mut Plan, over: String, text: String, kind: Kind) {
+fn note(p: &mut Plan, over: &str, text: String, kind: Kind) {
     let shown = match (p.svg, kind) {
         (true, Kind::Failed) => condition(&text),
         (true, _) => [vec![stereotype(kind).to_string()], lines(&text)].concat(),
@@ -306,7 +306,7 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
         if let (Some((None, evidence)), Some(first)) = (code.failed.as_ref(), order.first()) {
             note(
                 &mut p,
-                format!("o{first}"),
+                &format!("o{first}"),
                 evidence.join("\n"),
                 Kind::Failed,
             );
@@ -335,7 +335,7 @@ fn plan<'a>(d: &Diagram, code: Option<&'a Code>) -> Plan<'a> {
         {
             note(
                 &mut p,
-                format!("o{}", col(d, &s.to)),
+                &format!("o{}", col(d, &s.to)),
                 evidence.join("\n"),
                 Kind::Failed,
             );
@@ -628,7 +628,6 @@ fn written(rows: &[Row]) -> String {
         .join(BREAK)
 }
 
-
 pub struct Moment<'a> {
     pub actions: &'a [(String, String)],
     pub done: Option<&'a str>,
@@ -642,8 +641,15 @@ impl Moment<'_> {
     }
 
     fn target<'d>(&self, d: &'d Diagram) -> Option<&'d str> {
-        let to = self.done.and_then(|did| self.actions.iter().find(|(verb, _)| verb == did)).map(|(_, to)| to.as_str());
-        d.objects.iter().map(|o| o.name.as_str()).find(|name| Some(*name) == to).or(d.caller())
+        let to = self
+            .done
+            .and_then(|did| self.actions.iter().find(|(verb, _)| verb == did))
+            .map(|(_, to)| to.as_str());
+        d.objects
+            .iter()
+            .map(|o| o.name.as_str())
+            .find(|name| Some(*name) == to)
+            .or(d.caller())
     }
 
     fn rows(&self, name: &str) -> Option<String> {
@@ -658,7 +664,13 @@ impl Moment<'_> {
     }
 
     fn check(&self) -> Option<String> {
-        (!self.failed.is_empty()).then(|| format!("{}{BREAK}{}", stereotype(Kind::Failed), self.failed.join(BREAK)))
+        (!self.failed.is_empty()).then(|| {
+            format!(
+                "{}{BREAK}{}",
+                stereotype(Kind::Failed),
+                self.failed.join(BREAK)
+            )
+        })
     }
 
     pub fn sequence(&self, d: &Diagram) -> String {
@@ -671,7 +683,12 @@ impl Moment<'_> {
                 true => Arrow::Sync,
                 false => Arrow::Reply,
             };
-            m.message(&Ident::new(d.caller().unwrap_or(to)), &Ident::new(to), arrow, &format!("«{verb}»"));
+            m.message(
+                &Ident::new(d.caller().unwrap_or(to)),
+                &Ident::new(to),
+                arrow,
+                &format!("«{verb}»"),
+            );
         }
         for o in &d.objects {
             if let Some(rows) = self.rows(&o.name) {
@@ -688,8 +705,14 @@ impl Moment<'_> {
         let mut f = Flowchart::new(Direction::LR);
         let target = self.target(d);
         for o in &d.objects {
-            let check = (target == Some(o.name.as_str())).then(|| self.check()).flatten();
-            let label = [Some(o.name.clone()), self.rows(&o.name), check].into_iter().flatten().collect::<Vec<_>>().join(BREAK);
+            let check = (target == Some(o.name.as_str()))
+                .then(|| self.check())
+                .flatten();
+            let label = [Some(o.name.clone()), self.rows(&o.name), check]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(BREAK);
             let shape = match d.caller() == Some(o.name.as_str()) {
                 true => NodeShape::Stadium,
                 false => NodeShape::Round,
@@ -701,7 +724,12 @@ impl Moment<'_> {
                 true => EdgeStyle::Thick,
                 false => EdgeStyle::Dotted,
             };
-            f.edge(&Ident::new(d.caller().unwrap_or(to)), &Ident::new(to), style, Some(&format!("«{verb}»")));
+            f.edge(
+                &Ident::new(d.caller().unwrap_or(to)),
+                &Ident::new(to),
+                style,
+                Some(&format!("«{verb}»")),
+            );
         }
         f.render()
     }

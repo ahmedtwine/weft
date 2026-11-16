@@ -5,13 +5,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use weft_simulator::{Hop, Session};
+use crate::hub::Session;
+use crate::simulate::Hop;
 
 const WAIT: Duration = Duration::from_secs(60);
 const IDLE: Duration = Duration::from_millis(20);
 const SKIPPED: [&str; 4] = ["host", "content-length", "connection", "transfer-encoding"];
 
-pub struct Proxy {
+pub(crate) struct Proxy {
     pub url: String,
     closed: Arc<AtomicBool>,
 }
@@ -134,9 +135,9 @@ fn serve(stream: TcpStream, from: &str, session: &Session, routes: &[(String, St
     }
 }
 
-pub type Routes = Arc<Vec<(String, String)>>;
+pub(crate) type Routes = Arc<Vec<(String, String)>>;
 
-pub fn open(from: &str, session: Arc<Session>, routes: Routes) -> Result<Proxy, String> {
+pub(crate) fn open(from: &str, session: Arc<Session>, routes: Routes) -> Result<Proxy, String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let url = format!(

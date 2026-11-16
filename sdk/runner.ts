@@ -4,7 +4,7 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { schemas, states } from "./state";
 import { TestCase } from "./testcase";
-import { AssumeFailed, type Call, done, join, type Report, StopTest, type Turn, turn } from "./weft";
+import { AssumeFailed, type Call, done, join, type Report, setup, StopTest, type Turn, turn } from "./weft";
 
 type Schema = {
   _zod: unknown;
@@ -19,7 +19,7 @@ type Range = { startOffset: number; endOffset: number; count: number };
 type Taken = { result: { url: string; functions: { ranges: Range[] }[] }[] };
 type Code = Map<string, Set<number>>;
 
-const ADAPTER = Bun.env.WEFT_ADAPTER ?? "bun";
+const { adapter: ADAPTER, diagram } = setup();
 const START = "start";
 const RESET = "reset";
 const URL = "url";
@@ -29,11 +29,6 @@ const SOURCE = new RegExp(
 );
 const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-const at = (name: string) => {
-  const value = Bun.env[name];
-  if (!value) throw new Error(`${name} is not set`);
-  return value;
-};
 const served = new Map<string, Served>();
 
 const marks = (mappings: string, starts: number[]) => {
@@ -161,7 +156,7 @@ const spans = (known: Code) => {
   return out;
 };
 
-const code = join(at("WEFT_DIAGRAM"));
+const code = join(diagram);
 
 const placed = (place: string) => (place.startsWith(".") ? resolve(place) : place);
 

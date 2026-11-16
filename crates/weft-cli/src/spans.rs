@@ -11,12 +11,12 @@ use opentelemetry::{Context, KeyValue};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider};
 use weft_dashboard::{
-    BODY, CALLS, CHECK, CHECKS, CODE, DIAGRAM, FILE, FLOW, FROM, HOPS, INPUT, METHOD, ORDER, PATH, REFUSED,
-    REPLY, STATE, STATUS, STEP, STEPS, TEST_CASE, TEST_CASES, TO,
+    BODY, CALLS, CHECK, CHECKS, CODE, DIAGRAM, FILE, FLOW, FROM, HOPS, INPUT, METHOD, ORDER, PATH,
+    REFUSED, REPLY, STATE, STATUS, STEP, STEPS, TEST_CASE, TEST_CASES, TO,
 };
 use weft_draw::Moment;
+use weft_orchestrator::{Event, Line};
 use weft_parse::Diagram;
-use weft_simulator::{Event, Line};
 
 use crate::trace;
 
@@ -25,11 +25,14 @@ const ERROR: &str = "error";
 const START: &str = "start";
 const PASSED: char = '✓';
 const FAILED: char = '✕';
-const ENDPOINTS: [&str; 2] = ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"];
+const ENDPOINTS: [&str; 2] = [
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+];
 
 static PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
-pub struct Ended<'a> {
+pub(crate) struct Ended<'a> {
     pub status: &'a str,
     pub test_cases: u64,
     pub steps: u64,
@@ -40,7 +43,7 @@ pub struct Ended<'a> {
 }
 
 impl Ended<'_> {
-    pub fn error(e: &str) -> Ended<'static> {
+    pub(crate) fn error(e: &str) -> Ended<'static> {
         Ended {
             status: ERROR,
             test_cases: 0,
@@ -53,7 +56,7 @@ impl Ended<'_> {
     }
 }
 
-pub struct Spans<'a> {
+pub(crate) struct Spans<'a> {
     tracer: SdkTracer,
     d: &'a Diagram,
     lines: Vec<Line>,
@@ -69,7 +72,7 @@ pub struct Spans<'a> {
     step: Option<Context>,
 }
 
-pub fn traced(dashboard: bool) -> Result<(), String> {
+pub(crate) fn traced(dashboard: bool) -> Result<(), String> {
     let mut builder = SdkTracerProvider::builder()
         .with_resource(Resource::builder().with_service_name(SERVICE).build());
     let otlp = ENDPOINTS.iter().any(|name| env::var_os(name).is_some());
@@ -89,13 +92,13 @@ pub fn traced(dashboard: bool) -> Result<(), String> {
     Ok(())
 }
 
-pub fn flushed() {
+pub(crate) fn flushed() {
     if let Some(provider) = PROVIDER.get() {
         let _ = provider.shutdown();
     }
 }
 
-pub fn ended(file: &str, end: Ended) {
+pub(crate) fn ended(file: &str, end: Ended) {
     if let Some(provider) = PROVIDER.get() {
         let mut attributes = vec![
             KeyValue::new(FILE, file.to_string()),
@@ -105,7 +108,10 @@ pub fn ended(file: &str, end: Ended) {
             KeyValue::new(CHECKS, end.checks as i64),
         ];
         attributes.extend(end.check.map(|check| KeyValue::new(CHECK, check)));
-        attributes.extend(end.test_case.map(|case| KeyValue::new(TEST_CASE, case as i64)));
+        attributes.extend(
+            end.test_case
+                .map(|case| KeyValue::new(TEST_CASE, case as i64)),
+        );
         provider
             .tracer(SERVICE)
             .build(
@@ -118,7 +124,7 @@ pub fn ended(file: &str, end: Ended) {
 }
 
 impl<'a> Spans<'a> {
-    pub fn new(file: &str, d: &'a Diagram) -> Option<Spans<'a>> {
+    pub(crate) fn new(file: &str, d: &'a Diagram) -> Option<Spans<'a>> {
         PROVIDER.get().map(|provider| Spans {
             tracer: provider.tracer(SERVICE),
             d,
@@ -155,7 +161,10 @@ impl<'a> Spans<'a> {
             let span = step.span();
             span.set_attributes(self.drawn());
             let judged = mem::take(&mut self.judged);
-            span.set_attribute(KeyValue::new(CHECK, judged.into_values().collect::<Vec<_>>().join("  ")));
+            span.set_attribute(KeyValue::new(
+                CHECK,
+                judged.into_values().collect::<Vec<_>>().join("  "),
+            ));
             span.end();
         }
     }
@@ -169,7 +178,10 @@ impl<'a> Spans<'a> {
 
     fn drawn(&self) -> [KeyValue; 2] {
         let Some(line) = self.lines.last() else {
-            return [KeyValue::new(DIAGRAM, String::new()), KeyValue::new(FLOW, String::new())];
+            return [
+                KeyValue::new(DIAGRAM, String::new()),
+                KeyValue::new(FLOW, String::new()),
+            ];
         };
         let failed: Vec<String> = trace::brief(&line.evidence).pop().into_iter().collect();
         let moment = Moment {
@@ -178,7 +190,10 @@ impl<'a> Spans<'a> {
             state: &line.state,
             failed: &failed,
         };
-        [KeyValue::new(DIAGRAM, moment.sequence(self.d)), KeyValue::new(FLOW, moment.flow(self.d))]
+        [
+            KeyValue::new(DIAGRAM, moment.sequence(self.d)),
+            KeyValue::new(FLOW, moment.flow(self.d)),
+        ]
     }
 
     fn stepped(&mut self, line: &Line, refused: Option<&str>) {
@@ -187,27 +202,49 @@ impl<'a> Spans<'a> {
         };
         let hops = trace::sorted(&line.hops);
         let mut attributes = self.placed();
-        attributes.push(KeyValue::new(INPUT, serde_json::to_string(&line.input).unwrap_or_default()));
+        attributes.push(KeyValue::new(
+            INPUT,
+            serde_json::to_string(&line.input).unwrap_or_default(),
+        ));
         attributes.push(KeyValue::new(
             HOPS,
             hops.iter()
-                .map(|h| format!("{} {} → {} {}", h.method, h.path, h.status, trace::compact(&h.reply)).trim_end().to_string())
+                .map(|h| {
+                    format!(
+                        "{} {} → {} {}",
+                        h.method,
+                        h.path,
+                        h.status,
+                        trace::compact(&h.reply)
+                    )
+                    .trim_end()
+                    .to_string()
+                })
                 .collect::<Vec<_>>()
                 .join(" · "),
         ));
         attributes.push(match refused {
             Some(cause) => KeyValue::new(REFUSED, cause.to_string()),
-            None => KeyValue::new(STATE, serde_json::to_string(&line.state).unwrap_or_default()),
+            None => KeyValue::new(
+                STATE,
+                serde_json::to_string(&line.state).unwrap_or_default(),
+            ),
         });
         let name = match &line.action {
             Some((verb, to)) => {
-                attributes.push(KeyValue::new(FROM, self.d.caller().unwrap_or(to).to_string()));
+                attributes.push(KeyValue::new(
+                    FROM,
+                    self.d.caller().unwrap_or(to).to_string(),
+                ));
                 attributes.push(KeyValue::new(TO, to.clone()));
                 verb.clone()
             }
             None => START.to_string(),
         };
-        let step = self.start(&case, SpanBuilder::from_name(name).with_attributes(attributes));
+        let step = self.start(
+            &case,
+            SpanBuilder::from_name(name).with_attributes(attributes),
+        );
         for h in hops {
             let mut attributes = self.placed();
             attributes.extend([
@@ -235,13 +272,14 @@ impl<'a> Spans<'a> {
         }
     }
 
-    pub fn hear(&mut self, event: Event) {
+    pub(crate) fn hear(&mut self, event: Event) {
         match event {
             Event::Hegel(_) => {}
             Event::Actions(actions) => self.actions = actions.to_vec(),
             Event::Run(run) => {
                 self.close();
-                (self.run, self.k, self.order, self.calls, self.check) = (run as i64, 0, 0, 0, None);
+                (self.run, self.k, self.order, self.calls, self.check) =
+                    (run as i64, 0, 0, 0, None);
                 self.lines.clear();
                 let attributes = vec![
                     KeyValue::new(FILE, self.file.clone()),

@@ -73,7 +73,7 @@ Hegel draws `deposit` and `withdraw` in any order with amounts from 1 to 100, an
 
 `tests/parcel.weft.kdl` runs four apps, one in each runner: `orders` in Go keeps each order in Redis in a testcontainer, `shop` in Python lets a customer choose the address of an order, and `courier` in TypeScript ships an order to its address. 
 
-App reach each other at `WEFT_<MODULE>_URL`; 
+Each app reaches the others at `WEFT_<MODULE>_URL`. Each runner reads one variable, `WEFT`: JSON with the diagram, the transport, the path of libweft and the adapter.
 
 ```mermaid
 flowchart TB
@@ -85,8 +85,7 @@ flowchart TB
       draws["generators · pools"]
     end
     hegel["weft-hegel"]
-    simulator["weft-simulator"]
-    runner["weft-runner"]
+    orchestrator["weft-orchestrator"]
     proxy["proxy"]
   end
   reaper["reaper process"]
@@ -102,10 +101,10 @@ flowchart TB
   hegel -- "hegel_next_test_case<br/>hegel_mark_complete" --> run
   hegel -- "hegel_state_machine_next_rule" --> machine
   hegel -- "hegel_generate_*<br/>hegel_pool_*" --> draws
-  simulator --> hegel
-  simulator <-- "turns" --> runners
-  runner -- "spawns" --> runners
-  runner -- "spawns" --> reaper
+  orchestrator --> hegel
+  orchestrator <-- "turns" --> runners
+  orchestrator -- "spawns" --> runners
+  orchestrator -- "spawns" --> reaper
   reaper -. "stops when weft ends" .-> runners
   python & bun -- "HTTP" --> proxy
   proxy -- "HTTP" --> go & rust
@@ -125,7 +124,7 @@ api "courier" {
 ```
 
 ```text
-✕ tests/parcel.weft.kdl · "a parcel goes only to the address of its own customer" · courier.parcels[0].customer = "ana" ≠ courier.parcels[0].recipient = "ben"
+✕ tests/parcel.weft.kdl · "a parcel goes only to the address of its own customer" · courier.parcels[0].customer = "c-1" ≠ courier.parcels[0].recipient = "c-2"
 ```
 
 ## Dashboard
@@ -135,19 +134,18 @@ api "courier" {
 
 ## Crates
 
-| Crate            | Does                                                                                         |
-| ---------------- | -------------------------------------------------------------------------------------------- |
-| `weft-parse`     | Reads `weft.kdl` and each test into objects, invariants and modules, and evaluates invariants |
-| `weft-hegel`     | Drives Hegel through its C ABI: cases, the state machine, generators and shrinking            |
-| `weft-simulator` | Reads the hello of each runner, turns its schemas into generators, and runs each case        |
-| `weft-runner`    | Starts the runners, carries their messages, and forwards the HTTP calls between apps          |
-| `weft-wire`      | The framing of each message between weft and a runner                                        |
-| `weft-draw`      | Draws a test as a sequence diagram, and each step as a sequence diagram or a flowchart        |
-| `weft-c`         | libweft, the C ABI that each SDK loads                                                       |
-| `weft-dashboard` | Turns the spans of each run into Perspective tables and serves the dashboard                 |
-| `weft-cli`       | The `weft` command and the spans of each run                                                 |
-| `weft-samples`   | Draws candidate invariants from examples with a model; see [its README](crates/weft-samples/README.md) |
-| `weft-invariants` | Experimental: keeps the candidates that the states of a test do not make false; see [its README](crates/weft-invariants/README.md) |
+| Crate               | Does                                                                                                                                                     |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `weft-parse`        | Reads `weft.kdl` and each test into objects, invariants and modules, and evaluates invariants                                                            |
+| `weft-hegel`        | Drives Hegel through its C ABI: cases, the state machine, generators and shrinking                                                                       |
+| `weft-orchestrator` | Starts the runners and the reaper, turns the schemas of each runner into generators, runs each case with Hegel, and forwards the HTTP calls between apps |
+| `weft-wire`         | The framing of each message between weft and a runner                                                                                                    |
+| `weft-draw`         | Draws a test as a sequence diagram, and each step as a sequence diagram or a flowchart                                                                   |
+| `weft-c`            | libweft, the C ABI that each SDK loads                                                                                                                   |
+| `weft-dashboard`    | Turns the spans of each run into Perspective tables and serves the dashboard                                                                             |
+| `weft-cli`          | The `weft` command and the spans of each run                                                                                                             |
+| `weft-samples`      | Draws candidate invariants from examples with a model; see [its README](crates/weft-samples/README.md)                                                   |
+| `weft-invariants`   | Experimental: keeps the candidates that the states of a test do not make false; see [its README](crates/weft-invariants/README.md)                       |
 
 ## License
 

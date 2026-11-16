@@ -52,7 +52,7 @@ All model code is in `src/model`. No other module sends a request.
 |---|---|
 | `model/jev.rs` | Scores each invariant on each part |
 | `model/gemini.rs` | Draws from `gemini-flash-latest`: alternates for an annotation, and candidates for examples |
-| `model/mod.rs` | `Example`, `Source`, `Given` and `Model`, the one handle that the other modules use |
+| `model/mod.rs` | `Example`, `Source`, `Given` and `Model`, the one handle that the other modules use. `Model::open` answers from the cache and sends a request only for a missing answer. `Model::recorded` answers only from one file and sends no request |
 
 ## Candidates
 
@@ -89,7 +89,7 @@ To add a medium, implement `parts`, `rules` and `run` of the `Medium` trait. To 
 |---|---|
 | `weft-samples check <file> <invariants.json>` | Each violation, with its place and invariant name |
 | `weft-samples narrow <file>` | Your reactions for each annotation in `<file>.json`, then each invariant and its violations |
-| `cargo nextest run -p weft-samples` | For each example: the wrong violations of the golden invariants, then the flow of each annotation |
+| `cargo nextest run -p weft-samples` | For each example: the wrong violations of the golden invariants, then the flow of each annotation. The test reads only `tests/answers/<example>.json` and sends no request |
 
 ## Test
 

@@ -7,6 +7,20 @@ version = "0.5.1"
 edition = "2024"
 license = "MIT"
 
+[workspace.lints.rust]
+unused = { level = "deny", priority = -1 }
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+
+[workspace.lints.clippy]
+match_same_arms = "deny"
+needless_continue = "deny"
+needless_pass_by_value = "deny"
+redundant_closure_for_method_calls = "deny"
+redundant_else = "deny"
+unnecessary_wraps = "deny"
+unused_self = "deny"
+
 [profile.release]
 opt-level = "s"
 lto = true

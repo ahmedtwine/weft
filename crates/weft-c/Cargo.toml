@@ -16,3 +16,6 @@ weft-wire = { path = "../weft-wire" }
 
 [dev-dependencies]
 cbindgen = "0.29.2"
+
+[lints]
+workspace = true

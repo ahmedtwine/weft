@@ -15,11 +15,11 @@ const IDLE: Duration = Duration::from_millis(20);
 
 static REAPER: Mutex<Option<ChildStdin>> = Mutex::new(None);
 
-pub fn signal(group: u32, signal: i32) -> bool {
+pub(crate) fn signal(group: u32, signal: i32) -> bool {
     i32::try_from(group).is_ok_and(|group| unsafe { libc::kill(-group, signal) } == 0)
 }
 
-pub fn stop(groups: &[u32]) {
+pub(crate) fn stop(groups: &[u32]) {
     for group in groups {
         signal(*group, libc::SIGTERM);
     }
@@ -42,27 +42,33 @@ pub fn guard() -> Result<(), String> {
         .process_group(0)
         .spawn()
         .map_err(|e| format!("{REAP}: {e}"))?;
-    *REAPER.lock().unwrap_or_else(|p| p.into_inner()) = reaper.stdin.take();
+    *REAPER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = reaper.stdin.take();
     Ok(())
 }
 
-fn told(line: String) {
-    if let Some(reaper) = REAPER.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+fn told(line: &str) {
+    if let Some(reaper) = REAPER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_mut()
+    {
         let _ = writeln!(reaper, "{line}");
     }
 }
 
-pub fn group(pid: u32) {
-    told(format!("+{pid}"));
+pub(crate) fn group(pid: u32) {
+    told(&format!("+{pid}"));
 }
 
-pub fn ended(pid: u32) {
-    told(format!("-{pid}"));
+pub(crate) fn ended(pid: u32) {
+    told(&format!("-{pid}"));
 }
 
-pub fn path(path: &Path) {
+pub(crate) fn path(path: &Path) {
     if let Ok(path) = path::absolute(path) {
-        told(path.display().to_string());
+        told(&path.display().to_string());
     }
 }
 

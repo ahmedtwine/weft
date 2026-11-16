@@ -454,16 +454,24 @@ func (r *runner) ran() map[string]any {
 	return map[string]any{"start": r.spans(r.started), "actions": actions}
 }
 
-func played(modules []*Module) (map[string]any, error) {
-	diagram, ok := os.LookupEnv("WEFT_DIAGRAM")
+type setup struct {
+	Diagram string `json:"diagram"`
+	Lib     string `json:"lib"`
+	Adapter string `json:"adapter"`
+}
+
+func env() (setup, error) {
+	var s setup
+	text, ok := os.LookupEnv("WEFT")
 	if !ok {
-		return nil, errors.New("WEFT_DIAGRAM is not set")
+		return s, errors.New("WEFT is not set")
 	}
-	name := adapter
-	if given, ok := os.LookupEnv("WEFT_ADAPTER"); ok {
-		name = given
-	}
-	said, err := ask(join, []byte(diagram))
+	err := json.Unmarshal([]byte(text), &s)
+	return s, err
+}
+
+func played(s setup, modules []*Module) (map[string]any, error) {
+	said, err := ask(join, []byte(s.Diagram))
 	if err != nil {
 		return nil, err
 	}
@@ -471,7 +479,7 @@ func played(modules []*Module) (map[string]any, error) {
 	if err := json.Unmarshal(said, &code); err != nil {
 		return nil, err
 	}
-	r, err := newRunner(code, name, modules)
+	r, err := newRunner(code, s.Adapter, modules)
 	if err != nil {
 		return nil, err
 	}
@@ -479,7 +487,7 @@ func played(modules []*Module) (map[string]any, error) {
 	for _, s := range r.states {
 		keys[s.key] = s.schema
 	}
-	var report any = map[string]any{"adapter": name, "start": r.saidReset, "actions": r.saidActions, "serves": r.serves, "states": keys}
+	var report any = map[string]any{"adapter": s.Adapter, "start": r.saidReset, "actions": r.saidActions, "serves": r.serves, "states": keys}
 	for {
 		message, err := json.Marshal(report)
 		if err != nil {
@@ -503,11 +511,15 @@ func played(modules []*Module) (map[string]any, error) {
 }
 
 func Run(modules ...*Module) int {
-	if err := load(os.Getenv("WEFT_LIB")); err != nil {
+	s, err := env()
+	if err == nil {
+		err = load(s.Lib)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	ran, err := played(modules)
+	ran, err := played(s, modules)
 	said := map[string]any{"ran": ran}
 	if err != nil {
 		said = map[string]any{"error": err.Error()}

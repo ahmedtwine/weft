@@ -12,7 +12,7 @@ use weft_wire::{
 
 use crate::schema::{live, narrowed, whole};
 use crate::shape::resolved;
-use crate::{Action, Answer, Ask, Hello, Hop, Member, Report, Start, Turn};
+use crate::simulate::{Action, Answer, Ask, Hello, Hop, Report, Start, Turn};
 
 const CUT: &str = "the message of the runner is too short";
 const DRAW: &str = "`tc.draw`";
@@ -30,7 +30,7 @@ struct Desk {
     lost: Option<String>,
 }
 
-pub struct Seat {
+pub(crate) struct Seat {
     hello: Hello,
     adapter: String,
     serves: Option<String>,
@@ -46,7 +46,7 @@ struct Joined {
     lost: Option<String>,
 }
 
-pub struct Session {
+pub(crate) struct Session {
     code: String,
     impls: Vec<String>,
     objects: Vec<String>,
@@ -59,23 +59,24 @@ pub struct Session {
 }
 
 #[derive(Default)]
-pub struct Hub {
+pub(crate) struct Hub {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
 }
 
 #[derive(Default)]
-pub struct Peer {
+pub(crate) struct Peer {
     session: Option<Arc<Session>>,
     seat: Option<Arc<Seat>>,
 }
 
-pub struct Remote {
+pub(crate) struct Remote {
     seat: Arc<Seat>,
     session: Arc<Session>,
 }
 
 fn held<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
-    lock.lock().unwrap_or_else(|p| p.into_inner())
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn function(node: &Json) -> Option<(String, String)> {
@@ -308,7 +309,7 @@ impl Seat {
             desk = self
                 .changed
                 .wait_timeout(desk, left)
-                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
     }
@@ -326,7 +327,7 @@ impl Seat {
 }
 
 impl Session {
-    pub fn serves(&self, adapter: &str, wait: Duration) -> Result<String, String> {
+    pub(crate) fn serves(&self, adapter: &str, wait: Duration) -> Result<String, String> {
         let until = Instant::now() + wait;
         let mut joined = held(&self.joined);
         loop {
@@ -349,21 +350,21 @@ impl Session {
             joined = self
                 .changed
                 .wait_timeout(joined, left)
-                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
     }
 
-    pub fn tick(&self) -> usize {
+    pub(crate) fn tick(&self) -> usize {
         self.clock
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn record(&self, hop: Hop) {
+    pub(crate) fn record(&self, hop: Hop) {
         held(&self.hops).push(hop);
     }
 
-    pub fn members(self: &Arc<Self>, wait: Duration) -> Result<Vec<Remote>, String> {
+    pub(crate) fn members(self: &Arc<Self>, wait: Duration) -> Result<Vec<Remote>, String> {
         let until = Instant::now() + wait;
         let mut joined = held(&self.joined);
         loop {
@@ -405,12 +406,12 @@ impl Session {
             joined = self
                 .changed
                 .wait_timeout(joined, left)
-                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
     }
 
-    pub fn lose(&self, why: &str) {
+    pub(crate) fn lose(&self, why: &str) {
         let mut joined = held(&self.joined);
         joined.lost.get_or_insert_with(|| why.to_string());
         joined.seats.iter().for_each(|seat| seat.lose(why));
@@ -419,7 +420,7 @@ impl Session {
 }
 
 impl Hub {
-    pub fn open(
+    pub(crate) fn open(
         &self,
         name: &str,
         code: String,
@@ -442,7 +443,7 @@ impl Hub {
         session
     }
 
-    pub fn close(&self, name: &str) {
+    pub(crate) fn close(&self, name: &str) {
         if let Some(session) = held(&self.sessions).remove(name) {
             session.lose("weft ends the run");
         }
@@ -538,7 +539,7 @@ impl Peer {
         }
     }
 
-    pub fn serve(&mut self, hub: &Hub, message: &[u8]) -> Vec<u8> {
+    pub(crate) fn serve(&mut self, hub: &Hub, message: &[u8]) -> Vec<u8> {
         match self.answer(hub, &mut Reader(message)) {
             Ok(said) => Writer::reply(OK, said.as_bytes()).0,
             Err((code, e)) => Writer::reply(code, e.as_bytes()).0,
@@ -554,12 +555,12 @@ impl Drop for Peer {
     }
 }
 
-impl Member for Remote {
-    fn hello(&self) -> &Hello {
+impl Remote {
+    pub(crate) fn hello(&self) -> &Hello {
         &self.seat.hello
     }
 
-    fn turn(&mut self, turn: &Turn, answer: &mut Answer) -> Result<Report, Halt> {
+    pub(crate) fn turn(&mut self, turn: &Turn, answer: &mut Answer) -> Result<Report, Halt> {
         self.seat.set(|d| d.turn = Some(turn.json()));
         let mut halt = None;
         loop {
@@ -591,12 +592,12 @@ impl Member for Remote {
         }
     }
 
-    fn finish(&mut self) -> Result<Ran, String> {
+    pub(crate) fn finish(&mut self) -> Result<Ran, String> {
         self.seat.set(|d| d.turn = Some(Turn::Done.json()));
         self.seat.wait(Some(SLOW), |d| d.done.take())?
     }
 
-    fn hops(&mut self) -> Vec<Hop> {
+    pub(crate) fn hops(&mut self) -> Vec<Hop> {
         std::mem::take(&mut *held(&self.session.hops))
     }
 }

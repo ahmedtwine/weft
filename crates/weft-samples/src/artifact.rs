@@ -33,7 +33,7 @@ pub fn example(path: &Path) -> Result<Example> {
 }
 
 impl<'a> Artifact<'a> {
-    pub fn open(file: &'a Path) -> Result<Self> {
+    pub fn open(file: &'a Path, model: Model) -> Result<Self> {
         let text = read(file)?;
         let medium = medium::of(&file.to_string_lossy());
         Ok(Self {
@@ -41,7 +41,7 @@ impl<'a> Artifact<'a> {
             parts: medium.parts(&text),
             text,
             medium,
-            model: Model::open()?,
+            model,
         })
     }
 

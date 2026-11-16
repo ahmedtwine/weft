@@ -2,16 +2,15 @@ mod gemini;
 mod jev;
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::{Candidate, Result};
-use gemini::Gemini;
-use jev::Jev;
 
 pub use gemini::MODEL;
 
@@ -24,7 +23,7 @@ fn home(kind: &str) -> PathBuf {
 }
 
 fn secret(name: &str) -> Result<String> {
-    let file = std::fs::read_to_string(home(".config").join("secrets.env")).unwrap_or_default();
+    let file = fs::read_to_string(home(".config").join("secrets.env")).unwrap_or_default();
     std::env::var(name)
         .ok()
         .or_else(|| {
@@ -39,24 +38,41 @@ fn secret(name: &str) -> Result<String> {
         ))
 }
 
-async fn cached<T: Serialize + DeserializeOwned>(
-    key: impl Hash,
-    fetch: impl Future<Output = Result<T>>,
-) -> Result<T> {
-    let cache = home(".cache");
-    std::fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-    let mut hasher = DefaultHasher::new();
-    key.hash(&mut hasher);
-    let file = cache.join(format!("{:016x}", hasher.finish()));
-    if let Some(found) = std::fs::read(&file)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-    {
-        return Ok(found);
+enum Store {
+    Cache(PathBuf),
+    Recorded(BTreeMap<String, Value>),
+}
+
+impl Store {
+    async fn cached<T: Serialize + DeserializeOwned>(
+        &self,
+        key: impl Hash,
+        fetch: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let name = format!("{:016x}", hasher.finish());
+        match self {
+            Store::Recorded(answers) => answers
+                .get(&name)
+                .ok_or(format!("no recorded answer {name}"))
+                .and_then(|answer| {
+                    serde_json::from_value(answer.clone()).map_err(|e| format!("{name}: {e}"))
+                }),
+            Store::Cache(dir) => {
+                let file = dir.join(&name);
+                if let Some(found) = fs::read(&file)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                {
+                    return Ok(found);
+                }
+                let fetched = fetch.await?;
+                fs::write(&file, serde_json::to_vec(&fetched).unwrap_or_default()).ok();
+                Ok(fetched)
+            }
+        }
     }
-    let fetched = fetch.await?;
-    std::fs::write(&file, serde_json::to_vec(&fetched).unwrap_or_default()).ok();
-    Ok(fetched)
 }
 
 #[derive(Clone)]
@@ -96,20 +112,35 @@ pub fn alternate(source: &dyn Source, size: usize) -> Value {
 }
 
 pub struct Model {
-    jev: Jev,
-    gemini: Gemini,
+    runtime: tokio::runtime::Runtime,
+    store: Store,
 }
 
 impl Model {
     pub fn open() -> Result<Self> {
+        let cache = home(".cache");
+        fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
+        Self::with(Store::Cache(cache))
+    }
+
+    pub fn recorded(file: &Path) -> Result<Self> {
+        let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
+        let text = fs::read_to_string(file).map_err(|e| failed(&e))?;
+        Self::with(Store::Recorded(
+            serde_json::from_str(&text).map_err(|e| failed(&e))?,
+        ))
+    }
+
+    fn with(store: Store) -> Result<Self> {
         Ok(Self {
-            jev: Jev::open()?,
-            gemini: Gemini::open()?,
+            runtime: tokio::runtime::Runtime::new().map_err(|e| e.to_string())?,
+            store,
         })
     }
 
     pub fn alternates(&self, model: &str, request: &Value) -> Result<Vec<Value>> {
-        self.gemini.alternates(model, request)
+        self.runtime
+            .block_on(gemini::alternates(&self.store, model, request))
     }
 
     pub fn candidates(&self, source: &dyn Source) -> Result<Vec<Candidate>> {
@@ -118,10 +149,11 @@ impl Model {
             .iter()
             .map(|example| json!({"text": example.text, "note": example.note}))
             .collect();
-        self.gemini.candidates(
+        self.runtime.block_on(gemini::candidates(
+            &self.store,
             MODEL,
             &json!({"examples": examples, "context": source.context()}),
-        )
+        ))
     }
 
     pub fn scores(
@@ -145,8 +177,8 @@ impl Model {
             json!("`part` violates `invariant`."),
         )]);
         Ok(self
-            .jev
-            .nouls(&states, &instructions)?
+            .runtime
+            .block_on(jev::nouls(&self.store, &states, &instructions))?
             .chunks(invariants.len())
             .map(|nouls| {
                 invariants

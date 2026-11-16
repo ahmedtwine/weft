@@ -94,8 +94,13 @@ class _Weft:
 
 
 @functools.cache
+def _setup():
+    return json.loads(os.environ["WEFT"])
+
+
+@functools.cache
 def _weft():
-    return _Weft(os.environ["WEFT_LIB"])
+    return _Weft(_setup()["lib"])
 
 
 class Generator:
@@ -390,12 +395,12 @@ def run():
     weft = _weft()
     try:
         runner = _Runner(
-            weft.join(os.environ["WEFT_DIAGRAM"]),
-            os.environ.get("WEFT_ADAPTER", ADAPTER),
+            weft.join(_setup()["diagram"]),
+            _setup()["adapter"],
             _Lines(),
         )
         report = {
-            "adapter": os.environ.get("WEFT_ADAPTER", ADAPTER),
+            "adapter": _setup()["adapter"],
             "start": runner.said_reset,
             "actions": runner.said_actions,
             "serves": runner.serves,

@@ -1,22 +1,20 @@
 use std::{collections::BTreeSet, iter};
 
 use serde_json::Value as Json;
+use weft_orchestrator::Hop;
 use weft_parse::{Diagram, Ran, Span};
-use weft_simulator::Hop;
 
 const START: &str = "start";
 
-pub fn kinds(ran: &Ran) -> Vec<(&str, &[Span])> {
+pub(crate) fn kinds(ran: &Ran) -> Vec<(&str, &[Span])> {
     iter::once((START, ran.start.as_slice()))
         .chain(ran.actions.iter().map(|(v, s)| (v.as_str(), s.as_slice())))
         .collect()
 }
 
-pub fn size(s: &Span) -> usize {
+pub(crate) fn size(s: &Span) -> usize {
     s.to + 1 - s.from
 }
-
-
 
 fn parts(text: &str) -> Vec<String> {
     let inner = text
@@ -40,7 +38,7 @@ fn parts(text: &str) -> Vec<String> {
     out
 }
 
-pub fn brief(evidence: &[String]) -> Vec<String> {
+pub(crate) fn brief(evidence: &[String]) -> Vec<String> {
     let Some(name) = evidence
         .first()
         .and_then(|first| first.strip_prefix("invariant \""))
@@ -80,7 +78,7 @@ pub fn brief(evidence: &[String]) -> Vec<String> {
     vec![format!("\"{name}\""), shown]
 }
 
-pub fn checked(d: &Diagram) -> BTreeSet<(String, String)> {
+pub(crate) fn checked(d: &Diagram) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     let sources: Vec<String> = d.invariants().iter().map(|i| i.source()).collect();
     for (object, key) in d.keys() {
@@ -94,15 +92,12 @@ pub fn checked(d: &Diagram) -> BTreeSet<(String, String)> {
     out
 }
 
-pub fn compact(text: &str) -> String {
+pub(crate) fn compact(text: &str) -> String {
     serde_json::from_str::<Json>(text).map_or_else(|_| text.trim().to_string(), |j| j.to_string())
 }
 
-pub fn sorted(hops: &[Hop]) -> Vec<&Hop> {
+pub(crate) fn sorted(hops: &[Hop]) -> Vec<&Hop> {
     let mut all: Vec<&Hop> = hops.iter().collect();
     all.sort_by_key(|h| h.sent);
     all
 }
-
-
-

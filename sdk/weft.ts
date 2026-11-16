@@ -15,10 +15,14 @@ export class AssumeFailed extends Error {}
 const STOP_TEST = -5;
 const ASSUME = -6;
 
+export const setup = (): { diagram: string; lib: string; adapter: string } => {
+  const text = process.env.WEFT;
+  if (!text) throw new Error("WEFT is not set");
+  return JSON.parse(text);
+};
+
 const opened = () => {
-  const library = process.env.WEFT_LIB;
-  if (!library) throw new Error("WEFT_LIB is not set");
-  const lib = koffi.load(library);
+  const lib = koffi.load(setup().lib);
   koffi.struct("weft_string_t", { data: "const char *", len: "size_t" });
   koffi.struct("weft_owned_string_t", { data: "void *", len: "size_t" });
   koffi.opaque("weft_context_t");

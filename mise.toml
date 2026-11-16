@@ -22,8 +22,9 @@ description = "Install the packages of the bun SDK and link it for the examples"
 run = ["bun install --frozen-lockfile", "bun link"]
 
 [tasks.test]
-description = "Run the tests and clippy of the Cargo workspace"
+description = "Check for unused dependencies, then run clippy and the tests of the Cargo workspace"
 run = [
+  "cargo shear",
   "cargo clippy --workspace --all-targets --locked -- -D warnings",
   "cargo nextest run --workspace --locked",
 ]

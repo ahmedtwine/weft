@@ -2,10 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use weft_samples::artifact::{Artifact, example};
+use weft_samples::model::Model;
 use weft_samples::{Candidate, Result, THRESHOLD, measures};
 
 fn flow(file: &Path) -> Result<()> {
-    let artifact = Artifact::open(file)?;
+    let answers = Path::new("tests/answers")
+        .join(file.file_stem().unwrap_or_default())
+        .with_extension("json");
+    let artifact = Artifact::open(file, Model::recorded(&answers)?)?;
     let example = example(&file.with_extension("json"))?;
     println!("golden invariants");
     let golden = artifact.wrong(&example, &example.invariants)?;

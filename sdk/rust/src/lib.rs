@@ -14,6 +14,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 pub use serde_json::{Value as Json, json};
 use syn::spanned::Spanned;
+use weft_wire::Given;
 use weft_wire::client::said;
 use weft_wire::{ASSUME, DONE, GENERATE, JOIN, POOL_ADD, POOL_GENERATE, STOP_TEST, TARGET, TURN};
 
@@ -77,6 +78,7 @@ pub fn pool<T>(_: &TestCase, name: &str) -> Pool<T> {
 }
 
 impl TestCase {
+    #[expect(clippy::needless_pass_by_value)]
     pub fn draw<T>(&self, generator: impl Generator<T>) -> T {
         generator.do_draw(self)
     }
@@ -309,7 +311,7 @@ fn place(at: &str) -> PathBuf {
 }
 
 impl Runner {
-    fn new(code: &Json, adapter: &str, modules: Vec<Module>) -> Result<Runner, String> {
+    fn new(code: &Json, adapter: &str, modules: &[Module]) -> Result<Runner, String> {
         let files: Vec<PathBuf> = modules.iter().map(|m| m.file.clone()).collect();
         let (mut start, mut actions) = (Vec::new(), Vec::new());
         let (mut said_start, mut said_actions) = (Vec::new(), Vec::new());
@@ -387,7 +389,7 @@ impl Runner {
                     .lock()
                     .ok()
                     .and_then(|mut f| f.take())
-                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
                     .or_else(|| payload.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "a panic".into()),
             )),
@@ -463,9 +465,10 @@ impl Runner {
     }
 }
 
-fn joined(modules: Vec<Module>) -> Result<Runner, String> {
-    let adapter = env::var("WEFT_ADAPTER").unwrap_or_else(|_| ADAPTER.into());
-    let diagram = env::var("WEFT_DIAGRAM").map_err(|_| "WEFT_DIAGRAM is not set".to_string())?;
+fn joined(modules: &[Module]) -> Result<Runner, String> {
+    let Given {
+        diagram, adapter, ..
+    } = Given::read()?;
     let code: Json = serde_json::from_str(&said(JOIN, diagram.as_bytes()).map_err(|(_, e)| e)?)
         .map_err(|e| e.to_string())?;
     Runner::new(&code, &adapter, modules)
@@ -474,10 +477,9 @@ fn joined(modules: Vec<Module>) -> Result<Runner, String> {
 fn played(runner: &mut Runner) -> Result<(), String> {
     let mut report = runner.hello.clone();
     loop {
-        let turn: Json = serde_json::from_str(
-            &said(TURN, report.to_string().as_bytes()).map_err(|(_, e)| e)?,
-        )
-        .map_err(|e| e.to_string())?;
+        let turn: Json =
+            serde_json::from_str(&said(TURN, report.to_string().as_bytes()).map_err(|(_, e)| e)?)
+                .map_err(|e| e.to_string())?;
         if turn.get("done").is_some() {
             return Ok(());
         }
@@ -490,7 +492,7 @@ fn ran(modules: impl IntoIterator<Item = Module>) -> Result<(), String> {
         let message = info
             .payload()
             .downcast_ref::<&str>()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_default();
         let at = info
@@ -500,7 +502,7 @@ fn ran(modules: impl IntoIterator<Item = Module>) -> Result<(), String> {
             *fault = Some(format!("panic: {message}{at}"));
         }
     }));
-    let ended = joined(modules.into_iter().collect()).and_then(|mut runner| {
+    let ended = joined(&modules.into_iter().collect::<Vec<_>>()).and_then(|mut runner| {
         played(&mut runner)?;
         Ok(runner.ran())
     });

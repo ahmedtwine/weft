@@ -11,8 +11,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value as Json, json};
-use weft_simulator::Session;
+use weft_wire::{Given, WEFT};
 
+use crate::hub::Session;
 use crate::reaper;
 
 const LIMIT: Duration = Duration::from_secs(10);
@@ -44,7 +45,7 @@ fn scratch() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-pub struct Runner<'a> {
+pub(crate) struct Runner<'a> {
     pub adapter: &'a str,
     pub name: &'a str,
     pub at: &'a str,
@@ -52,21 +53,23 @@ pub struct Runner<'a> {
     pub session: Arc<Session>,
 }
 
-pub struct Started {
+pub(crate) struct Started {
     group: u32,
     ended: JoinHandle<String>,
 }
 
 fn given(r: &Runner) -> Result<Vec<(String, String)>, String> {
+    let given = Given {
+        diagram: r.name.to_string(),
+        transport: r.at.to_string(),
+        lib: library()?.display().to_string(),
+        adapter: r.adapter.to_string(),
+    };
+    let text = serde_json::to_string(&given).map_err(|e| e.to_string())?;
     Ok(r.env
         .iter()
         .cloned()
-        .chain([
-            ("WEFT_DIAGRAM".to_string(), r.name.to_string()),
-            ("WEFT_TRANSPORT".to_string(), r.at.to_string()),
-            ("WEFT_LIB".to_string(), library()?.display().to_string()),
-            ("WEFT_ADAPTER".to_string(), r.adapter.to_string()),
-        ])
+        .chain([(WEFT.to_string(), text)])
         .collect())
 }
 
@@ -84,7 +87,7 @@ fn exited(pid: u32) {
     {}
 }
 
-pub fn ended(started: Vec<Started>) -> Vec<String> {
+pub(crate) fn ended(started: Vec<Started>) -> Vec<String> {
     let until = Instant::now() + LIMIT;
     let slow = || {
         started
@@ -103,7 +106,7 @@ pub fn ended(started: Vec<Started>) -> Vec<String> {
         .collect()
 }
 
-pub fn parent(r: &Runner) -> Result<(), String> {
+pub(crate) fn parent(r: &Runner) -> Result<(), String> {
     let cwd = env::current_dir().map_err(|e| e.to_string())?;
     let env: Map<String, Json> = given(r)?
         .into_iter()
@@ -144,7 +147,7 @@ fn spawn(
             "■ {tag} · {} · {:.2}s",
             status
                 .as_ref()
-                .map_or("no status".to_string(), |s| s.to_string()),
+                .map_or("no status".to_string(), ToString::to_string),
             begun.elapsed().as_secs_f64()
         );
         let log = fs::read_to_string(dir.join("runner.log")).unwrap_or_default();
@@ -153,7 +156,7 @@ fn spawn(
             "{label} ends with {}: {log}",
             status
                 .as_ref()
-                .map_or("no status".to_string(), |s| s.to_string())
+                .map_or("no status".to_string(), ToString::to_string)
         );
         if !status.is_ok_and(|s| s.success()) {
             session.lose(&said);
@@ -163,7 +166,7 @@ fn spawn(
     Ok(Started { group, ended })
 }
 
-pub fn bun(r: Runner) -> Result<Started, String> {
+pub(crate) fn bun(r: Runner) -> Result<Started, String> {
     let dir = scratch()?;
     let harness = dir.join("weft.test.ts");
     fs::write(&harness, HARNESS).map_err(|e| format!("{}: {e}", harness.display()))?;
@@ -176,7 +179,7 @@ pub fn bun(r: Runner) -> Result<Started, String> {
     spawn(command, "bun test".into(), "bun test", dir, r)
 }
 
-pub fn command(line: &str, r: Runner) -> Result<Started, String> {
+pub(crate) fn command(line: &str, r: Runner) -> Result<Started, String> {
     let mut command = Command::new("sh");
     command.arg("-c").arg(line);
     let label = format!("runner \"{}\"", r.adapter);

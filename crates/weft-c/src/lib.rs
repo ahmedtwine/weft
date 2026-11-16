@@ -3,9 +3,9 @@
 use std::ffi::c_char;
 use std::ptr;
 
+use serde_json::{Value as Json, json};
 use weft_draw::{Code, Theme};
 use weft_parse::Diagram;
-use serde_json::{Value as Json, json};
 use weft_wire::{
     ASSUME, DONE, GENERATE, JOIN, POOL_ADD, POOL_GENERATE, STOP_TEST, TARGET, TURN, client,
 };

@@ -1,12 +1,10 @@
-use std::env;
 use std::os::unix::net::UnixStream;
 use std::process;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{OK, REFUSED, Reader, Short, Writer, receive, send};
+use crate::{Given, OK, REFUSED, Reader, Short, WEFT, Writer, receive, send};
 
-const AT: &str = "WEFT_TRANSPORT";
 const UNIX: &str = "unix:";
 const CUT: &str = "the reply of weft is too short";
 
@@ -18,7 +16,8 @@ enum Link {
 static LINK: Mutex<Option<(String, Link)>> = Mutex::new(None);
 
 fn held<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
-    lock.lock().unwrap_or_else(|p| p.into_inner())
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn connect(at: &str) -> Result<Link, String> {
@@ -41,7 +40,7 @@ fn connect(at: &str) -> Result<Link, String> {
 }
 
 fn ask(message: &[u8]) -> Result<Vec<u8>, String> {
-    let at = env::var(AT).map_err(|_| format!("{AT} is not set"))?;
+    let at = Given::read()?.transport;
     let mut link = held(&LINK);
     if !matches!(&*link, Some((known, _)) if *known == at) {
         let linked = connect(&at)?;
@@ -56,7 +55,7 @@ fn ask(message: &[u8]) -> Result<Vec<u8>, String> {
             .send(message)
             .and_then(|mut reply| reply.body_mut().read_to_vec())
             .map_err(|e| format!("POST {url}: {e}")),
-        None => Err(format!("{AT} is not set")),
+        None => Err(format!("{WEFT} is not set")),
     }
 }
 

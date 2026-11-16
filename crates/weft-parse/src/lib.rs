@@ -780,7 +780,7 @@ fn refer(names: &[String], s: &str) -> Option<(String, String)> {
 }
 
 fn term(e: &KdlEntry, names: &[String], bound: &[String]) -> Result<Now, String> {
-    match (e.name(), e.ty().map(|t| t.value()), e.value()) {
+    match (e.name(), e.ty().map(kdl::KdlIdentifier::value), e.value()) {
         (None, None, KdlValue::String(s))
             if bound
                 .iter()

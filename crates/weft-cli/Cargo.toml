@@ -18,5 +18,7 @@ serde_json = "1"
 weft-dashboard = { path = "../weft-dashboard" }
 weft-draw = { path = "../weft-draw" }
 weft-parse = { path = "../weft-parse" }
-weft-runner = { path = "../weft-runner" }
-weft-simulator = { path = "../weft-simulator" }
+weft-orchestrator = { path = "../weft-orchestrator" }
+
+[lints]
+workspace = true

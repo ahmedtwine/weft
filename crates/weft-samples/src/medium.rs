@@ -356,7 +356,12 @@ impl Medium for Prose {
         let pieces = clauses(&part.text);
         let first = part.text[marked].to_string();
         let removable = std::iter::once(first.clone())
-            .chain(pieces.iter().map(|c| c.to_string()).filter(|c| *c != first))
+            .chain(
+                pieces
+                    .iter()
+                    .map(ToString::to_string)
+                    .filter(|c| *c != first),
+            )
             .map(Value::from)
             .collect();
         let last = i64::try_from(pieces.len()).unwrap_or(1) - 1;

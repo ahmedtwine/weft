@@ -191,12 +191,12 @@ fn narrow(g: &mut Generator, at: &mut Vec<String>, draw: &Draw, values: &[Json])
     }
 }
 
-pub fn narrowed(mut g: Generator, draw: &Draw) -> (Generator, usize) {
+pub(crate) fn narrowed(mut g: Generator, draw: &Draw) -> (Generator, usize) {
     let found = narrow(&mut g, &mut Vec::new(), draw, &draw.values);
     (g, found)
 }
 
-pub fn live(g: Generator) -> Option<Generator> {
+pub(crate) fn live(g: Generator) -> Option<Generator> {
     let boxed = |g: Generator| live(g).map(Box::new);
     match g {
         Generator::SampledFrom(values) => {
@@ -469,7 +469,7 @@ impl<'a> Read<'a> {
     }
 }
 
-pub fn whole(name: &str, node: &Json) -> Result<Generator, String> {
+pub(crate) fn whole(name: &str, node: &Json) -> Result<Generator, String> {
     let mut read = Read::new(node);
     let body = read.choice(name, node)?;
     read.recursive(name, ROOT, node, body)
@@ -479,8 +479,8 @@ pub fn whole(name: &str, node: &Json) -> Result<Generator, String> {
 mod tests {
     use super::*;
 
-    fn read(schema: Json) -> Result<Generator, String> {
-        whole("input", &schema)
+    fn read(schema: &Json) -> Result<Generator, String> {
+        whole("input", schema)
     }
 
     fn draw(path: &str, values: &[&str]) -> Draw {
@@ -495,7 +495,7 @@ mod tests {
     fn each_annotation_gives_the_generator_of_its_hegel_part() {
         assert_eq!(
             read(
-                json!({ "type": "string", "weft": { "grammar": "start: \"a\"", "start": "start" } })
+                &json!({ "type": "string", "weft": { "grammar": "start: \"a\"", "start": "start" } })
             ),
             Ok(Generator::Grammar(
                 "start: \"a\"".into(),
@@ -503,7 +503,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            read(json!({
+            read(&json!({
                 "type": "object",
                 "properties": { "children": { "type": "array", "items": { "$ref": "#" } } },
                 "required": ["children"],
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn weft_refuses_an_annotation_that_it_does_not_know() {
-        let wrong = |weft: Json| read(json!({ "type": "integer", "weft": weft })).unwrap_err();
+        let wrong = |weft: Json| read(&json!({ "type": "integer", "weft": weft })).unwrap_err();
         assert!(wrong(json!({ "pool": "names" })).contains("is not an annotation of weft"));
         assert!(wrong(json!({ "maxDepth": "deep" })).contains("is not an annotation of weft"));
         assert!(wrong(json!("send")).contains("is not an annotation of weft"));
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn each_format_and_encoding_gives_the_native_generator() {
-        let text = |key: &str, value: &str| read(json!({ "type": "string", key: value }));
+        let text = |key: &str, value: &str| read(&json!({ "type": "string", key: value }));
         assert_eq!(text("format", "date"), Ok(Generator::Date));
         assert_eq!(text("format", "time"), Ok(Generator::Time));
         assert_eq!(text("format", "date-time"), Ok(Generator::Datetime));
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn a_draw_line_gives_the_keys_of_a_record_and_the_values_of_each_key() {
-        let element = read(json!({
+        let element = read(&json!({
             "type": "object",
             "properties": {
                 "attributes": { "type": "object", "additionalProperties": { "type": "string" } }

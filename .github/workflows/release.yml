@@ -82,7 +82,7 @@ jobs:
           test "$code" = 2
           test "$said" = "usage: weft [--ui] [<file>…] | weft --parent <adapter> <file>"
       - name: Load libweft from the release
-        run: WEFT_LIB="dist/$GITHUB_REF_NAME/${{ matrix.target }}/${{ matrix.library }}" bun -e 'await import("./sdk/weft.ts")'
+        run: WEFT="{\"lib\":\"dist/$GITHUB_REF_NAME/${{ matrix.target }}/${{ matrix.library }}\"}" bun -e 'await import("./sdk/weft.ts")'
 
   publish:
     name: Publish

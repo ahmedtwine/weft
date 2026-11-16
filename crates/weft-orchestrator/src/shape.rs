@@ -41,7 +41,7 @@ fn inlined(node: &Json, root: &Json, depth: usize) -> Json {
     }
 }
 
-pub fn resolved(schema: &Json) -> Json {
+pub(crate) fn resolved(schema: &Json) -> Json {
     inlined(schema, schema, 0)
 }
 
@@ -53,13 +53,13 @@ fn plain(schema: &Json) -> &Json {
         .map_or(schema, plain)
 }
 
-pub enum Field<'a> {
+pub(crate) enum Field<'a> {
     Found(&'a Json),
     Open,
     Missing(Vec<String>),
 }
 
-pub fn field<'a>(schema: &'a Json, name: &str) -> Field<'a> {
+pub(crate) fn field<'a>(schema: &'a Json, name: &str) -> Field<'a> {
     match plain(schema).get("properties").and_then(Json::as_object) {
         Some(all) => all.get(name).map_or_else(
             || Field::Missing(all.keys().cloned().collect()),
@@ -69,7 +69,7 @@ pub fn field<'a>(schema: &'a Json, name: &str) -> Field<'a> {
     }
 }
 
-pub fn item(schema: &Json) -> Option<&Json> {
+pub(crate) fn item(schema: &Json) -> Option<&Json> {
     let s = plain(schema);
     s.get("items")
         .or_else(|| s.get("additionalProperties").filter(|a| a.is_object()))

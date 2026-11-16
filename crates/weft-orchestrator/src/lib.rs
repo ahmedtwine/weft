@@ -1,6 +1,10 @@
+mod hub;
 mod process;
 mod proxy;
 mod reaper;
+mod schema;
+mod shape;
+mod simulate;
 mod transport;
 
 use std::path::{Component, Path, PathBuf};
@@ -8,10 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value as Json, json};
+use simulate::simulate;
 use weft_parse::{Adapter, Config, Diagram, Start};
-use weft_simulator::{Member, Outcome, Stream, simulate};
 
 pub use reaper::{REAP, guard, reap};
+pub use simulate::{Event, Hop, Line, Outcome, Stream, Tally, view};
 use transport::{HUB, listen};
 
 const WAIT: Duration = Duration::from_secs(60);
@@ -112,7 +117,6 @@ pub fn run<'a>(
                     .collect();
                 (format!("WEFT_{key}_URL"), format!("{}/{app}", proxy.url))
             })
-            .chain([("WEFT_PROXY".to_string(), proxy.url.clone())])
             .collect();
         let r = process::Runner {
             adapter: &i.adapter,
@@ -138,20 +142,14 @@ pub fn run<'a>(
     }
     let joined = session.members(WAIT);
     let outcome = match joined {
-        Ok(remotes) => {
-            let mut members: Vec<Box<dyn Member>> = remotes
-                .into_iter()
-                .map(|remote| Box::new(remote) as Box<dyn Member>)
-                .collect();
-            Ok(simulate(
-                d,
-                &mut members,
-                config.cases,
-                config.steps,
-                key,
-                stream,
-            ))
-        }
+        Ok(mut members) => Ok(simulate(
+            d,
+            &mut members,
+            config.cases,
+            config.steps,
+            key,
+            stream,
+        )),
         Err(e) => Err(e),
     };
     HUB.close(&name);
@@ -241,9 +239,8 @@ impl "other" {
                 Some((name, value)) if name.eq_ignore_ascii_case("content-length") => {
                     size = value.trim().parse().map_err(|_| "size")?;
                 }
-                Some(_) => {}
                 None if line.trim().is_empty() => break,
-                None => {}
+                _ => {}
             }
         }
         let mut body = vec![0; size];
@@ -284,8 +281,8 @@ impl "other" {
     fn runner(
         at: &str,
         file: &str,
-        hello: Json,
-        app: App,
+        hello: &Json,
+        app: &App,
         play: Play,
         verbs: [&str; 2],
     ) -> Result<(), String> {
@@ -303,14 +300,14 @@ impl "other" {
         let code: Json = serde_json::from_str(&joined).map_err(|e| e.to_string())?;
         assert_eq!(code[0]["adapter"], "bun");
         assert_eq!(code[0]["modules"]["page"], "./src/page.ts");
-        let mut report = hello;
+        let mut report = hello.to_string();
         loop {
-            let turn: Json = serde_json::from_str(&link.said(TURN, &report.to_string())?)
-                .map_err(|e| e.to_string())?;
+            let turn: Json =
+                serde_json::from_str(&link.said(TURN, &report)?).map_err(|e| e.to_string())?;
             if turn.get("done").is_some() {
                 break;
             }
-            report = play(&app, &turn, &mut link);
+            report = play(app, &turn, &mut link).to_string();
         }
         let span = json!([{ "file": "src/page.ts", "from": 1, "to": 2 }]);
         link.said(
@@ -371,12 +368,7 @@ impl "other" {
                 POOL_ADD,
                 &json!({ "pool": "numbers", "value": n }).to_string(),
             )
-            .and_then(|_| {
-                link.asked(
-                    TARGET,
-                    &json!({ "value": n, "label": "n" }).to_string(),
-                )
-            });
+            .and_then(|_| link.asked(TARGET, &json!({ "value": n, "label": "n" }).to_string()));
         ended(added, state(app))
     }
 
@@ -433,7 +425,7 @@ impl "other" {
             .zip(plays)
             .map(|(hello, play)| {
                 let (at, app, joined) = (at.clone(), app.clone(), name.clone());
-                thread::spawn(move || runner(&at, &joined, hello, app, play, ["send", "reload"]))
+                thread::spawn(move || runner(&at, &joined, &hello, &app, play, ["send", "reload"]))
             })
             .collect();
         let outcome = run(&config, &d, Path::new(&name), None, None, &mut |_| {});
@@ -458,7 +450,12 @@ impl "other" {
 
     #[test]
     fn two_runners_on_a_unix_socket_get_each_input_from_weft() -> Result<(), String> {
-        let o = two(&socket("pass"), "", sends(), [sender, reloader_with_no_change])?;
+        let o = two(
+            &socket("pass"),
+            "",
+            sends(),
+            [sender, reloader_with_no_change],
+        )?;
         assert!(!o.failed);
         assert!(o.tally.iter().all(|t| t.steps > 0), "each verb runs");
         Ok(())

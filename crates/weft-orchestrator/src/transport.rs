@@ -9,14 +9,14 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 
 use weft_parse::Transport;
-use weft_simulator::{Hub, Peer};
 use weft_wire::{receive, send};
 
+use crate::hub::{Hub, Peer};
 use crate::reaper;
 
 type Peers = Arc<Mutex<HashMap<String, Arc<Mutex<Peer>>>>>;
 
-pub static HUB: LazyLock<Arc<Hub>> = LazyLock::new(Arc::default);
+pub(crate) static HUB: LazyLock<Arc<Hub>> = LazyLock::new(Arc::default);
 static OPEN: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex::default);
 
 fn unix(stream: UnixStream) {
@@ -50,7 +50,7 @@ fn request(reader: &mut BufReader<TcpStream>) -> Option<(String, Vec<u8>)> {
     Some((path, body))
 }
 
-fn http(stream: TcpStream, peers: Peers) {
+fn http(stream: TcpStream, peers: &Peers) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
@@ -58,13 +58,13 @@ fn http(stream: TcpStream, peers: Peers) {
     while let Some((path, body)) = request(&mut reader) {
         let peer = peers
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(path)
             .or_default()
             .clone();
         let reply = peer
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .serve(&HUB, &body);
         let head = format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\n\r\n",
@@ -112,7 +112,7 @@ fn open(transport: Option<&Transport>) -> Result<String, String> {
             thread::spawn(move || {
                 for stream in listener.incoming().flatten() {
                     let peers = peers.clone();
-                    thread::spawn(move || http(stream, peers));
+                    thread::spawn(move || http(stream, &peers));
                 }
             });
             Ok(url.trim_end_matches('/').to_string())
@@ -120,9 +120,11 @@ fn open(transport: Option<&Transport>) -> Result<String, String> {
     }
 }
 
-pub fn listen(transport: Option<&Transport>) -> Result<String, String> {
+pub(crate) fn listen(transport: Option<&Transport>) -> Result<String, String> {
     let key = transport.map_or(String::new(), Transport::to_string);
-    let mut all = OPEN.lock().unwrap_or_else(|p| p.into_inner());
+    let mut all = OPEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match all.get(&key) {
         Some(at) => Ok(at.clone()),
         None => {

@@ -1,0 +1,3512 @@
+{
+ "012643d9748a1244": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "0167aeb356e779fc": {
+  "violation": {
+   "noul": 0.44,
+   "type": "noul"
+  }
+ },
+ "017023b2c693326b": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "01cb985ad1d98a54": {
+  "violation": {
+   "noul": 0.16,
+   "type": "noul"
+  }
+ },
+ "01d65a21b863ea72": {
+  "violation": {
+   "noul": 0.45,
+   "type": "noul"
+  }
+ },
+ "01ed56b6264fed1c": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "028fa1fba7849f65": {
+  "violation": {
+   "noul": 0.2,
+   "type": "noul"
+  }
+ },
+ "029b03006d472831": {
+  "violation": {
+   "noul": 0.47,
+   "type": "noul"
+  }
+ },
+ "02a8a6a2d197261a": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "02ff931035adb81b": {
+  "violation": {
+   "noul": 0.16,
+   "type": "noul"
+  }
+ },
+ "03126b3745a379d5": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "031912ce45d06eb9": {
+  "violation": {
+   "noul": 0.14,
+   "type": "noul"
+  }
+ },
+ "034dc5a26968804f": {
+  "violation": {
+   "noul": 0.23,
+   "type": "noul"
+  }
+ },
+ "0432aae3e4a6d5cd": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "049c808bdc47e2bd": {
+  "violation": {
+   "noul": 0.3,
+   "type": "noul"
+  }
+ },
+ "0546c155343abb1b": {
+  "violation": {
+   "noul": 0.54,
+   "type": "noul"
+  }
+ },
+ "056f8f059e432fcb": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "05cbaec239803023": {
+  "violation": {
+   "noul": 0.81,
+   "type": "noul"
+  }
+ },
+ "05d39b2b3400ba38": {
+  "violation": {
+   "noul": 0.55,
+   "type": "noul"
+  }
+ },
+ "064fc47069883337": {
+  "violation": {
+   "noul": 0.64,
+   "type": "noul"
+  }
+ },
+ "0657b79dfdfd0853": {
+  "violation": {
+   "noul": 0.92,
+   "type": "noul"
+  }
+ },
+ "07412bc8bf892798": {
+  "violation": {
+   "noul": 0.86,
+   "type": "noul"
+  }
+ },
+ "07642117deb175ce": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "082efd040b58ca9b": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "083ebf38da594a22": {
+  "violation": {
+   "noul": 0.42,
+   "type": "noul"
+  }
+ },
+ "0849741a88b0ae5b": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "097706caca3f23cb": {
+  "violation": {
+   "noul": 0.51,
+   "type": "noul"
+  }
+ },
+ "09af4eeacf1053b2": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "0a1c26c93ca1922e": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "0a27fec7dc3290e5": {
+  "violation": {
+   "noul": 0.33,
+   "type": "noul"
+  }
+ },
+ "0aef374a60d4d443": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "0c63f0dd9224f6f7": {
+  "violation": {
+   "noul": 0.36,
+   "type": "noul"
+  }
+ },
+ "0c66d7c8074965cf": {
+  "violation": {
+   "noul": 0.22,
+   "type": "noul"
+  }
+ },
+ "0cf8b803865b06ca": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "0d274289d674153d": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "0d5a11fa6ed4fb5d": {
+  "violation": {
+   "noul": 0.85,
+   "type": "noul"
+  }
+ },
+ "0dba5e0ba62c055b": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "0dbc49885a0a62a7": {
+  "violation": {
+   "noul": 0.92,
+   "type": "noul"
+  }
+ },
+ "0dd1ca7d3a90ea3d": {
+  "violation": {
+   "noul": 0.75,
+   "type": "noul"
+  }
+ },
+ "0e8f738bbedb715b": {
+  "violation": {
+   "noul": 0.94,
+   "type": "noul"
+  }
+ },
+ "0e9acfb57f7b65ca": {
+  "violation": {
+   "noul": 0.3,
+   "type": "noul"
+  }
+ },
+ "0ec8819ae7c77d42": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "1034ccdff78bd9ec": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "104f8e5a54bc40d3": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "116ea1ed7c8c12d7": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "127b8a1540174b97": {
+  "violation": {
+   "noul": 0.58,
+   "type": "noul"
+  }
+ },
+ "129c54b72d255934": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "13051ada7411b2d6": {
+  "violation": {
+   "noul": 0.49,
+   "type": "noul"
+  }
+ },
+ "139565472ba7bffc": {
+  "violation": {
+   "noul": 0.59,
+   "type": "noul"
+  }
+ },
+ "13a354adb170eb58": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "13e81dc28213541a": {
+  "violation": {
+   "noul": 0.44,
+   "type": "noul"
+  }
+ },
+ "144843d627c9eab0": {
+  "violation": {
+   "noul": 0.5,
+   "type": "noul"
+  }
+ },
+ "15ffeecc046ec3da": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "161ff05eea94bb46": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "183a7270afbc16de": {
+  "violation": {
+   "noul": 0.77,
+   "type": "noul"
+  }
+ },
+ "183c73d8be6222ac": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "1870f574e1a32915": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "18a157000ced45e7": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "192631aca428da18": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "194762cd498ebf90": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "1962cef842bc6aaf": {
+  "violation": {
+   "noul": 0.35,
+   "type": "noul"
+  }
+ },
+ "1ac99dcd418af321": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "1acabf5686dd2bba": {
+  "violation": {
+   "noul": 0.6,
+   "type": "noul"
+  }
+ },
+ "1b2198047af50728": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "1b4f84cf71ded0bf": {
+  "violation": {
+   "noul": 0.87,
+   "type": "noul"
+  }
+ },
+ "1b5f8806ebf05f87": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "1b7db42729adeb9a": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "1bb2148fc35cea97": {
+  "violation": {
+   "noul": 0.49,
+   "type": "noul"
+  }
+ },
+ "1bd9b0cb91dc9a78": {
+  "violation": {
+   "noul": 0.31,
+   "type": "noul"
+  }
+ },
+ "1c55ef870041d9c1": {
+  "violation": {
+   "noul": 0.66,
+   "type": "noul"
+  }
+ },
+ "1e20915b673b4c59": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "1e4c5cc89f896d05": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "1e5627eae9375991": {
+  "violation": {
+   "noul": 0.51,
+   "type": "noul"
+  }
+ },
+ "1e58432687af7f82": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "1eeca04e4f6b18c3": {
+  "violation": {
+   "noul": 0.63,
+   "type": "noul"
+  }
+ },
+ "1f9cd8fb500a68cf": {
+  "violation": {
+   "noul": 0.95,
+   "type": "noul"
+  }
+ },
+ "1ff153228d842aeb": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "1ffe780537144b2a": {
+  "violation": {
+   "noul": 0.01,
+   "type": "noul"
+  }
+ },
+ "200da7dca1c4aad3": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "20b154fa1f230d7f": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "21264766b65962cf": {
+  "violation": {
+   "noul": 0.16,
+   "type": "noul"
+  }
+ },
+ "213cb12efc73240b": {
+  "violation": {
+   "noul": 0.83,
+   "type": "noul"
+  }
+ },
+ "214179b33a015335": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "21783502d1617e91": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "21a252c80915a9e1": {
+  "violation": {
+   "noul": 0.25,
+   "type": "noul"
+  }
+ },
+ "21d15a4275878d36": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "2278f693c1b049df": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "23bf098260b065ff": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "2410936ed4b42015": {
+  "violation": {
+   "noul": 0.16,
+   "type": "noul"
+  }
+ },
+ "246ea474012191e7": {
+  "violation": {
+   "noul": 0.38,
+   "type": "noul"
+  }
+ },
+ "252de48143016825": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "254678534d63acb8": {
+  "violation": {
+   "noul": 0.46,
+   "type": "noul"
+  }
+ },
+ "25c35657c4055566": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "26a79af81d1bedd6": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "27001831cdd39ca9": {
+  "violation": {
+   "noul": 0.63,
+   "type": "noul"
+  }
+ },
+ "2701228f5b058340": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "27821057d72f16f4": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "27fd73d4b3b56b46": {
+  "violation": {
+   "noul": 0.75,
+   "type": "noul"
+  }
+ },
+ "282d80c3907d4233": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "2942569bd04eab3b": {
+  "violation": {
+   "noul": 0.25,
+   "type": "noul"
+  }
+ },
+ "29436ca6eb823258": {
+  "violation": {
+   "noul": 0.8,
+   "type": "noul"
+  }
+ },
+ "29c7a49f7a53c8b0": {
+  "violation": {
+   "noul": 0.56,
+   "type": "noul"
+  }
+ },
+ "29ee94b2668de5ed": {
+  "violation": {
+   "noul": 0.88,
+   "type": "noul"
+  }
+ },
+ "2a4d09654d2a6997": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "2b0173ee2d89320a": {
+  "violation": {
+   "noul": 0.3,
+   "type": "noul"
+  }
+ },
+ "2b4925b2173228d9": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "2b4c54a5077c734e": {
+  "violation": {
+   "noul": 0.19,
+   "type": "noul"
+  }
+ },
+ "2b6c6d6f94b8a171": {
+  "violation": {
+   "noul": 0.86,
+   "type": "noul"
+  }
+ },
+ "2bc1de68b26cf624": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "2be9f636cd3c2289": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "2c19f4b599bb9fe9": {
+  "violation": {
+   "noul": 0.9,
+   "type": "noul"
+  }
+ },
+ "2c4fa39139e0c0be": {
+  "violation": {
+   "noul": 0.23,
+   "type": "noul"
+  }
+ },
+ "2c52ba5cb312ed44": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "2c62f7cb4bc9d9b8": {
+  "violation": {
+   "noul": 0.95,
+   "type": "noul"
+  }
+ },
+ "2c96977520e88e37": {
+  "violation": {
+   "noul": 0.26,
+   "type": "noul"
+  }
+ },
+ "2d54148e6952c3d1": {
+  "violation": {
+   "noul": 0.72,
+   "type": "noul"
+  }
+ },
+ "2d96bc3b1936ff87": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "2e08d6860dbbd2ed": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "2ee197dd95b52615": {
+  "violation": {
+   "noul": 0.82,
+   "type": "noul"
+  }
+ },
+ "311641de287f87ec": {
+  "violation": {
+   "noul": 0.65,
+   "type": "noul"
+  }
+ },
+ "315f324e08acd8f6": {
+  "violation": {
+   "noul": 0.2,
+   "type": "noul"
+  }
+ },
+ "31f1aa0f1474ec7c": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "32b02e80ff2eef51": {
+  "violation": {
+   "noul": 0.57,
+   "type": "noul"
+  }
+ },
+ "330b0a287406f0c4": {
+  "violation": {
+   "noul": 0.72,
+   "type": "noul"
+  }
+ },
+ "336c00eb544e48e9": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "337a66f704b412c4": {
+  "violation": {
+   "noul": 0.04,
+   "type": "noul"
+  }
+ },
+ "33b6cd199dee29db": {
+  "violation": {
+   "noul": 0.94,
+   "type": "noul"
+  }
+ },
+ "34254c883d685960": {
+  "violation": {
+   "noul": 0.44,
+   "type": "noul"
+  }
+ },
+ "34264eac9ee780ff": {
+  "violation": {
+   "noul": 0.85,
+   "type": "noul"
+  }
+ },
+ "3432a8804620fe08": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "34999771fd95a330": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "3514f3ffaea2b54b": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "362619a96d18e40d": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "365fbda1947d51ad": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "372cd82224552079": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "3780672eb1b63f45": {
+  "violation": {
+   "noul": 0.49,
+   "type": "noul"
+  }
+ },
+ "37f121791d48a95a": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "385d7104ee55ce7c": {
+  "violation": {
+   "noul": 0.81,
+   "type": "noul"
+  }
+ },
+ "38e92bc3ab381b98": {
+  "violation": {
+   "noul": 0.45,
+   "type": "noul"
+  }
+ },
+ "3965f18af329ca1b": {
+  "violation": {
+   "noul": 0.84,
+   "type": "noul"
+  }
+ },
+ "39ea8487294af2d4": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "3a37e8aa25d9cad8": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "3a5b6bc3cd97d390": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "3a693cebc029a7b8": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "3a9b2059c2eda01b": {
+  "violation": {
+   "noul": 0.22,
+   "type": "noul"
+  }
+ },
+ "3b5169c0e82c53da": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "3b97fc73e680a18a": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "3ba7009277470786": {
+  "violation": {
+   "noul": 0.28,
+   "type": "noul"
+  }
+ },
+ "3bea0e9538d539c8": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "3bf91b75c2f5a249": {
+  "violation": {
+   "noul": 0.16,
+   "type": "noul"
+  }
+ },
+ "3c44225abc93ef1a": {
+  "violation": {
+   "noul": 0.42,
+   "type": "noul"
+  }
+ },
+ "3c852bda17234cd4": {
+  "violation": {
+   "noul": 0.18,
+   "type": "noul"
+  }
+ },
+ "3d445b5c1828a9bf": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "3e6e4310561c6bd0": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "3ee6335592c14990": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "3fc0881f55b4dcfe": {
+  "violation": {
+   "noul": 0.42,
+   "type": "noul"
+  }
+ },
+ "3fc229ae839d6472": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "4154cced31e7ed2a": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "41b9011e888ffa76": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "4213ab6a4ab9eaf7": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "4222338053f06ae7": {
+  "violation": {
+   "noul": 0.36,
+   "type": "noul"
+  }
+ },
+ "4227cc912f92320d": {
+  "violation": {
+   "noul": 0.51,
+   "type": "noul"
+  }
+ },
+ "425b8f6af3734569": {
+  "violation": {
+   "noul": 0.51,
+   "type": "noul"
+  }
+ },
+ "42720fe90b79efb6": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "44507612601dbca4": {
+  "violation": {
+   "noul": 0.87,
+   "type": "noul"
+  }
+ },
+ "4455b0cd516e2897": {
+  "violation": {
+   "noul": 0.66,
+   "type": "noul"
+  }
+ },
+ "446fcc479883d372": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "44912fae42104079": {
+  "violation": {
+   "noul": 0.18,
+   "type": "noul"
+  }
+ },
+ "44faaa0012f78e89": {
+  "violation": {
+   "noul": 0.04,
+   "type": "noul"
+  }
+ },
+ "45a04787ccc29266": {
+  "violation": {
+   "noul": 0.22,
+   "type": "noul"
+  }
+ },
+ "45b5fbee66141899": {
+  "violation": {
+   "noul": 0.34,
+   "type": "noul"
+  }
+ },
+ "45ba11b51d267a72": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "45e71cf8ff8f4ef6": {
+  "violation": {
+   "noul": 0.43,
+   "type": "noul"
+  }
+ },
+ "47937a23f4a864f6": {
+  "violation": {
+   "noul": 0.22,
+   "type": "noul"
+  }
+ },
+ "479fc88dca9f685e": {
+  "violation": {
+   "noul": 0.35,
+   "type": "noul"
+  }
+ },
+ "47ecb7a4d28e1812": {
+  "violation": {
+   "noul": 0.46,
+   "type": "noul"
+  }
+ },
+ "47fa6f442e37b7f4": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "484e9a38654e4f65": {
+  "violation": {
+   "noul": 0.14,
+   "type": "noul"
+  }
+ },
+ "48ef18e0afd1ec05": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "4b2c615b61fbba04": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "4bd27787d10b693f": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "4c95120fac61894b": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "4cc2c211270f74af": {
+  "violation": {
+   "noul": 0.2,
+   "type": "noul"
+  }
+ },
+ "4cc5ee25f150c1bc": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "4cf66e712ccd6958": {
+  "violation": {
+   "noul": 0.51,
+   "type": "noul"
+  }
+ },
+ "4d38469400f08ee3": {
+  "violation": {
+   "noul": 0.35,
+   "type": "noul"
+  }
+ },
+ "4e0718b172693a51": {
+  "violation": {
+   "noul": 0.51,
+   "type": "noul"
+  }
+ },
+ "508f49d1d56b1fb3": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "50c9960145fd1679": {
+  "violation": {
+   "noul": 0.48,
+   "type": "noul"
+  }
+ },
+ "513e9fae10bb7707": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "5223ed9d90b1353a": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "5226d4bcebae1b2f": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "527fdc84c3b86e13": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "52ec018c26ac6873": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "534bc65c47152e52": {
+  "violation": {
+   "noul": 0.32,
+   "type": "noul"
+  }
+ },
+ "53b643847fa94700": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "54428bbf5ffdf5c0": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "55d0d013ab0fe8b2": {
+  "violation": {
+   "noul": 0.41,
+   "type": "noul"
+  }
+ },
+ "55f8251db742ba55": {
+  "violation": {
+   "noul": 0.61,
+   "type": "noul"
+  }
+ },
+ "55f87c1e130f9e28": {
+  "violation": {
+   "noul": 0.44,
+   "type": "noul"
+  }
+ },
+ "560ef9ec70a2d3c8": {
+  "violation": {
+   "noul": 0.23,
+   "type": "noul"
+  }
+ },
+ "56feecb9c742c093": {
+  "violation": {
+   "noul": 0.42,
+   "type": "noul"
+  }
+ },
+ "5766bffaea11a04a": {
+  "violation": {
+   "noul": 0.19,
+   "type": "noul"
+  }
+ },
+ "57a5d22ea9a2b706": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "585b0b9c9bd48efb": {
+  "violation": {
+   "noul": 0.43,
+   "type": "noul"
+  }
+ },
+ "589d74610e90666c": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "58ccc22aef5d1a84": {
+  "violation": {
+   "noul": 0.92,
+   "type": "noul"
+  }
+ },
+ "58d31a83e697dee0": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "593186e1396a7fe7": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "59683debbc323330": {
+  "violation": {
+   "noul": 0.28,
+   "type": "noul"
+  }
+ },
+ "5a4484f8e6655d75": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "5a82a889c6aaf110": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "5aafb50ec6c8aff0": {
+  "violation": {
+   "noul": 0.65,
+   "type": "noul"
+  }
+ },
+ "5d98d815d4a37019": {
+  "violation": {
+   "noul": 0.16,
+   "type": "noul"
+  }
+ },
+ "5db7acec6fbc0c92": {
+  "violation": {
+   "noul": 0.84,
+   "type": "noul"
+  }
+ },
+ "5e4db33159b5c590": {
+  "violation": {
+   "noul": 0.85,
+   "type": "noul"
+  }
+ },
+ "5e853fae4aee44da": {
+  "violation": {
+   "noul": 0.36,
+   "type": "noul"
+  }
+ },
+ "5eb0a18c246cfdb2": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "5fca156e792373fb": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "60a35afdd476d12a": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "61f3c360864d61a0": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "625857351fe60476": {
+  "violation": {
+   "noul": 0.3,
+   "type": "noul"
+  }
+ },
+ "628a8d71d8524f51": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "640d518edc400715": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "645d5b9bedcbda7f": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "649970693381c3c0": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "64c97f9ca7a89d6e": {
+  "violation": {
+   "noul": 0.85,
+   "type": "noul"
+  }
+ },
+ "656d4b07ad65ddb6": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "660a9103695f5a32": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "674ea6a0cb89cb58": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "675dc5520f712e2d": {
+  "violation": {
+   "noul": 0.25,
+   "type": "noul"
+  }
+ },
+ "68b1fb3b91aa5b4c": {
+  "violation": {
+   "noul": 0.91,
+   "type": "noul"
+  }
+ },
+ "68e17608b28a9ff8": {
+  "violation": {
+   "noul": 0.54,
+   "type": "noul"
+  }
+ },
+ "691008939a813c18": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "6921653f39a493de": {
+  "violation": {
+   "noul": 0.43,
+   "type": "noul"
+  }
+ },
+ "694d2cf8ff87c6e4": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "69a38a5eba282a83": {
+  "violation": {
+   "noul": 0.59,
+   "type": "noul"
+  }
+ },
+ "6a1b16f57fdf06df": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "6a2933d7130d4661": {
+  "violation": {
+   "noul": 0.19,
+   "type": "noul"
+  }
+ },
+ "6a3948492b6b29ab": {
+  "violation": {
+   "noul": 0.28,
+   "type": "noul"
+  }
+ },
+ "6a9121ab4f62458d": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "6bf05e16f0c7fe29": {
+  "violation": {
+   "noul": 0.76,
+   "type": "noul"
+  }
+ },
+ "6bfaefea7fe1c4ca": {
+  "violation": {
+   "noul": 0.57,
+   "type": "noul"
+  }
+ },
+ "6ced82f162bdb43d": {
+  "violation": {
+   "noul": 0.81,
+   "type": "noul"
+  }
+ },
+ "6d538febdf28f568": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "6d7a9be7403dba3f": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "6e0a60c197046081": {
+  "violation": {
+   "noul": 0.44,
+   "type": "noul"
+  }
+ },
+ "6e2cfabfb1915b42": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "6e6b8ff42b39d79a": {
+  "violation": {
+   "noul": 0.9,
+   "type": "noul"
+  }
+ },
+ "6e97f0c43105f8a0": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "6fa84804fb571e28": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "6fca7e40dce6a788": {
+  "violation": {
+   "noul": 0.26,
+   "type": "noul"
+  }
+ },
+ "70fa8f5e216e8b5d": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "71f538f04e148e36": {
+  "violation": {
+   "noul": 0.72,
+   "type": "noul"
+  }
+ },
+ "72690d9b7ed85f1a": {
+  "violation": {
+   "noul": 0.85,
+   "type": "noul"
+  }
+ },
+ "738f65cbde6beb5e": {
+  "violation": {
+   "noul": 0.91,
+   "type": "noul"
+  }
+ },
+ "74a07f6a9d885016": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "74fa79f019fd8460": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "75008c88696e514f": {
+  "violation": {
+   "noul": 0.47,
+   "type": "noul"
+  }
+ },
+ "758aa3436f0fd0af": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "76122086243696b5": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "77453ee6301f5db3": {
+  "violation": {
+   "noul": 0.48,
+   "type": "noul"
+  }
+ },
+ "77cebd24c374486d": {
+  "violation": {
+   "noul": 0.04,
+   "type": "noul"
+  }
+ },
+ "77e0d7f892459aea": {
+  "violation": {
+   "noul": 0.68,
+   "type": "noul"
+  }
+ },
+ "780419b848282551": {
+  "violation": {
+   "noul": 0.31,
+   "type": "noul"
+  }
+ },
+ "7858bf6bea4ddde6": {
+  "violation": {
+   "noul": 0.61,
+   "type": "noul"
+  }
+ },
+ "788c77dd396183c2": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "7897d64975caf92c": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "792470f9d37dc530": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "7956f359360f40ed": {
+  "violation": {
+   "noul": 0.28,
+   "type": "noul"
+  }
+ },
+ "79d6a7ce1569f675": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "7bfc175546fe35a2": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "7c0a0a5ec05f78bb": {
+  "violation": {
+   "noul": 0.14,
+   "type": "noul"
+  }
+ },
+ "7cdff56a1421ba9f": {
+  "violation": {
+   "noul": 0.64,
+   "type": "noul"
+  }
+ },
+ "7d98ac9c6e0891cd": {
+  "violation": {
+   "noul": 0.61,
+   "type": "noul"
+  }
+ },
+ "7dff6f02847dfa98": {
+  "violation": {
+   "noul": 0.19,
+   "type": "noul"
+  }
+ },
+ "7ebb93d814ecf673": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "7ed6f5cd70393110": {
+  "violation": {
+   "noul": 0.14,
+   "type": "noul"
+  }
+ },
+ "7eed7f2dad169f58": {
+  "violation": {
+   "noul": 0.68,
+   "type": "noul"
+  }
+ },
+ "7f143c3dff5767ee": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "7f2596b77959c2bd": {
+  "violation": {
+   "noul": 0.23,
+   "type": "noul"
+  }
+ },
+ "800b36bcc30821bf": {
+  "violation": {
+   "noul": 0.84,
+   "type": "noul"
+  }
+ },
+ "8057df3997c17857": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "807bfd19eed53c4f": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "8117d84f48c4fe62": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "813e185ee196a3b5": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "81baa6a92661a33d": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "823499f0ae93d399": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "825c32b18fafe26b": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "82997fd8cd4ef701": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "82a32d12b35f3564": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "8383aa48de352b14": {
+  "violation": {
+   "noul": 0.67,
+   "type": "noul"
+  }
+ },
+ "839a71e27af7f779": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "83e447fbd1b486ba": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "8461ad8ec1b7efe9": {
+  "violation": {
+   "noul": 0.47,
+   "type": "noul"
+  }
+ },
+ "860268da1dcf6e3b": {
+  "violation": {
+   "noul": 0.43,
+   "type": "noul"
+  }
+ },
+ "862462e25154b109": {
+  "violation": {
+   "noul": 0.04,
+   "type": "noul"
+  }
+ },
+ "864997d4f044501f": {
+  "violation": {
+   "noul": 0.45,
+   "type": "noul"
+  }
+ },
+ "8664b2e759c3a74f": {
+  "violation": {
+   "noul": 0.29,
+   "type": "noul"
+  }
+ },
+ "86fbcf9b6183ec1c": {
+  "violation": {
+   "noul": 0.24,
+   "type": "noul"
+  }
+ },
+ "8725ea02815d2d0b": {
+  "violation": {
+   "noul": 0.19,
+   "type": "noul"
+  }
+ },
+ "8734cd6dfd5a68da": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "87589a4809663abd": {
+  "violation": {
+   "noul": 0.58,
+   "type": "noul"
+  }
+ },
+ "87a2c8905697ff4d": {
+  "violation": {
+   "noul": 0.69,
+   "type": "noul"
+  }
+ },
+ "87d308380746fba6": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "895bf92115609c11": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "89eb5d2384649a1d": {
+  "violation": {
+   "noul": 0.22,
+   "type": "noul"
+  }
+ },
+ "8a15cf33ea90b67b": {
+  "violation": {
+   "noul": 0.2,
+   "type": "noul"
+  }
+ },
+ "8a607a62f75d9aa4": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "8a71f94cd66676ed": {
+  "violation": {
+   "noul": 0.23,
+   "type": "noul"
+  }
+ },
+ "8a7669905e2717c5": {
+  "violation": {
+   "noul": 0.85,
+   "type": "noul"
+  }
+ },
+ "8c4c731ee82bf19e": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "8cbe3a277f4f9fc0": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "8cd03f5b2bff008a": {
+  "violation": {
+   "noul": 0.19,
+   "type": "noul"
+  }
+ },
+ "8f4572692929bcca": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "8fd919e839b065c5": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "9018d46074442198": {
+  "violation": {
+   "noul": 0.49,
+   "type": "noul"
+  }
+ },
+ "903a23e97279f841": {
+  "violation": {
+   "noul": 0.53,
+   "type": "noul"
+  }
+ },
+ "907cf82aa740d7b3": {
+  "violation": {
+   "noul": 0.82,
+   "type": "noul"
+  }
+ },
+ "90df6cf217637f4a": {
+  "violation": {
+   "noul": 0.25,
+   "type": "noul"
+  }
+ },
+ "91556c3df64085c4": {
+  "violation": {
+   "noul": 0.13,
+   "type": "noul"
+  }
+ },
+ "919d5396b7ce96c0": {
+  "violation": {
+   "noul": 0.19,
+   "type": "noul"
+  }
+ },
+ "920c3f1f1cc7aa9d": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "932caf72f3365e8b": {
+  "violation": {
+   "noul": 0.59,
+   "type": "noul"
+  }
+ },
+ "93934dc6a9a8ec57": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "9432722828ebef1b": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "94f8913ca45566ac": {
+  "violation": {
+   "noul": 0.78,
+   "type": "noul"
+  }
+ },
+ "9522c7e785f9a942": {
+  "violation": {
+   "noul": 0.65,
+   "type": "noul"
+  }
+ },
+ "95ae262a81c912b8": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "95b9af743eca205f": {
+  "violation": {
+   "noul": 0.54,
+   "type": "noul"
+  }
+ },
+ "95e1cba75b96f82a": {
+  "violation": {
+   "noul": 0.79,
+   "type": "noul"
+  }
+ },
+ "970f9b75fce4b0f5": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "974a5e06f5df5628": {
+  "violation": {
+   "noul": 0.36,
+   "type": "noul"
+  }
+ },
+ "976e3333ab7f39a9": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "9781bd8d96857b94": {
+  "violation": {
+   "noul": 0.13,
+   "type": "noul"
+  }
+ },
+ "98001e7836e2f2bb": {
+  "violation": {
+   "noul": 0.13,
+   "type": "noul"
+  }
+ },
+ "981059bed418ed7a": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "981f4831c8ef5389": {
+  "violation": {
+   "noul": 0.79,
+   "type": "noul"
+  }
+ },
+ "9907aca2c175a9e8": {
+  "violation": {
+   "noul": 0.73,
+   "type": "noul"
+  }
+ },
+ "9909c5da51730eb6": {
+  "violation": {
+   "noul": 0.48,
+   "type": "noul"
+  }
+ },
+ "99390c709013e9a1": {
+  "violation": {
+   "noul": 0.54,
+   "type": "noul"
+  }
+ },
+ "9ab48f4faac91563": {
+  "violation": {
+   "noul": 0.91,
+   "type": "noul"
+  }
+ },
+ "9ac3af581dfe27e9": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "9ae34b5fbf7f14a8": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "9af477231c3acde6": {
+  "violation": {
+   "noul": 0.42,
+   "type": "noul"
+  }
+ },
+ "9b343263c0de084c": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "9b39302d913a81e0": {
+  "violation": {
+   "noul": 0.33,
+   "type": "noul"
+  }
+ },
+ "9bce4f62597b7ac7": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "9be8c8a661c9821e": {
+  "violation": {
+   "noul": 0.83,
+   "type": "noul"
+  }
+ },
+ "9c0c23b60d512603": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "9c2a76692b7229bc": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "9c3f3056cee18c41": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "9c5baf9d0f706f73": {
+  "violation": {
+   "noul": 0.14,
+   "type": "noul"
+  }
+ },
+ "9cbc9c27b7fa1172": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "9d6535d0c2e13519": {
+  "violation": {
+   "noul": 0.29,
+   "type": "noul"
+  }
+ },
+ "9e3bb7cb56ed1be9": {
+  "violation": {
+   "noul": 0.87,
+   "type": "noul"
+  }
+ },
+ "9e9bf93067921893": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "9ee832a6007db505": {
+  "violation": {
+   "noul": 0.04,
+   "type": "noul"
+  }
+ },
+ "9efab01731c4200e": {
+  "violation": {
+   "noul": 0.35,
+   "type": "noul"
+  }
+ },
+ "9f3c567162191e57": {
+  "violation": {
+   "noul": 0.37,
+   "type": "noul"
+  }
+ },
+ "9f4087bb79f1a9d3": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "a1f859040a0db6d3": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "a23bcbf0c8accc4a": {
+  "violation": {
+   "noul": 0.76,
+   "type": "noul"
+  }
+ },
+ "a24577e0cc79b52b": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "a2a127bfb248f10b": {
+  "violation": {
+   "noul": 0.23,
+   "type": "noul"
+  }
+ },
+ "a3b0713989f1b59d": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "a3f9a229a5443869": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "a44226e9ac77bed7": {
+  "violation": {
+   "noul": 0.22,
+   "type": "noul"
+  }
+ },
+ "a483ac2ae64a2a89": {
+  "violation": {
+   "noul": 0.43,
+   "type": "noul"
+  }
+ },
+ "a4d0b2f4188740e5": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "a4d8da351bcbdefb": {
+  "violation": {
+   "noul": 0.18,
+   "type": "noul"
+  }
+ },
+ "a5033f17393bcc8d": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "a551b948731193d5": {
+  "violation": {
+   "noul": 0.37,
+   "type": "noul"
+  }
+ },
+ "a5e86b5a16c8c7da": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "a617d51baba56f2d": {
+  "violation": {
+   "noul": 0.2,
+   "type": "noul"
+  }
+ },
+ "a62fb9c9e04cdb04": {
+  "violation": {
+   "noul": 0.5,
+   "type": "noul"
+  }
+ },
+ "a6709449e5db4c16": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "a688e2f24fec8b67": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "a6b8ef2e9b8c9152": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "a6f967a9e43e2699": {
+  "violation": {
+   "noul": 0.29,
+   "type": "noul"
+  }
+ },
+ "a77f403e8e92ba7f": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "a87aad88e7f5a213": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "a963736448a26400": {
+  "violation": {
+   "noul": 0.29,
+   "type": "noul"
+  }
+ },
+ "aa2f020fcda99dcd": {
+  "violation": {
+   "noul": 0.32,
+   "type": "noul"
+  }
+ },
+ "aabfcbdf698e6bf3": {
+  "violation": {
+   "noul": 0.55,
+   "type": "noul"
+  }
+ },
+ "ab3a6b95515f69d9": {
+  "violation": {
+   "noul": 0.67,
+   "type": "noul"
+  }
+ },
+ "ab5a4f6d8e988570": {
+  "violation": {
+   "noul": 0.25,
+   "type": "noul"
+  }
+ },
+ "ab95a74f113a286f": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "ac0f098da2fc8e37": {
+  "violation": {
+   "noul": 0.26,
+   "type": "noul"
+  }
+ },
+ "ac1edd6da3f917a4": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "acb7ab8eb16eaaea": {
+  "violation": {
+   "noul": 0.29,
+   "type": "noul"
+  }
+ },
+ "acc0a2c9f7b02ea1": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "acff3ec7fa3d7579": {
+  "violation": {
+   "noul": 0.55,
+   "type": "noul"
+  }
+ },
+ "ad007dc7c976633e": {
+  "violation": {
+   "noul": 0.35,
+   "type": "noul"
+  }
+ },
+ "adacb410c9888c80": {
+  "violation": {
+   "noul": 0.74,
+   "type": "noul"
+  }
+ },
+ "adccd5a274f4d290": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "ae4b8f89845c0736": {
+  "violation": {
+   "noul": 0.38,
+   "type": "noul"
+  }
+ },
+ "ae97bdb8d06cc596": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "af22b5633da72a43": {
+  "violation": {
+   "noul": 0.28,
+   "type": "noul"
+  }
+ },
+ "af795398e4fea560": {
+  "violation": {
+   "noul": 0.85,
+   "type": "noul"
+  }
+ },
+ "afcb03185de75508": {
+  "violation": {
+   "noul": 0.18,
+   "type": "noul"
+  }
+ },
+ "b005b66eb7348650": {
+  "violation": {
+   "noul": 0.92,
+   "type": "noul"
+  }
+ },
+ "b09af16df9a1a145": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "b0ec33162ab95bcd": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "b1e8697eab01ec70": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "b2054780aaddde18": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "b28730d75e58192a": {
+  "violation": {
+   "noul": 0.2,
+   "type": "noul"
+  }
+ },
+ "b2a29959d96d3585": {
+  "violation": {
+   "noul": 0.78,
+   "type": "noul"
+  }
+ },
+ "b2b14de214c1c9ab": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "b2b940a3dece1ef8": {
+  "violation": {
+   "noul": 0.56,
+   "type": "noul"
+  }
+ },
+ "b34ae649ac92f121": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "b40a53c96f8ac604": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "b44c0363e5f4cd1a": {
+  "violation": {
+   "noul": 0.9,
+   "type": "noul"
+  }
+ },
+ "b457964ab545b476": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "b460b1b171f8b17a": {
+  "violation": {
+   "noul": 0.26,
+   "type": "noul"
+  }
+ },
+ "b4ad435dda2bf80b": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "b4b6eddef5767f0d": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "b4d4e5a3f1a23664": {
+  "violation": {
+   "noul": 0.45,
+   "type": "noul"
+  }
+ },
+ "b5efb83f4a1758d5": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "b77b1c2f40643015": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "b80d9b3fb3ac5759": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "b9a4ef8e7d23e214": {
+  "violation": {
+   "noul": 0.04,
+   "type": "noul"
+  }
+ },
+ "b9bf988e16183496": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "b9d239ded143e49d": {
+  "violation": {
+   "noul": 0.37,
+   "type": "noul"
+  }
+ },
+ "ba17dcbd5ce4f6b6": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "baf439b4b52f2ed2": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "bb7585db96c68ea9": {
+  "violation": {
+   "noul": 0.58,
+   "type": "noul"
+  }
+ },
+ "bc1b967e428f2099": {
+  "violation": {
+   "noul": 0.14,
+   "type": "noul"
+  }
+ },
+ "bcd0795ec1823f20": {
+  "violation": {
+   "noul": 0.55,
+   "type": "noul"
+  }
+ },
+ "bd3b7071eb570e1b": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "bd481efa47adc8b2": {
+  "violation": {
+   "noul": 0.48,
+   "type": "noul"
+  }
+ },
+ "bd6ccf7709fd7a3c": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "bd7706276d7fdbb3": {
+  "violation": {
+   "noul": 0.37,
+   "type": "noul"
+  }
+ },
+ "be9497cbc93797c9": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "bea494209bc8b6c9": {
+  "violation": {
+   "noul": 0.45,
+   "type": "noul"
+  }
+ },
+ "beac50c3d5cb68e7": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "bf03565a913bdca9": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "bf28023bac84f909": {
+  "violation": {
+   "noul": 0.15,
+   "type": "noul"
+  }
+ },
+ "c0517879197cde00": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "c099853f36541044": {
+  "violation": {
+   "noul": 0.13,
+   "type": "noul"
+  }
+ },
+ "c0e27befef1697fe": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "c0fd18c376c0ca6c": {
+  "violation": {
+   "noul": 0.39,
+   "type": "noul"
+  }
+ },
+ "c2271f773b4d6159": {
+  "violation": {
+   "noul": 0.74,
+   "type": "noul"
+  }
+ },
+ "c254392c2526af87": {
+  "violation": {
+   "noul": 0.66,
+   "type": "noul"
+  }
+ },
+ "c26ea8ba8b7e2f59": {
+  "violation": {
+   "noul": 0.76,
+   "type": "noul"
+  }
+ },
+ "c28da48a7ce62a18": {
+  "violation": {
+   "noul": 0.22,
+   "type": "noul"
+  }
+ },
+ "c297ee225844afb6": {
+  "violation": {
+   "noul": 0.3,
+   "type": "noul"
+  }
+ },
+ "c2dc083bae509fd5": {
+  "violation": {
+   "noul": 0.18,
+   "type": "noul"
+  }
+ },
+ "c34d9d5acd110043": {
+  "violation": {
+   "noul": 0.22,
+   "type": "noul"
+  }
+ },
+ "c43204f6039c9ddf": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "c442593d0cc4f2c4": {
+  "violation": {
+   "noul": 0.51,
+   "type": "noul"
+  }
+ },
+ "c449cda15fc856b3": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "c4be96053e1d99ae": {
+  "violation": {
+   "noul": 0.84,
+   "type": "noul"
+  }
+ },
+ "c52331f1d3d0667e": {
+  "violation": {
+   "noul": 0.14,
+   "type": "noul"
+  }
+ },
+ "c5f515b6483191a2": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "c6c12522e734fd76": {
+  "violation": {
+   "noul": 0.41,
+   "type": "noul"
+  }
+ },
+ "c6dda6958183d3f5": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "c7a3c14bb9c6f438": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "c91623f7238792f9": {
+  "violation": {
+   "noul": 0.49,
+   "type": "noul"
+  }
+ },
+ "c9d4e82975877b49": {
+  "violation": {
+   "noul": 0.04,
+   "type": "noul"
+  }
+ },
+ "ca0e54534c00d53f": {
+  "violation": {
+   "noul": 0.39,
+   "type": "noul"
+  }
+ },
+ "ca15996571967c48": {
+  "violation": {
+   "noul": 0.47,
+   "type": "noul"
+  }
+ },
+ "cb380943c5a7117c": {
+  "violation": {
+   "noul": 0.3,
+   "type": "noul"
+  }
+ },
+ "cc7621aff5fab087": {
+  "violation": {
+   "noul": 0.29,
+   "type": "noul"
+  }
+ },
+ "ccf9b0c53d43d113": {
+  "violation": {
+   "noul": 0.13,
+   "type": "noul"
+  }
+ },
+ "cd59e44eb2845a52": {
+  "alternates": [
+   "Tidepool is a small backup tool for people who do not want to think about backups.",
+   "Tidepool is a small backup tool for people who don't like to think about backups.",
+   "Tidepool is a small backup tool for people who don't want to manage backups.",
+   "Tidepool is a small backup tool for users, because they don't want to think about backups.",
+   "Tidepool is a small backup tool for people who don't want to think about the process.",
+   "For people who don't want to think about backups, Tidepool is a small backup tool."
+  ],
+  "invariants": [
+   {
+    "measure": "Do not use contracted negative auxiliary verbs.",
+    "name": "Contraction"
+   },
+   {
+    "measure": "Do not express customer preferences using the verb want negatively.",
+    "name": "Volition"
+   },
+   {
+    "measure": "Do not portray the act of thinking as unwelcome.",
+    "name": "Cognition"
+   },
+   {
+    "measure": "Do not describe target audiences through negative relative clauses.",
+    "name": "Audience"
+   },
+   {
+    "measure": "Do not place the product category inside a negative phrase.",
+    "name": "Object"
+   },
+   {
+    "measure": "Do not end sentences with negative subordinate clauses.",
+    "name": "Assertion"
+   }
+  ]
+ },
+ "cd9e43e31d127ee5": {
+  "violation": {
+   "noul": 0.37,
+   "type": "noul"
+  }
+ },
+ "ce09a297b0d43a17": {
+  "violation": {
+   "noul": 0.19,
+   "type": "noul"
+  }
+ },
+ "ce1a850627f9e896": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "ce1dc6e845f180f2": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "cf4d7298931b995a": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "cff872ff89439b28": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "d016ce8c59ca8e9c": {
+  "violation": {
+   "noul": 0.85,
+   "type": "noul"
+  }
+ },
+ "d01a92ee679bb7c5": {
+  "violation": {
+   "noul": 0.4,
+   "type": "noul"
+  }
+ },
+ "d02996f5adaea2ad": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "d08a4914dd85ef6d": {
+  "violation": {
+   "noul": 0.45,
+   "type": "noul"
+  }
+ },
+ "d195e51ef6018d87": {
+  "violation": {
+   "noul": 0.82,
+   "type": "noul"
+  }
+ },
+ "d1bc06ec66d29b71": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "d233057be415e1b0": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "d27ae74439fc5c92": {
+  "violation": {
+   "noul": 0.25,
+   "type": "noul"
+  }
+ },
+ "d2b1d92de2fed07d": {
+  "violation": {
+   "noul": 0.35,
+   "type": "noul"
+  }
+ },
+ "d3624f89522690f1": {
+  "violation": {
+   "noul": 0.14,
+   "type": "noul"
+  }
+ },
+ "d370e4e2a0b212c2": {
+  "violation": {
+   "noul": 0.28,
+   "type": "noul"
+  }
+ },
+ "d3f2e0800e97c77b": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "d4418f13b4663a9e": {
+  "violation": {
+   "noul": 0.51,
+   "type": "noul"
+  }
+ },
+ "d4a448c00fcdf1f4": {
+  "violation": {
+   "noul": 0.7,
+   "type": "noul"
+  }
+ },
+ "d59a3ad25e6e3443": {
+  "violation": {
+   "noul": 0.68,
+   "type": "noul"
+  }
+ },
+ "d5b7d8b7d5d15381": {
+  "violation": {
+   "noul": 0.54,
+   "type": "noul"
+  }
+ },
+ "d693e166d5030efa": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "d717a7fe513f3ad6": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "d7e64d0017fdf1ef": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "d8eccbb99c76c430": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "d96c7dce516fe8bb": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "da37e40e81947a48": {
+  "violation": {
+   "noul": 0.34,
+   "type": "noul"
+  }
+ },
+ "dacbf472aa35bd07": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "dadebd9053629767": {
+  "violation": {
+   "noul": 0.55,
+   "type": "noul"
+  }
+ },
+ "db0e65a755a0bcb4": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "db7de6cf2ebf9af9": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "dc9285bf6b9d7112": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "dd14f3cebbf6dc0f": {
+  "violation": {
+   "noul": 0.81,
+   "type": "noul"
+  }
+ },
+ "dd7f00aef2864718": {
+  "violation": {
+   "noul": 0.26,
+   "type": "noul"
+  }
+ },
+ "e03fcf380aee0f28": {
+  "violation": {
+   "noul": 0.57,
+   "type": "noul"
+  }
+ },
+ "e0877f16bc898897": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "e0ab4979edf5ae4f": {
+  "violation": {
+   "noul": 0.68,
+   "type": "noul"
+  }
+ },
+ "e0f1a57fa98dca5b": {
+  "violation": {
+   "noul": 0.76,
+   "type": "noul"
+  }
+ },
+ "e1431084dcfe55ba": {
+  "violation": {
+   "noul": 0.46,
+   "type": "noul"
+  }
+ },
+ "e162fbb4f2d9e259": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "e193ee977bc7c132": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "e26dc351eaf83e5a": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "e2736eab84d004d6": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "e28739480fb3cbbb": {
+  "violation": {
+   "noul": 0.43,
+   "type": "noul"
+  }
+ },
+ "e2fdbaeeb88cc2b8": {
+  "violation": {
+   "noul": 0.98,
+   "type": "noul"
+  }
+ },
+ "e3075ea4bb7e7af1": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "e3169df22e1593f3": {
+  "violation": {
+   "noul": 0.16,
+   "type": "noul"
+  }
+ },
+ "e43d16b74e27d783": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "e4f821ac2d24ea35": {
+  "violation": {
+   "noul": 0.62,
+   "type": "noul"
+  }
+ },
+ "e52d702a587fefb0": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "e548f92768b5dcb3": {
+  "violation": {
+   "noul": 0.49,
+   "type": "noul"
+  }
+ },
+ "e5a3e8c2ce24d675": {
+  "violation": {
+   "noul": 0.46,
+   "type": "noul"
+  }
+ },
+ "e7c0afdf9f6cf1be": {
+  "violation": {
+   "noul": 0.17,
+   "type": "noul"
+  }
+ },
+ "e7d5fa2d01aa3b6c": {
+  "violation": {
+   "noul": 0.06,
+   "type": "noul"
+  }
+ },
+ "e88678421bc4e5f4": {
+  "violation": {
+   "noul": 0.76,
+   "type": "noul"
+  }
+ },
+ "e8fb3e80b679a4b2": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "e9dd1840dcaaefff": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "e9fa0474feef87b0": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "ebe8697a2cf4f572": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "ebec704a9d378d09": {
+  "violation": {
+   "noul": 0.32,
+   "type": "noul"
+  }
+ },
+ "ec361a7e150ec6ce": {
+  "violation": {
+   "noul": 0.34,
+   "type": "noul"
+  }
+ },
+ "ed29575f253a591e": {
+  "violation": {
+   "noul": 0.18,
+   "type": "noul"
+  }
+ },
+ "ede762d8fd26844e": {
+  "violation": {
+   "noul": 0.27,
+   "type": "noul"
+  }
+ },
+ "ee1d9381eaea1e35": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "ee4b3a2b56834eca": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "ee798e521237e037": {
+  "violation": {
+   "noul": 0.13,
+   "type": "noul"
+  }
+ },
+ "ee9cc86d0fe1bd94": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "ef17830115a95b1d": {
+  "violation": {
+   "noul": 0.78,
+   "type": "noul"
+  }
+ },
+ "efa5bb818b83d089": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "efd9df5a88af75d0": {
+  "violation": {
+   "noul": 0.41,
+   "type": "noul"
+  }
+ },
+ "f01b96a62007c92b": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "f038b738b10600db": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "f05841072ec77ec8": {
+  "violation": {
+   "noul": 0.13,
+   "type": "noul"
+  }
+ },
+ "f0659f1a18942919": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "f1607e36eccc74b0": {
+  "violation": {
+   "noul": 0.05,
+   "type": "noul"
+  }
+ },
+ "f1d3045c8739fdb6": {
+  "violation": {
+   "noul": 0.25,
+   "type": "noul"
+  }
+ },
+ "f32a182aa742f5fe": {
+  "violation": {
+   "noul": 0.62,
+   "type": "noul"
+  }
+ },
+ "f3bb3e2ac4dd9208": {
+  "violation": {
+   "noul": 0.86,
+   "type": "noul"
+  }
+ },
+ "f4235e2ce3aae8e9": {
+  "violation": {
+   "noul": 0.11,
+   "type": "noul"
+  }
+ },
+ "f42c5550493faca7": {
+  "violation": {
+   "noul": 0.2,
+   "type": "noul"
+  }
+ },
+ "f533f97992c3da03": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "f5381efe34929782": {
+  "violation": {
+   "noul": 0.08,
+   "type": "noul"
+  }
+ },
+ "f5e5e6efcbc41762": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "f61603a4333c4318": {
+  "violation": {
+   "noul": 0.65,
+   "type": "noul"
+  }
+ },
+ "f79f6eac0f89fd31": {
+  "violation": {
+   "noul": 0.69,
+   "type": "noul"
+  }
+ },
+ "f7a75de19b0eaa3a": {
+  "violation": {
+   "noul": 0.1,
+   "type": "noul"
+  }
+ },
+ "f7b48f6f9c88ae6b": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "f82fdd09adc048d2": {
+  "violation": {
+   "noul": 0.55,
+   "type": "noul"
+  }
+ },
+ "f83cf80be3378b66": {
+  "violation": {
+   "noul": 0.46,
+   "type": "noul"
+  }
+ },
+ "f9aaf51c9ee87722": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "f9b2cfc7acea5a7b": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "f9b55f7fe0074eb4": {
+  "violation": {
+   "noul": 0.41,
+   "type": "noul"
+  }
+ },
+ "f9f3dba09d11acd8": {
+  "violation": {
+   "noul": 0.21,
+   "type": "noul"
+  }
+ },
+ "fa2296f80737d8d6": {
+  "violation": {
+   "noul": 0.84,
+   "type": "noul"
+  }
+ },
+ "faf070e70b5047f6": {
+  "violation": {
+   "noul": 0.39,
+   "type": "noul"
+  }
+ },
+ "faf5bf5e5c4617c2": {
+  "violation": {
+   "noul": 0.02,
+   "type": "noul"
+  }
+ },
+ "fb5989f5e170d355": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "fb8a922e8ccacba5": {
+  "violation": {
+   "noul": 0.8,
+   "type": "noul"
+  }
+ },
+ "fb8b391b4ed0ca6d": {
+  "violation": {
+   "noul": 0.07,
+   "type": "noul"
+  }
+ },
+ "fc0ee272045a7739": {
+  "violation": {
+   "noul": 0.09,
+   "type": "noul"
+  }
+ },
+ "fc6b670906215cf2": {
+  "violation": {
+   "noul": 0.03,
+   "type": "noul"
+  }
+ },
+ "fc8cda14048ab869": {
+  "violation": {
+   "noul": 0.23,
+   "type": "noul"
+  }
+ },
+ "fce22b6aa299650c": {
+  "violation": {
+   "noul": 0.83,
+   "type": "noul"
+  }
+ },
+ "fd06a174ad326de1": {
+  "violation": {
+   "noul": 0.12,
+   "type": "noul"
+  }
+ },
+ "fd27cdccd476b016": {
+  "violation": {
+   "noul": 0.41,
+   "type": "noul"
+  }
+ },
+ "fdc561d799967aef": {
+  "violation": {
+   "noul": 0.46,
+   "type": "noul"
+  }
+ },
+ "fe0251cd4b0d1554": {
+  "violation": {
+   "noul": 0.79,
+   "type": "noul"
+  }
+ },
+ "fef87bac21328344": {
+  "violation": {
+   "noul": 0.37,
+   "type": "noul"
+  }
+ },
+ "ff78ad88749b83d9": {
+  "violation": {
+   "noul": 0.01,
+   "type": "noul"
+  }
+ },
+ "ff8b719cfc5bfa8c": {
+  "violation": {
+   "noul": 0.69,
+   "type": "noul"
+  }
+ },
+ "ff97142385f23872": {
+  "violation": {
+   "noul": 0.26,
+   "type": "noul"
+  }
+ },
+ "ff9904e51e008ec9": {
+  "violation": {
+   "noul": 0.47,
+   "type": "noul"
+  }
+ },
+ "ffb998a7119d551f": {
+  "violation": {
+   "noul": 0.84,
+   "type": "noul"
+  }
+ }
+}

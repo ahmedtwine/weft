@@ -1,6 +1,11 @@
 pub mod client;
 
+use std::env;
 use std::io::{self, Read, Write};
+
+use serde::{Deserialize, Serialize};
+
+pub const WEFT: &str = "WEFT";
 
 pub const JOIN: u8 = 0;
 pub const TURN: u8 = 1;
@@ -17,6 +22,21 @@ const MOST: usize = 1 << 28;
 
 #[derive(Debug)]
 pub struct Short;
+
+#[derive(Serialize, Deserialize)]
+pub struct Given {
+    pub diagram: String,
+    pub transport: String,
+    pub lib: String,
+    pub adapter: String,
+}
+
+impl Given {
+    pub fn read() -> Result<Given, String> {
+        let text = env::var(WEFT).map_err(|_| format!("{WEFT} is not set"))?;
+        serde_json::from_str(&text).map_err(|e| format!("{WEFT}: {e}"))
+    }
+}
 
 pub struct Writer(pub Vec<u8>);
 

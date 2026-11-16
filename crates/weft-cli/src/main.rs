@@ -2,9 +2,7 @@ mod spans;
 mod trace;
 
 use std::{
-    env, fs,
-    io,
-    iter,
+    env, fs, io, iter,
     path::{Path, PathBuf},
     process::{self, ExitCode},
     sync::{
@@ -17,8 +15,8 @@ use std::{
 
 use globset::{Glob, GlobSetBuilder};
 use ignore::WalkBuilder;
+use weft_orchestrator::{Outcome, Tally, view};
 use weft_parse::{Config, Diagram};
-use weft_simulator::{Outcome, Tally, view};
 
 use spans::{Ended, Spans};
 
@@ -64,7 +62,7 @@ fn files(only: &[String]) -> Result<(Vec<PathBuf>, Config), String> {
     let mut found: Vec<PathBuf> = WalkBuilder::new(".")
         .build()
         .filter_map(Result::ok)
-        .map(|e| e.into_path())
+        .map(ignore::DirEntry::into_path)
         .map(|p| p.strip_prefix(".").map(Path::to_path_buf).unwrap_or(p))
         .filter(|p| p.is_file() && set.is_match(p))
         .filter(|p| only.is_empty() || only.iter().any(|named| Path::new(named) == p))
@@ -94,7 +92,7 @@ impl Table {
 
     fn text(&self) -> Vec<String> {
         let line = |cells: Vec<&str>| format!("  {}", cells.join(" · "));
-        std::iter::once(line(self.head.iter().map(String::as_str).collect()))
+        iter::once(line(self.head.iter().map(String::as_str).collect()))
             .chain(self.rows.iter().map(|cells| {
                 line(
                     cells
@@ -301,9 +299,7 @@ fn tables(d: &Diagram, o: &Outcome) -> Vec<Table> {
             })
             .collect(),
     );
-    [
-        trace, case, tally, then, call, pool, invariant, code, drawn,
-    ]
+    [trace, case, tally, then, call, pool, invariant, code, drawn]
         .into_iter()
         .filter(|t| !t.rows.is_empty())
         .collect()
@@ -348,7 +344,7 @@ fn run(
     spans: &mut Option<Spans<'_>>,
 ) -> Result<Outcome, String> {
     let key = fs::canonicalize(file).map_err(|e| e.to_string())?;
-    weft_runner::run(config, d, file, key.to_str(), parent, &mut |event| {
+    weft_orchestrator::run(config, d, file, key.to_str(), parent, &mut |event| {
         if let Some(spans) = spans {
             spans.hear(event);
         }
@@ -366,21 +362,24 @@ fn checked(file: &Path, config: &Config, parent: Option<&str>) -> Checked {
     diagram(file, config)
         .and_then(|d| {
             let o = run(&d, file, config, parent, &mut Spans::new(&path, &d))?;
-            spans::ended(&path, Ended {
-                status: match o.failed {
-                    true => FAIL,
-                    false => PASS,
+            spans::ended(
+                &path,
+                Ended {
+                    status: match o.failed {
+                        true => FAIL,
+                        false => PASS,
+                    },
+                    test_cases: o.runs,
+                    steps: o.tally.iter().map(|t| t.steps).sum(),
+                    checks: checks(&o),
+                    check: o
+                        .failed
+                        .then(|| o.trace.last().and_then(|l| trace::brief(&l.evidence).pop()))
+                        .flatten(),
+                    took: started.elapsed(),
+                    test_case: o.failed.then_some(o.runs),
                 },
-                test_cases: o.runs,
-                steps: o.tally.iter().map(|t| t.steps).sum(),
-                checks: checks(&o),
-                check: o
-                    .failed
-                    .then(|| o.trace.last().and_then(|l| trace::brief(&l.evidence).pop()))
-                    .flatten(),
-                took: started.elapsed(),
-                test_case: o.failed.then_some(o.runs),
-            });
+            );
             Ok(Checked {
                 line: summary(&path, &d, config, &o, started.elapsed()),
                 checks: checks(&o),
@@ -408,9 +407,7 @@ fn report(only: &[String], parent: Option<&str>) -> Result<Report, String> {
                 s.spawn(|| {
                     iter::from_fn(|| {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        files
-                            .get(i)
-                            .map(|file| (i, checked(file, &config, parent)))
+                        files.get(i).map(|file| (i, checked(file, &config, parent)))
                     })
                     .collect::<Vec<_>>()
                 })
@@ -499,11 +496,11 @@ fn joined(adapter: &str, file: &str) -> Result<bool, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args == [weft_runner::REAP] {
-        weft_runner::reap();
+    if args == [weft_orchestrator::REAP] {
+        weft_orchestrator::reap();
         return ExitCode::SUCCESS;
     }
-    let run = weft_runner::guard().and_then(|()| match args.as_slice() {
+    let run = weft_orchestrator::guard().and_then(|()| match args.as_slice() {
         [flag, adapter, file] if flag == PARENT => joined(adapter, file),
         [ui, only @ ..] if ui == UI && only.iter().all(|named| !named.starts_with('-')) => {
             serve(only).map(|_| false)

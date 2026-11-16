@@ -119,7 +119,8 @@ static SITE: Dir = include_dir!("$CARGO_MANIFEST_DIR/site");
 const INDEX: &str = "index.html";
 const IDLE: Duration = Duration::from_secs(5);
 const SHOWN: Duration = Duration::from_millis(200);
-const EVENTS: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\n\r\n";
+const EVENTS: &str =
+    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\n\r\n";
 
 struct Log {
     rows: Mutex<(u64, Vec<String>)>,
@@ -136,7 +137,9 @@ struct Exporter;
 
 impl Log {
     fn held(&self) -> MutexGuard<'_, (u64, Vec<String>)> {
-        self.rows.lock().unwrap_or_else(|p| p.into_inner())
+        self.rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn say(&self, rows: String) {
@@ -155,7 +158,7 @@ impl Log {
                     log = self
                         .grown
                         .wait_timeout(log, IDLE)
-                        .unwrap_or_else(|p| p.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .0;
                 }
                 match log.0 == run {
@@ -179,7 +182,11 @@ fn shown(value: &Value) -> Json {
         Value::I64(i) => json!(i),
         Value::F64(f) => json!(f),
         Value::String(s) => json!(s.as_str()),
-        Value::Array(Array::String(all)) => json!(all.iter().map(|s| s.as_str()).collect::<Vec<_>>()),
+        Value::Array(Array::String(all)) => json!(
+            all.iter()
+                .map(opentelemetry::StringValue::as_str)
+                .collect::<Vec<_>>()
+        ),
         other => json!(other.to_string()),
     }
 }
@@ -193,11 +200,19 @@ fn row(span: &SpanData) -> Map<String, Json> {
     row.insert(NAME.into(), json!(span.name));
     row.insert(
         START.into(),
-        json!(span.start_time.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)),
+        json!(
+            span.start_time
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64)
+        ),
     );
     row.insert(
         DURATION.into(),
-        json!(span.end_time.duration_since(span.start_time).map_or(0.0, |d| d.as_secs_f64() * 1e3)),
+        json!(
+            span.end_time
+                .duration_since(span.start_time)
+                .map_or(0.0, |d| d.as_secs_f64() * 1e3)
+        ),
     );
     if let Status::Error { description } = &span.status {
         row.entry(CHECK).or_insert_with(|| json!(description));
@@ -207,10 +222,15 @@ fn row(span: &SpanData) -> Map<String, Json> {
 
 fn children(value: &Json) -> Vec<(String, &Json)> {
     match value {
-        Json::Object(fields) => fields.iter().map(|(key, item)| (key.clone(), item)).collect(),
-        Json::Array(items) if items.iter().any(|item| item.is_array() || item.is_object()) => {
-            items.iter().enumerate().map(|(i, item)| (format!("[{i}]"), item)).collect()
-        }
+        Json::Object(fields) => fields
+            .iter()
+            .map(|(key, item)| (key.clone(), item))
+            .collect(),
+        Json::Array(items) if items.iter().any(|item| item.is_array() || item.is_object()) => items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| (format!("[{i}]"), item))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -225,7 +245,12 @@ fn joined(path: &str, part: &str) -> String {
 fn text(value: &Json) -> String {
     match value {
         Json::String(text) => text.clone(),
-        Json::Array(items) if !items.is_empty() && items.iter().all(|item| !item.is_array() && !item.is_object()) => {
+        Json::Array(items)
+            if !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| !item.is_array() && !item.is_object()) =>
+        {
             items.iter().map(text).collect::<Vec<_>>().join(", ")
         }
         other => other.to_string(),
@@ -235,7 +260,9 @@ fn text(value: &Json) -> String {
 fn leaves(path: String, value: &Json, out: &mut Vec<(String, String)>) {
     match children(value).as_slice() {
         [] => out.push((path, text(value))),
-        all => all.iter().for_each(|(part, item)| leaves(joined(&path, part), item, out)),
+        all => all
+            .iter()
+            .for_each(|(part, item)| leaves(joined(&path, part), item, out)),
     }
 }
 
@@ -247,7 +274,8 @@ fn split(value: &Json) -> Vec<(String, String, String)> {
             .flat_map(|(item, child)| {
                 let mut out = Vec::new();
                 leaves(String::new(), child, &mut out);
-                out.into_iter().map(move |(field, value)| (item.clone(), field, value))
+                out.into_iter()
+                    .map(move |(field, value)| (item.clone(), field, value))
             })
             .collect(),
     }
@@ -261,24 +289,38 @@ fn moment(span: &SpanData, row: &Map<String, Json>) -> Map<String, Json> {
     };
     [FILE, TEST_CASE, CHECK, DIAGRAM, FLOW]
         .into_iter()
-        .map(|column| (column.to_string(), row.get(column).cloned().unwrap_or_default()))
+        .map(|column| {
+            (
+                column.to_string(),
+                row.get(column).cloned().unwrap_or_default(),
+            )
+        })
         .chain([
             (STEP.to_string(), json!(step)),
             (ACTION.to_string(), json!(action)),
-            (FAILED.to_string(), json!(matches!(span.status, Status::Error { .. }))),
+            (
+                FAILED.to_string(),
+                json!(matches!(span.status, Status::Error { .. })),
+            ),
         ])
         .collect()
 }
 
 fn states(moment: &Map<String, Json>, row: &Map<String, Json>) -> Vec<Json> {
-    let Some(state) = row.get(STATE).and_then(Json::as_str).and_then(|s| serde_json::from_str::<Map<String, Json>>(s).ok()) else {
+    let Some(state) = row
+        .get(STATE)
+        .and_then(Json::as_str)
+        .and_then(|s| serde_json::from_str::<Map<String, Json>>(s).ok())
+    else {
         return Vec::new();
     };
     state
         .iter()
         .flat_map(|(object, pairs)| {
             children(pairs).into_iter().flat_map(move |(key, value)| {
-                split(value).into_iter().map(move |(item, field, value)| (object.clone(), key.clone(), item, field, value))
+                split(value).into_iter().map(move |(item, field, value)| {
+                    (object.clone(), key.clone(), item, field, value)
+                })
             })
         })
         .map(|(object, key, item, field, value)| {
@@ -286,7 +328,16 @@ fn states(moment: &Map<String, Json>, row: &Map<String, Json>) -> Vec<Json> {
             row.remove(DIAGRAM);
             row.remove(FLOW);
             row.remove(FAILED);
-            row.extend([(OBJECT, object), (KEY, key), (ITEM, item), (FIELD, field), (VALUE, value)].map(|(c, v)| (c.to_string(), json!(v))));
+            row.extend(
+                [
+                    (OBJECT, object),
+                    (KEY, key),
+                    (ITEM, item),
+                    (FIELD, field),
+                    (VALUE, value),
+                ]
+                .map(|(c, v)| (c.to_string(), json!(v))),
+            );
             Json::Object(row)
         })
         .collect()
@@ -294,37 +345,61 @@ fn states(moment: &Map<String, Json>, row: &Map<String, Json>) -> Vec<Json> {
 
 impl SpanExporter for Exporter {
     async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
-        let (mut files, mut tests, mut steps, mut states) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut files, mut tests, mut steps, mut states) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for span in &batch {
             let mut row = row(span);
-            match (row.contains_key(STATUS), row.contains_key(STEP), row.get(TEST_CASE).cloned()) {
+            match (
+                row.contains_key(STATUS),
+                row.contains_key(STEP),
+                row.get(TEST_CASE).cloned(),
+            ) {
                 (true, _, _) => files.push(Json::Object(row)),
                 (false, true, _) if row.contains_key(STATE) => {
                     let moment = moment(span, &row);
                     states.extend(self::states(&moment, &row));
                     steps.push(Json::Object(moment));
                 }
-                (false, true, _) => {}
                 (false, false, Some(case)) => {
                     files.push(Json::Object(Map::from_iter([
                         (FILE.to_string(), row[FILE].clone()),
                         (STATUS.to_string(), json!(RUNNING)),
                     ])));
-                    row.insert(ID.into(), json!(format!("{}#{case}", row[FILE].as_str().unwrap_or_default())));
+                    row.insert(
+                        ID.into(),
+                        json!(format!("{}#{case}", row[FILE].as_str().unwrap_or_default())),
+                    );
                     tests.push(Json::Object(row));
                 }
-                (false, false, None) => {}
+                _ => {}
             }
         }
-        let tables = [(FILES.0, files), (TESTS.0, tests), (STEPS_TABLE.0, steps), (STATES.0, states)];
-        LOG.say(Json::Object(tables.map(|(name, rows)| (name.to_string(), Json::Array(rows))).into_iter().collect()).to_string());
+        let tables = [
+            (FILES.0, files),
+            (TESTS.0, tests),
+            (STEPS_TABLE.0, steps),
+            (STATES.0, states),
+        ];
+        LOG.say(
+            Json::Object(
+                tables
+                    .map(|(name, rows)| (name.to_string(), Json::Array(rows)))
+                    .into_iter()
+                    .collect(),
+            )
+            .to_string(),
+        );
         Ok(())
     }
 }
 
 pub fn processor() -> BatchSpanProcessor {
     BatchSpanProcessor::builder(Exporter)
-        .with_batch_config(BatchConfigBuilder::default().with_scheduled_delay(SHOWN).build())
+        .with_batch_config(
+            BatchConfigBuilder::default()
+                .with_scheduled_delay(SHOWN)
+                .build(),
+        )
         .build()
 }
 
@@ -336,9 +411,23 @@ pub fn clear() {
 
 fn schema() -> String {
     let table = |(name, columns): (&str, &[(&str, &str)])| {
-        (name.to_string(), Json::Object(columns.iter().map(|(c, t)| (c.to_string(), json!(t))).collect()))
+        (
+            name.to_string(),
+            Json::Object(
+                columns
+                    .iter()
+                    .map(|(c, t)| (c.to_string(), json!(t)))
+                    .collect(),
+            ),
+        )
     };
-    Json::Object(Map::from_iter([table(FILES), table(TESTS), table(STEPS_TABLE), table(STATES)])).to_string()
+    Json::Object(Map::from_iter([
+        table(FILES),
+        table(TESTS),
+        table(STEPS_TABLE),
+        table(STATES),
+    ]))
+    .to_string()
 }
 
 fn kind(path: &str) -> &'static str {
@@ -369,7 +458,11 @@ fn respond(mut stream: TcpStream, opened: &(impl Fn() + Sync)) -> io::Result<()>
         }
         "" => {
             opened();
-            ("200 OK", kind(INDEX), SITE.get_file(INDEX).map_or(&[], |f| f.contents()))
+            (
+                "200 OK",
+                kind(INDEX),
+                SITE.get_file(INDEX).map_or(&[], |f| f.contents()),
+            )
         }
         _ => match SITE.get_file(path) {
             Some(file) => ("200 OK", kind(path), file.contents()),

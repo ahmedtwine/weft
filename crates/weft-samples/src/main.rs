@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use weft_samples::Result;
 use weft_samples::artifact::{Artifact, example};
 use weft_samples::machine::{Alternate, Machine};
+use weft_samples::model::Model;
 
 const USAGE: &str = "usage: weft-samples check <file> <invariants.json> | narrow <file>";
 
@@ -18,7 +19,7 @@ fn asked(_: &str, alternate: &Alternate) -> Option<bool> {
     std::io::stdin()
         .lock()
         .lines()
-        .map_while(|line| line.ok())
+        .map_while(std::result::Result::ok)
         .find_map(|line| match line.trim() {
             "r" => Some(true),
             "a" => Some(false),
@@ -27,7 +28,7 @@ fn asked(_: &str, alternate: &Alternate) -> Option<bool> {
 }
 
 fn narrow(file: &Path) -> Result<()> {
-    let artifact = Artifact::open(file)?;
+    let artifact = Artifact::open(file, Model::open()?)?;
     let machines = artifact.narrow(&example(&file.with_extension("json"))?, asked)?;
     let found: BTreeMap<String, String> = machines
         .iter()
@@ -45,11 +46,13 @@ fn main() -> ExitCode {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["check", file, invariants] => Artifact::open(Path::new(file)).and_then(|artifact| {
-            artifact
-                .violations(&example(Path::new(invariants))?.invariants)
-                .map(|_| ())
-        }),
+        ["check", file, invariants] => Model::open()
+            .and_then(|model| Artifact::open(Path::new(file), model))
+            .and_then(|artifact| {
+                artifact
+                    .violations(&example(Path::new(invariants))?.invariants)
+                    .map(|_| ())
+            }),
         ["narrow", file] => narrow(Path::new(file)),
         _ => Err(USAGE.into()),
     };

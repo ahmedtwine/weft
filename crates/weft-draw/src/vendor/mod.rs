@@ -1,1 +1,1 @@
-pub mod lucide;
+pub(crate) mod lucide;

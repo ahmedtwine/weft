@@ -1,17 +1,12 @@
-mod hub;
-mod schema;
-mod shape;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
-use weft_hegel::{Case, Engine, Halt, INTERESTING, INVALID, OVERRUN, VALID};
+use weft_hegel::{Case, Engine, Generator, Halt, INTERESTING, INVALID, OVERRUN, VALID};
 use weft_parse::{Diagram, Ran, Span, State, shown};
 
+use crate::hub::Remote;
 use crate::shape::{Field, field, item};
-
-pub use hub::{Hub, Peer, Remote, Session};
 
 #[derive(Clone, Debug)]
 pub struct Hop {
@@ -25,17 +20,15 @@ pub struct Hop {
     pub sent: usize,
     pub answered: usize,
 }
-pub use weft_hegel::Generator;
-
 const TRIES: usize = 4;
 const START: &str = "start";
 
-pub struct Start {
+pub(crate) struct Start {
     pub line: usize,
     pub input: Option<Generator>,
 }
 
-pub struct Action {
+pub(crate) struct Action {
     pub object: String,
     pub verb: String,
     pub line: usize,
@@ -43,39 +36,40 @@ pub struct Action {
 }
 
 #[derive(Default)]
-pub struct Hello {
+pub(crate) struct Hello {
     pub schemas: Vec<(String, Json)>,
     pub start: Vec<Start>,
     pub actions: Vec<Action>,
 }
 
-pub struct Call<'a> {
+pub(crate) struct Call<'a> {
     pub line: usize,
     pub input: &'a Json,
 }
 
-pub enum Turn<'a> {
+pub(crate) enum Turn<'a> {
     Start(&'a [Call<'a>]),
-    Run(&'a str, &'a str, Call<'a>),
+    Run(&'a str, Call<'a>),
     Read,
     Done,
 }
 
-pub enum Report {
+pub(crate) enum Report {
     State(State),
     Thrown(String),
     Refused(String),
 }
 
-pub enum Ask {
+pub(crate) enum Ask {
     Generate(Arc<Generator>),
     PoolAdd(String, Json),
     PoolGenerate(String, bool),
     Target(f64, String),
 }
 
-pub type Answer<'a> = dyn FnMut(Ask) -> Result<Option<Json>, Halt> + 'a;
+pub(crate) type Answer<'a> = dyn FnMut(Ask) -> Result<Option<Json>, Halt> + 'a;
 
+#[derive(Clone, Copy)]
 pub enum Event<'a> {
     Hegel(&'a str),
     Actions(&'a [(String, String)]),
@@ -87,16 +81,6 @@ pub enum Event<'a> {
 }
 
 pub type Stream<'a> = dyn FnMut(Event) + 'a;
-
-pub trait Member {
-    fn hello(&self) -> &Hello;
-    fn turn(&mut self, turn: &Turn, answer: &mut Answer) -> Result<Report, Halt>;
-    fn finish(&mut self) -> Result<Ran, String>;
-    fn hops(&mut self) -> Vec<Hop> {
-        Vec::new()
-    }
-}
-
 
 #[derive(Clone)]
 pub struct Line {
@@ -197,7 +181,7 @@ enum Stepped {
     Failed(String),
 }
 
-type Members<'m> = [Box<dyn Member + 'm>];
+type Members = [Remote];
 
 impl Call<'_> {
     fn json(&self) -> Json {
@@ -206,12 +190,12 @@ impl Call<'_> {
 }
 
 impl Turn<'_> {
-    pub fn json(&self) -> String {
+    pub(crate) fn json(&self) -> String {
         match self {
             Turn::Start(calls) => {
                 json!({ "step": START, "calls": calls.iter().map(Call::json).collect::<Vec<_>>() })
             }
-            Turn::Run(verb, _, call) => json!({ "step": verb, "calls": [call.json()] }),
+            Turn::Run(verb, call) => json!({ "step": verb, "calls": [call.json()] }),
             Turn::Read => json!({ "calls": [] }),
             Turn::Done => json!({ "done": true }),
         }
@@ -316,7 +300,7 @@ fn merged(mut state: State, part: State) -> State {
 
 impl Run<'_> {
     fn heard(&mut self, case: &Case, members: &mut Members) -> Result<Vec<Hop>, Halt> {
-        let hops: Vec<Hop> = members.iter_mut().flat_map(|m| m.hops()).collect();
+        let hops: Vec<Hop> = members.iter_mut().flat_map(Remote::hops).collect();
         for hop in &hops {
             let route = hop.path.split(['/', '?']).nth(1).unwrap_or_default();
             let call = format!("{} → {} {} /{route}", hop.from, hop.to, hop.method);
@@ -508,7 +492,7 @@ impl Run<'_> {
                 line: members[owner].hello().actions[action].line,
                 input: &drawn,
             };
-            report = members[owner].turn(&Turn::Run(&verb, &object, call), &mut |ask| {
+            report = members[owner].turn(&Turn::Run(&verb, call), &mut |ask| {
                 answered(case, &mut self.counts.pools, &mut asked, ask)
             })?;
             line.input = asked.input;
@@ -542,11 +526,7 @@ impl Run<'_> {
         Ok(Stepped::Next)
     }
 
-    fn stepped(
-        &mut self,
-        case: &mut Case,
-        members: &mut Members,
-    ) -> Result<Option<String>, Halt> {
+    fn stepped(&mut self, case: &mut Case, members: &mut Members) -> Result<Option<String>, Halt> {
         self.machine = false;
         let mut real = match self.started(case, members)? {
             Ok(real) => real,
@@ -630,7 +610,7 @@ impl Run<'_> {
     }
 }
 
-pub fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
+pub(crate) fn listed(ran: Ran, tally: &[Tally]) -> Result<Ran, String> {
     let verb = |t: &Tally| t.step.split(' ').next().unwrap_or_default().to_string();
     let spans = ran
         .actions
@@ -758,7 +738,7 @@ fn owners(d: &Diagram, members: &Members) -> Result<Vec<Step>, String> {
     }
 }
 
-pub fn simulate<'a>(
+pub(crate) fn simulate<'a>(
     d: &'a Diagram,
     members: &mut Members,
     cases: u64,
@@ -804,7 +784,11 @@ pub fn simulate<'a>(
         order: Vec::new(),
         stream,
     };
-    let actions: Vec<(String, String)> = run.steps.iter().map(|s| (s.verb.clone(), s.object.clone())).collect();
+    let actions: Vec<(String, String)> = run
+        .steps
+        .iter()
+        .map(|s| (s.verb.clone(), s.object.clone()))
+        .collect();
     (run.stream)(Event::Actions(&actions));
     let mut engine = Engine::start(cases, key)?;
     loop {
@@ -823,7 +807,7 @@ pub fn simulate<'a>(
     }
     let rans = members
         .iter_mut()
-        .map(|m| m.finish())
+        .map(Remote::finish)
         .collect::<Result<Vec<Ran>, String>>()?;
     let verb = |t: &Tally| t.step.split(' ').next().unwrap_or_default().to_string();
     if let Some((refused, causes)) = [START.to_string()]
