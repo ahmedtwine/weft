@@ -1,20 +1,12 @@
 # weft
 
-A distributed runner for [Hegel](https://hegel.dev) property tests
+A DSL for modeling software state space and invariants for [Hegel](https://hegel.dev) property testing, with a distributed runner.
 
 ## Install
 
 ```sh
-bun add -d git+ssh://git@github.com/ahmedtwine/weft.git#v0.7.0
+bun add -d git+https://github.com/ahmedtwine/weft.git#v0.7.0
 ```
-
-## Run the examples
-
-```sh
-mise trust && mise install
-mise //examples:test      # build weft and run the examples
-```
-
 
 ## Example Tests
 
@@ -66,13 +58,11 @@ func Withdraw(given Amount) {
 }
 ```
 
-
 ```text
 ✕ tests/bank.go.weft.kdl · bank.balance = -1 < 0
   0 · start · - · bank: balance = 0 · -
   1 · withdraw to=bank · amount=1 · bank: balance = -1 · bank.balance = -1 < 0
 ```
-
 
 ## Single Test with Multiple Language Runners
 
@@ -99,7 +89,6 @@ action "place_order" {
   writes "orders.orders"
 }
 ```
-
 
 ```mermaid
 flowchart TB
@@ -139,10 +128,8 @@ flowchart TB
 
 ## Dashboard
 
-`weft --ui [<file>…]` serves the dashboard at http://127.0.0.1:7357:
-
-                                                              |
+`weft --ui [<file>…]` serves the dashboard at http://127.0.0.1:7357.
 
 ## License
 
-MIT. `mise run notices` writes `THIRD-PARTY-NOTICES.md`, the license of each part weft ships: Hegel and each crate it links, the Lucide icons, Perspective and Pele.
+MIT. Third-party licenses are in `THIRD-PARTY-NOTICES.md`.
