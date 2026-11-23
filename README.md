@@ -10,7 +10,7 @@ bun add -d git+https://github.com/ahmedtwine/weft.git#v0.7.0
 
 ## Example Tests
 
-`examples/tests/bank.go.weft.kdl`:
+`examples/tests/bank.go.weft.kdl` defines a state machine test and binds it to the Go implementation:
 
 ```kdl
 setup {
@@ -42,7 +42,7 @@ impl "go" {
 }
 ```
 
-`examples/services/go/bank/bank.go` is the app, plain Go code:
+`examples/services/go/bank/bank.go` contains the application logic in plain Go:
 
 ```go
 func Reset() { bank = Bank{} }
@@ -66,16 +66,16 @@ func Withdraw(given Amount) {
 
 ## Single Test with Multiple Language Runners
 
-`tests/parcel.weft.kdl` runs the 4 example runner:
+`tests/parcel.weft.kdl` runs the 4 example runners together in a single test:
 
 | App         | Runner     | Does                                                                                   |
 | ----------- | ---------- | -------------------------------------------------------------------------------------- |
-| `orders`    | Go         | Keeps each order in Redis in a testcontainer                                           |
-| `addresses` | Rust       | Keeps the address book                                                                 |
-| `shop`      | Python     | Signs up customers, adds addresses, places orders, and changes the address of an order |
-| `courier`   | TypeScript | Ships an order to its address                                                          |
+| `orders`    | Go         | Stores each order in Redis inside a testcontainer                                      |
+| `addresses` | Rust       | Stores the address book                                                                |
+| `shop`      | Python     | Signs up customers, adds addresses, places orders, and changes the address on an order |
+| `courier`   | TypeScript | Ships an order to its destination address                                              |
 
-Each app reaches another app at `WEFT_<MODULE>_URL`. weft forwards each request and records it as a hop:
+Each application calls the others through `WEFT_<MODULE>_URL`. Weft forwards every request and records it as a hop:
 
 ```kdl
 action "place_order" {
