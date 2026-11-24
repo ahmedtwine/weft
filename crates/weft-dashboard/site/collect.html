@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>weft collector</title>
+<link rel="stylesheet" href="vendor/viewer/css/icons.css">
+<link rel="stylesheet" href="vendor/viewer/css/intl.css">
+<link rel="stylesheet" href="vendor/viewer/css/pro.css">
+<link rel="stylesheet" href="vendor/viewer/css/pro-dark.css">
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1c1d; color: #c5c9d0; font: 11px ui-monospace, monospace; overflow: hidden; }
+  body { display: grid; grid-template-rows: var(--split, 50%) 6px 1fr; }
+  #map { position: relative; min-height: 0; cursor: grab; }
+  #map svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #divider { background: #2c2e31; cursor: row-resize; }
+  #divider:hover { background: #4a4f57; }
+  perspective-viewer { min-height: 0; }
+  .box rect { fill: #17311f; stroke: #2f7a46; rx: 5; }
+  .box.external rect { fill: #182235; stroke: #3d5f9a; stroke-dasharray: 4 3; }
+  .box.failing rect { stroke: #c04848; }
+  .box.container rect { fill: #232427; stroke: #3b3f46; }
+  .box.container.external rect { fill: none; }
+  .box.selected > rect { stroke: #fff; stroke-width: 2; }
+  .box text { fill: #e8eaed; pointer-events: none; }
+  .box text.detail { fill: #8a9099; font-size: 10px; }
+  .box text.more { fill: #8a9099; }
+  .box { cursor: pointer; }
+  .edge path { fill: none; stroke: #6b717a; marker-end: url(#arrow); }
+  .edge.failing path { stroke: #c04848; }
+  .edge.faint { opacity: 0.15; }
+  .edge:hover path, .box:hover > rect { stroke: #fff; }
+  weft-flame { position: relative; display: flex; flex-direction: column; height: 100%; overflow: hidden; color: #c5c9d0; font: 11px ui-monospace, monospace; }
+  weft-flame .head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; padding: 6px 8px; color: #8a9099; }
+  weft-flame .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  weft-flame button { font: inherit; color: #c5c9d0; background: #2c2e31; border: 1px solid #3b3f46; border-radius: 3px; padding: 2px 8px; cursor: pointer; }
+  weft-flame button.on { color: #fff; border-color: #8a9099; background: #3b3f46; }
+  weft-flame .body { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; }
+  weft-flame canvas { display: block; cursor: pointer; }
+  weft-flame [hidden] { display: none !important; }
+  weft-flame .row { display: grid; grid-template-columns: minmax(0, 1fr) 44px 64px 40px 72px; gap: 8px; align-items: center; padding: 3px 8px; border-bottom: 1px solid #2c2e31; cursor: pointer; }
+  weft-flame .row:hover { background: #2c2e31; }
+  weft-flame .row.header { color: #8a9099; cursor: default; position: sticky; top: 0; background: #1f2023; }
+  weft-flame .row > span:not(.name) { text-align: right; white-space: nowrap; }
+  weft-flame .row > span:first-child { text-align: left; }
+  weft-flame .name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  weft-flame .name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  weft-flame .name > span.app { flex: 0 1000 auto; min-width: 0; color: #6b717a; }
+  weft-flame .caret { display: inline-block; flex: none; width: 10px; font-style: normal; color: #8a9099; }
+  weft-flame .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  weft-flame .bad { color: #e06c6c; }
+  weft-flame .slowest { color: #7fa7d9; }
+  weft-flame .slowest:hover { text-decoration: underline; }
+  weft-flame .drawer { position: absolute; inset: 0 0 0 auto; width: min(520px, 92%); overflow: auto; padding: 6px 10px; background: #1f2023; border-left: 1px solid #3b3f46; box-shadow: -10px 0 18px rgb(0 0 0 / 35%); transform: translateX(100%); transition: transform 160ms ease; }
+  weft-flame .drawer.open { transform: none; }
+  weft-flame .drawer .top { display: flex; gap: 8px; align-items: center; justify-content: space-between; position: sticky; top: -6px; padding: 4px 0; background: #1f2023; color: #e8eaed; }
+  weft-flame .row.picked, weft-flame .row.picked:hover { background: #34373c; }
+  weft-flame .section + .section { margin-top: 8px; }
+  weft-flame .title { color: #8a9099; margin-bottom: 2px; }
+  weft-flame .pair { display: grid; grid-template-columns: minmax(120px, 30%) 1fr; gap: 8px; padding: 1px 0; }
+  weft-flame .key { color: #8a9099; overflow-wrap: anywhere; }
+  weft-flame .value { color: #e8eaed; overflow-wrap: anywhere; white-space: pre-wrap; margin: 0; font: inherit; }
+</style>
+</head>
+<body>
+<div id="map"><svg><defs><marker id="arrow" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8a9099"/></marker></defs><g id="scene"></g></svg></div>
+<div id="divider"></div>
+<script type="module">
+import "./vendor/viewer/cdn/perspective-viewer.js";
+import "./vendor/viewer-datagrid/cdn/perspective-viewer-datagrid.js";
+import perspective from "./vendor/client/cdn/perspective.js";
+import "./vendor/elk/elk.bundled.js";
+
+const OPTIONS = { edges: { index: "edge" }, sources: { index: "service" }, traces: { index: "key" } };
+const LIMIT = 200000;
+const CHAR = 6.7;
+const THEME = "Pro Dark";
+const SVG = "http://www.w3.org/2000/svg";
+const STREAM_COLUMNS = ["time", "kind", "what", "peer", "code", "status", "duration_ms", "trace_id"];
+const FLAME_COLUMNS = ["trace", "span_id", "parent", "service", "operation", "kind", "status", "link", "offset_ms", "duration_ms", "self_ms", "skew_ms", "attributes", "events", "symbol", "source", "via", "chain"];
+const SIDES = [["request", /^(http\.request\.|url\.|http\.(method|url|target|scheme)$|rpc\.request\.)/], ["response", /^(http\.response\.|http\.status_code$|rpc\.response\.)/]];
+const ROW = 18;
+const HUES = [140, 210, 35, 280, 175, 330, 95, 250];
+const KINDS = { server: 140, consumer: 140, client: 210, producer: 35, internal: 230, unspecified: 230 };
+const MODES = { calls: "calls", spans: "all spans" };
+const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+const ms = (value) => (value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${value.toFixed(1)} ms`);
+
+function forest(columns, shown) {
+  const nodes = new Map();
+  const roots = [];
+  (columns.span_id ?? []).forEach((span, i) => nodes.set(`${columns.trace[i]}|${span}`, { i, children: [] }));
+  for (const node of nodes.values()) {
+    const parent = columns.parent[node.i] && nodes.get(`${columns.trace[node.i]}|${columns.parent[node.i]}`);
+    (parent ? parent.children : roots).push(node);
+  }
+  const top = { children: [], folded: 0 };
+  const project = (node, into) => {
+    if (!shown(node.i, into.i)) {
+      into.folded += columns.self_ms[node.i];
+      node.children.forEach((child) => project(child, into));
+      return;
+    }
+    const kept = { i: node.i, children: [], folded: 0 };
+    into.children.push(kept);
+    node.children.forEach((child) => project(child, kept));
+  };
+  roots.forEach((root) => project(root, top));
+  const start = (node) => columns.offset_ms[node.i];
+  const order = (node) => {
+    node.children.sort((a, b) => start(a) - start(b));
+    node.children.forEach(order);
+  };
+  order(top);
+  return top.children;
+}
+
+function timeline(columns, roots) {
+  const frames = [];
+  const walk = (node, depth) => {
+    const i = node.i;
+    const [from, to] = [columns.offset_ms[i], columns.offset_ms[i] + columns.duration_ms[i]];
+    frames.push({
+      i, from, to, depth, row: frames.length, service: columns.service[i], kind: columns.kind[i], label: columns.operation[i], error: columns.status[i] === "error",
+      tip: `${columns.service[i]} · ${columns.operation[i]}\nstart ${ms(from)} · ${ms(columns.duration_ms[i])} · self ${ms(columns.self_ms[i])}\nclick for details, double-click to zoom`,
+    });
+    node.children.forEach((child) => walk(child, depth + 1));
+  };
+  roots.forEach((root) => walk(root, 0));
+  const from = Math.min(...frames.map((frame) => frame.from));
+  const to = Math.max(...frames.map((frame) => frame.to));
+  return { frames, domain: [from, to], head: `trace ${columns.trace[0].slice(0, 8)} · ${plural(frames.length, "span")} · ${ms(to - from)}` };
+}
+
+function calltree(columns, roots, traces) {
+  const top = { children: new Map(), count: traces, duration: 0 };
+  const add = (into, node) => {
+    const i = node.i;
+    const key = `${columns.service[i]}\u0000${columns.kind[i]}\u0000${columns.operation[i]}`;
+    if (!into.children.has(key)) into.children.set(key, { key, service: columns.service[i], kind: columns.kind[i], label: columns.operation[i], children: new Map(), count: 0, errors: 0, duration: 0, traces: new Map(), sample: i });
+    const frame = into.children.get(key);
+    if (columns.duration_ms[i] > columns.duration_ms[frame.sample]) frame.sample = i;
+    frame.count += 1;
+    frame.duration += columns.duration_ms[i];
+    frame.errors += columns.status[i] === "error" ? 1 : 0;
+    frame.traces.set(columns.trace[i], Math.max(frame.traces.get(columns.trace[i]) ?? 0, columns.duration_ms[i]));
+    node.children.forEach((child) => add(frame, child));
+  };
+  roots.forEach((root) => add(top, root));
+  top.duration = [...top.children.values()].reduce((sum, frame) => sum + frame.duration, 0);
+  return { tree: top, head: `${plural(traces, "trace")} · ${plural(top.children.size, "entry operation")}` };
+}
+
+function wrapped(frame) {
+  const links = [frame];
+  for (let at = frame; at.children.size === 1; ) {
+    const [next] = at.children.values();
+    if (next.service !== frame.service || next.count !== at.count || next.duration < at.duration * 0.95) break;
+    links.push(next);
+    at = next;
+  }
+  return links;
+}
+
+const tag = (name, attributes = {}, text = "") => {
+  const created = document.createElement(name);
+  Object.entries(attributes).forEach(([key, value]) => created.setAttribute(key, value));
+  created.textContent = text;
+  return created;
+};
+
+const parsed = (text) => {
+  try {
+    return JSON.parse(text || "null");
+  } catch {
+    return null;
+  }
+};
+
+const BasePlugin = customElements.get("perspective-viewer-plugin");
+class Flame extends BasePlugin {
+  get_static_config() {
+    return { name: "Flame", category: "Trace", select_mode: "toggle", min_config_columns: 0 };
+  }
+
+  async draw(view) {
+    this.zoom = null;
+    this.picked = null;
+    await this.update(view);
+  }
+
+  async update(view) {
+    this.columns = await view.to_columns();
+    this.build();
+  }
+
+  build() {
+    const all = this.columns ?? {};
+    this.services = [...new Set(all.service ?? [])].sort();
+    if (!this.services.includes(this.only)) this.only = null;
+    if (!(all.trace ?? []).includes(this.trace)) this.trace = null;
+    this.mode ??= "calls";
+    this.open ??= new Set();
+    const keep = (all.service ?? []).map((service, i) => (!this.only || service === this.only) && (!this.trace || all.trace[i] === this.trace));
+    const columns = Object.fromEntries(Object.entries(all).map(([name, values]) => [name, values.filter((_, i) => keep[i])]));
+    const traces = new Set(columns.trace ?? []).size;
+    const repeated = (i, above) => above !== undefined && columns.kind[i] === columns.kind[above] && columns.service[i] === columns.service[above];
+    const roots = forest(columns, (i, above) => this.mode === "spans" || (columns.kind[i] !== "internal" && !repeated(i, above)));
+    this.view = columns;
+    this.chart = !roots.length ? null : traces === 1 ? timeline(columns, roots) : calltree(columns, roots, traces);
+    this.paint();
+  }
+
+  async resize() {
+    this.paint();
+  }
+
+  async clear() {
+    this.chart = null;
+    this.paint();
+  }
+
+  restyle() {}
+
+  restore() {}
+
+  delete() {}
+
+  pick(trace) {
+    this.trace = trace;
+    this.zoom = null;
+    this.picked = null;
+    this.build();
+  }
+
+  mount() {
+    this.innerHTML = `<div class="head"><span class="chips"></span><span class="note"></span></div><div class="body"><canvas></canvas><div class="tree"></div></div><div class="drawer"></div>`;
+    this.canvas = this.querySelector("canvas");
+    this.querySelector(".chips").addEventListener("click", (event) => {
+      const chip = event.target.closest("button");
+      if (!chip) return;
+      if (chip.dataset.back) return this.pick(null);
+      if (chip.dataset.mode) this.mode = chip.dataset.mode;
+      else this.only = chip.dataset.service || null;
+      this.zoom = null;
+      this.build();
+    });
+    this.querySelector(".tree").addEventListener("click", (event) => {
+      const row = event.target.closest(".row[data-key]");
+      if (!row) return;
+      if (event.target.closest(".slowest")) return this.pick(row.dataset.trace);
+      if (this.open.has(row.dataset.key)) this.open.delete(row.dataset.key);
+      else this.open.add(row.dataset.key);
+      this.picked = row.dataset.span;
+      this.paint();
+    });
+    this.querySelector(".drawer").addEventListener("click", (event) => {
+      if (!event.target.closest("[data-close]")) return;
+      this.picked = null;
+      this.paint();
+    });
+    this.canvas.addEventListener("mousemove", (event) => {
+      this.canvas.title = this.hit(event)?.tip ?? "";
+    });
+    this.canvas.addEventListener("click", (event) => {
+      const frame = this.hit(event);
+      this.picked = frame ? this.id(frame.i) : null;
+      this.paint();
+    });
+    this.canvas.addEventListener("dblclick", (event) => {
+      const frame = this.hit(event);
+      this.zoom = frame && frame.depth > 0 ? [frame.from, frame.to] : null;
+      this.paint();
+    });
+  }
+
+  hit(event) {
+    const box = this.canvas.getBoundingClientRect();
+    const [x, y] = [event.clientX - box.left, event.clientY - box.top];
+    return x >= 0 && x <= box.width ? this.hits?.find((hit) => y >= hit.y && y < hit.y + ROW)?.frame : undefined;
+  }
+
+  id(i) {
+    return `${this.view.trace[i]}|${this.view.span_id[i]}`;
+  }
+
+  named(frame) {
+    return this.only || this.services.length < 2 ? frame.label : `${frame.service} · ${frame.label}`;
+  }
+
+  tint(service, kind) {
+    const hue = this.only || this.services.length < 2 ? KINDS[kind] : HUES[this.services.indexOf(service) % HUES.length];
+    return `hsl(${hue}, ${kind === "internal" ? 8 : 38}%, 32%)`;
+  }
+
+  paint() {
+    if (!this.canvas) this.mount();
+    const chip = (text, on, data) => {
+      const button = tag("button", {}, text);
+      Object.assign(button.dataset, data);
+      button.classList.toggle("on", on);
+      return button;
+    };
+    const single = Boolean(this.chart?.frames);
+    const choices = (this.services ?? []).length > 1 ? ["", ...this.services] : [];
+    this.querySelector(".chips").replaceChildren(
+      ...(this.trace ? [chip("← all traces", false, { back: "1" })] : []),
+      ...Object.entries(MODES).map(([mode, text]) => chip(text, this.mode === mode, { mode })),
+      ...choices.map((service) => chip(service || "all apps", (this.only ?? "") === service, { service })),
+    );
+    this.querySelector(".note").textContent = this.chart?.head ?? "no traces yet";
+    this.canvas.hidden = !single;
+    this.querySelector(".tree").hidden = single;
+    if (single) this.timeline();
+    else this.tree();
+    this.detail();
+  }
+
+  tree() {
+    const host = this.querySelector(".tree");
+    if (!this.chart) return host.replaceChildren();
+    const rows = [tag("div", { class: "row header" })];
+    ["operation", "calls", "avg", "errors", "slowest"].forEach((text) => rows[0].append(tag("span", {}, text)));
+    const walk = (parent, depth, path) => {
+      for (const frame of [...parent.children.values()].sort((a, b) => b.duration - a.duration)) {
+        const links = wrapped(frame);
+        const last = links.at(-1);
+        const key = `${path}/${frame.key}`;
+        const [trace, slowest] = [...frame.traces].reduce((best, entry) => (entry[1] > best[1] ? entry : best), [null, -1]);
+        const share = Math.min(1, frame.duration / Math.max(parent.duration, 1e-9));
+        const stats = [`total ${ms(frame.duration)}`, depth ? `${(frame.count / parent.count).toFixed(1)}× per parent call` : "", `${(share * 100).toFixed(0)}% of parent`].filter(Boolean).join(" · ");
+        const span = this.id(frame.sample);
+        const row = tag("div", { class: span === this.picked ? "row picked" : "row", "data-key": key, "data-span": span, "data-trace": trace ?? "", title: `${frame.service} · ${frame.kind}\n${stats}\n${links.map((link) => link.label).join("\n → ")}` });
+        const name = tag("span", { class: "name", style: `padding-left: ${depth * 14}px` });
+        name.append(tag("i", { class: "caret" }, last.children.size ? (this.open.has(key) ? "▾" : "▸") : ""), tag("i", { class: "dot", style: `background: ${frame.errors ? "hsl(0, 55%, 42%)" : this.tint(frame.service, frame.kind)}` }), tag("span", {}, frame.label));
+        if (this.named(frame) !== frame.label) name.append(tag("span", { class: "app" }, frame.service));
+        row.append(
+          name,
+          tag("span", {}, String(frame.count)),
+          tag("span", {}, ms(frame.duration / frame.count)),
+          tag("span", { class: frame.errors ? "bad" : "" }, frame.errors ? String(frame.errors) : ""),
+          tag("span", { class: "slowest" }, trace ? `↗ ${ms(slowest)}` : ""),
+        );
+        rows.push(row);
+        if (this.open.has(key)) walk(last, depth + 1, key);
+      }
+    };
+    walk(this.chart.tree, 0, "");
+    host.replaceChildren(...rows);
+  }
+
+  timeline() {
+    const body = this.querySelector(".body");
+    const context = this.canvas.getContext("2d");
+    const { frames, domain } = this.chart;
+    const width = body.clientWidth;
+    const height = frames.length * ROW;
+    const ratio = devicePixelRatio || 1;
+    Object.assign(this.canvas, { width: width * ratio, height: height * ratio });
+    Object.assign(this.canvas.style, { width: `${width}px`, height: `${height}px` });
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.font = "11px ui-monospace, monospace";
+    context.textBaseline = "middle";
+    const names = Math.min(360, Math.floor(width * 0.4));
+    const [left, right] = [names + 8, width - 8];
+    const [low, high] = this.zoom ?? domain;
+    const scale = (right - left) / Math.max(high - low, 1e-9);
+    const clip = (text, room) => (text.length > room ? `${text.slice(0, Math.max(room - 1, 0))}…` : text);
+    this.hits = [];
+    for (const frame of frames) {
+      const y = frame.row * ROW;
+      const tint = frame.error ? "hsl(0, 55%, 42%)" : this.tint(frame.service, frame.kind);
+      if (this.id(frame.i) === this.picked) {
+        context.fillStyle = "#34373c";
+        context.fillRect(0, y, width, ROW);
+      }
+      const indent = 6 + frame.depth * 12;
+      context.fillStyle = tint;
+      context.fillRect(indent, y + 5, 8, 8);
+      context.fillStyle = "#e8eaed";
+      const room = Math.floor((names - indent - 14) / CHAR);
+      context.fillText(clip(frame.label, room), indent + 12, y + ROW / 2);
+      if (this.named(frame) !== frame.label && frame.label.length + 2 < room) {
+        context.fillStyle = "#6b717a";
+        context.fillText(clip(frame.service, room - frame.label.length - 2), indent + 12 + (frame.label.length + 2) * CHAR, y + ROW / 2);
+      }
+      const from = Math.max(left, left + (frame.from - low) * scale);
+      const to = Math.min(right, left + (frame.to - low) * scale);
+      if (to >= left && from <= right) {
+        context.fillStyle = tint;
+        context.fillRect(from, y + 3, Math.max(1, to - from), ROW - 6);
+        const text = ms(frame.to - frame.from);
+        const after = to + 4 + text.length * CHAR <= right;
+        context.fillStyle = after ? "#8a9099" : "#e8eaed";
+        if (after || to - from > text.length * CHAR + 8) context.fillText(text, after ? to + 4 : from + 4, y + ROW / 2);
+      }
+      this.hits.push({ y, frame });
+    }
+  }
+
+  detail() {
+    const host = this.querySelector(".drawer");
+    const columns = this.view ?? {};
+    const i = this.picked ? (columns.span_id ?? []).findIndex((_, at) => this.id(at) === this.picked) : -1;
+    host.classList.toggle("open", i >= 0);
+    if (i < 0) return;
+    const pairs = (title, entries) => {
+      const section = tag("div", { class: "section" });
+      section.append(tag("div", { class: "title" }, title));
+      for (const [key, value] of entries) {
+        const line = tag("div", { class: "pair" });
+        const text = typeof value === "string" ? value : JSON.stringify(value);
+        line.append(tag("span", { class: "key" }, key), tag(text.includes("\n") ? "pre" : "span", { class: "value" }, text));
+        section.append(line);
+      }
+      return section;
+    };
+    const code = [["symbol", columns.symbol[i]], ["source", columns.source[i]], ["linked by", columns.via[i]], ["call stack", columns.chain[i]]].filter(([, value]) => value);
+    const span = [
+      ["kind", columns.kind[i]], ["status", columns.status[i] || "not set"],
+      ["start", ms(columns.offset_ms[i])], ["duration", ms(columns.duration_ms[i])], ["self", ms(columns.self_ms[i])],
+      ["parent", columns.link[i]], ...(columns.skew_ms[i] ? [["clock skew fixed", ms(columns.skew_ms[i])]] : []), ["trace id", columns.trace[i]], ["span id", columns.span_id[i]],
+    ];
+    const attributes = Object.entries(parsed(columns.attributes[i]) ?? {}).sort(([a], [b]) => a.localeCompare(b));
+    const side = (key) => SIDES.find(([, pattern]) => pattern.test(key))?.[0];
+    const sides = SIDES.map(([name]) => [name, attributes.filter(([key]) => side(key) === name)]).filter(([, entries]) => entries.length);
+    const rest = attributes.filter(([key]) => !side(key));
+    const events = (parsed(columns.events[i]) ?? []).map((event) => pairs(`event ${event.event} at ${ms(event.at_ms)}`, Object.entries(event).filter(([key]) => key !== "event" && key !== "at_ms")));
+    const top = tag("div", { class: "top" });
+    top.append(tag("span", {}, `${columns.service[i]} · ${columns.operation[i]}`), tag("button", { "data-close": "1" }, "×"));
+    host.replaceChildren(
+      top,
+      ...(code.length ? [pairs("code", code)] : []),
+      ...sides.map(([name, entries]) => pairs(name, entries)),
+      pairs("span", span),
+      pairs(`attributes (${rest.length})`, rest),
+      ...events,
+    );
+  }
+}
+customElements.define("weft-flame", Flame);
+const Viewer = customElements.get("perspective-viewer");
+await Viewer.registerPlugin("weft-flame");
+
+perspective.init_server(fetch("vendor/server/wasm/perspective-server.wasm"));
+const worker = await perspective.worker();
+const viewer = document.createElement("perspective-viewer");
+viewer.setAttribute("theme", THEME);
+document.body.append(viewer);
+await viewer.load(worker);
+const schema = await (await fetch("schema")).json();
+const tables = new Map(
+  await Promise.all(Object.entries(schema).map(async ([name, columns]) => [name, await worker.table(columns, { name, ...(OPTIONS[name] ?? { limit: LIMIT }) })])),
+);
+const sources = new Map();
+const saved = (() => { try { return JSON.parse(decodeURIComponent(location.hash.slice(1))); } catch { return {}; } })();
+const expanded = new Set(saved.expanded ?? []);
+let selected = saved.selected ?? null;
+if (saved.split) document.body.style.setProperty("--split", saved.split);
+const remember = () => {
+  history.replaceState(null, "", `#${encodeURIComponent(JSON.stringify({ expanded: [...expanded], selected, split: document.body.style.getPropertyValue("--split") }))}`);
+};
+
+const ingest = (update) => Promise.all(Object.entries(update).map(([name, rows]) => tables.get(name).update(rows)));
+
+async function rows(name, config = {}) {
+  const view = await tables.get(name).view(config);
+  const json = await view.to_json();
+  await view.delete();
+  return json;
+}
+
+const instrumented = (service) => sources.has(service);
+const parse = (id) => {
+  const [kind, rest] = [id.slice(0, 1), id.slice(2)];
+  const split = rest.indexOf("|");
+  return split < 0 ? { kind, service: rest, value: "" } : { kind, service: rest.slice(0, split), value: rest.slice(split + 1) };
+};
+
+function chain(service, label) {
+  const ids = [`s:${service}`];
+  if (!label) return ids;
+  const path = /^(?:[A-Z]+ )?(\/\S*)$/.exec(label)?.[1];
+  const segments = path ? path.split("/").filter(Boolean) : [];
+  for (let i = 1; i < segments.length; i += 1) ids.push(`p:${service}|/${segments.slice(0, i).join("/")}`);
+  ids.push(`o:${service}|${label}`);
+  return ids;
+}
+
+function tree(edges) {
+  const children = new Map();
+  const leaves = new Map();
+  for (const edge of edges) {
+    for (const ids of [chain(edge.from_service, edge.from), chain(edge.to_service, edge.to)]) {
+      ids.forEach((id, i) => {
+        if (!children.has(id)) children.set(id, new Set());
+        if (i > 0) children.get(ids[i - 1]).add(id);
+      });
+    }
+  }
+  const count = (id) => {
+    if (!leaves.has(id)) leaves.set(id, children.get(id).size ? [...children.get(id)].reduce((sum, child) => sum + count(child), 0) : 1);
+    return leaves.get(id);
+  };
+  for (const id of children.keys()) count(id);
+  return { children, leaves };
+}
+
+function visible(ids, children) {
+  let i = 0;
+  while (i < ids.length - 1 && (expanded.has(ids[i]) || (i > 0 && children.get(ids[i]).size === 1))) i += 1;
+  return i;
+}
+
+function model(edges) {
+  const { children, leaves } = tree(edges);
+  const parents = new Map();
+  const links = new Map();
+  const place = (ids) => {
+    const i = visible(ids, children);
+    let parent = null;
+    for (let j = 0; j < i; j += 1) {
+      if (j > 0 && children.get(ids[j]).size === 1) continue;
+      if (!parents.has(ids[j])) parents.set(ids[j], parent);
+      parent = ids[j];
+    }
+    parents.set(ids[i], parent);
+    return ids[i];
+  };
+  for (const edge of edges) {
+    const from = place(chain(edge.from_service, edge.from));
+    const to = place(chain(edge.to_service, edge.to));
+    if (from === to) continue;
+    const id = `${from}>${to}`;
+    const link = links.get(id) ?? { id, from, to, calls: 0, errors: 0, duration_ms: 0 };
+    link.calls += edge.calls;
+    link.errors += edge.errors;
+    link.duration_ms += edge.duration_ms;
+    links.set(id, link);
+  }
+  return { children, leaves, parents, links: [...links.values()] };
+}
+
+function title(id) {
+  const { kind, service, value } = parse(id);
+  return kind === "s" ? service : value;
+}
+
+function detail(id) {
+  const source = sources.get(parse(id).service);
+  if (!id.startsWith("s:") || !source) return "";
+  const libraries = source.scopes.split(", ").filter(Boolean).length;
+  return [source.language, source.runtime || source.sdk, libraries && `${libraries} libraries`].filter(Boolean).join(" · ");
+}
+
+const elk = new ELK();
+const surface = document.getElementById("map");
+const scene = document.getElementById("scene");
+const camera = { x: 0, y: 0, k: 1 };
+let current = null;
+let topology = "";
+let bounds = null;
+let steered = false;
+
+const transform = () => scene.setAttribute("transform", `translate(${camera.x},${camera.y}) scale(${camera.k})`);
+const element = (name, attributes, parent) => {
+  const created = document.createElementNS(SVG, name);
+  Object.entries(attributes).forEach(([attribute, value]) => created.setAttribute(attribute, value));
+  parent.appendChild(created);
+  return created;
+};
+
+function size(id, leaves, container) {
+  const more = leaves.get(id) > 1 && !container ? ` +${leaves.get(id)}` : "";
+  const width = Math.max((title(id) + more).length, detail(id).length) * CHAR + 24;
+  return { width, height: detail(id) ? 38 : 24 };
+}
+
+function layout({ parents, leaves, links }) {
+  const nodes = new Map();
+  const containers = new Set([...parents.values()].filter(Boolean));
+  for (const id of parents.keys()) {
+    const container = containers.has(id);
+    nodes.set(id, {
+      id, children: [],
+      ...(container
+        ? { layoutOptions: { "elk.padding": `[top=${detail(id) ? 40 : 26},left=10,bottom=10,right=10]`, "elk.nodeSize.constraints": "[MINIMUM_SIZE]", "elk.nodeSize.minimum": `(${size(id, leaves, true).width}, 40)` } }
+        : size(id, leaves, false)),
+    });
+  }
+  const roots = [];
+  for (const [id, parent] of parents) (parent ? nodes.get(parent).children : roots).push(nodes.get(id));
+  return elk.layout({
+    id: "root",
+    layoutOptions: {
+      "elk.algorithm": "layered", "elk.direction": "RIGHT", "elk.hierarchyHandling": "INCLUDE_CHILDREN",
+      "elk.edgeRouting": "ORTHOGONAL", "elk.layered.spacing.nodeNodeBetweenLayers": "40", "elk.spacing.nodeNode": "14",
+      "org.eclipse.elk.json.edgeCoords": "ROOT", "org.eclipse.elk.json.shapeCoords": "ROOT",
+    },
+    children: roots,
+    edges: links.map((link) => ({ id: link.id, sources: [link.from], targets: [link.to] })),
+  });
+}
+
+function inside(id, root) {
+  for (let node = id; node; node = current.parents.get(node)) if (node === root) return true;
+  return false;
+}
+
+function draw(graph) {
+  scene.replaceChildren();
+  const { leaves, links } = current;
+  const failing = new Set(links.filter((link) => link.errors > 0).map((link) => link.to));
+  const box = (node, parent) => {
+    const container = node.children.length > 0;
+    const external = !instrumented(parse(node.id).service);
+    const classes = ["box", container && "container", external && "external", failing.has(node.id) && "failing", selected === node.id && "selected"];
+    const g = element("g", { class: classes.filter(Boolean).join(" "), "data-id": node.id }, parent);
+    element("rect", { x: node.x, y: node.y, width: node.width, height: node.height }, g);
+    const more = leaves.get(node.id) > 1 && !container ? ` +${leaves.get(node.id)}` : "";
+    const head = element("text", { x: node.x + 10, y: node.y + 16 }, g);
+    head.textContent = title(node.id);
+    if (more) element("tspan", { class: "more" }, head).textContent = more;
+    if (detail(node.id)) element("text", { class: "detail", x: node.x + 10, y: node.y + 30 }, g).textContent = detail(node.id);
+    const source = sources.get(parse(node.id).service);
+    element("title", {}, g).textContent = [title(node.id), source && `${source.sdk}\n${source.scopes}`].filter(Boolean).join("\n");
+    node.children.forEach((child) => box(child, g));
+  };
+  graph.children.forEach((node) => box(node, scene));
+  for (const edge of graph.edges) {
+    const link = links.find((candidate) => candidate.id === edge.id);
+    const faint = selected && !inside(link.from, selected) && !inside(link.to, selected);
+    const g = element("g", { class: ["edge", link.errors > 0 && "failing", faint && "faint"].filter(Boolean).join(" "), "data-link": edge.id }, scene);
+    const points = edge.sections.flatMap((section) => [section.startPoint, ...(section.bendPoints ?? []), section.endPoint]);
+    element("path", { d: points.map((point, i) => `${i ? "L" : "M"}${point.x},${point.y}`).join(" ") }, g);
+    element("title", {}, g);
+  }
+}
+
+function weigh() {
+  for (const link of current.links) {
+    const g = scene.querySelector(`g[data-link="${CSS.escape(link.id)}"]`);
+    if (!g) continue;
+    g.querySelector("path").setAttribute("stroke-width", String(1 + Math.log10(link.calls)));
+    g.querySelector("title").textContent =
+      `${title(link.from)} → ${title(link.to)}\n${link.calls} calls · ${(link.duration_ms / link.calls).toFixed(1)} ms avg · ${link.errors} errors`;
+  }
+}
+
+let motion = 0;
+function fit() {
+  if (!bounds) return;
+  const box = surface.getBoundingClientRect();
+  const k = Math.min(1.5, (box.width - 48) / bounds.width, (box.height - 48) / bounds.height);
+  const goal = { k, x: (box.width - bounds.width * k) / 2, y: (box.height - bounds.height * k) / 2 };
+  const from = { ...camera };
+  const began = performance.now();
+  const frame = ++motion;
+  const step = (now) => {
+    if (frame !== motion) return;
+    const t = Math.min(1, (now - began) / 320);
+    const ease = 1 - (1 - t) ** 3;
+    for (const axis of ["k", "x", "y"]) camera[axis] = from[axis] + (goal[axis] - from[axis]) * ease;
+    transform();
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+const SERIES = { fg_mode: "series" };
+const STYLE = { service: SERIES, kind: SERIES, status: SERIES, duration_ms: { bg_mode: "gradient", bg_gradient: 1000 } };
+const stream = (title, columns, filter) => ({
+  table: "stream", title, plugin: "Datagrid", theme: THEME, columns, filter, sort: [["time", "desc"]],
+  columns_config: Object.fromEntries(columns.filter((column) => STYLE[column]).map((column) => [column, STYLE[column]])),
+});
+const flame = (title, filter) => ({ table: "traces", title, plugin: "Flame", theme: THEME, columns: FLAME_COLUMNS, filter });
+const split = (panes, sizes) => ({ type: "split-layout", orientation: "horizontal", sizes, children: panes.map((tabs) => ({ type: "tab-layout", tabs })) });
+
+function scope(id) {
+  const { kind, service, value } = parse(id);
+  const own = instrumented(service) ? [["service", "==", service]] : [["peer", "begins with", service]];
+  const narrow = { s: [], p: [["what", "contains", `${value}/`]], o: [["what", "==", value]] }[kind];
+  return { stream: [...own, ...narrow], graph: instrumented(service) ? [["service", "==", service]] : [] };
+}
+
+function panels() {
+  const filter = selected ? scope(selected) : { stream: [], graph: [] };
+  const name = selected ? title(selected) : "all services";
+  const columns = selected && instrumented(parse(selected).service) ? STREAM_COLUMNS : ["service", ...STREAM_COLUMNS];
+  const set = { graph: flame(`${name} call graph`, filter.graph), stream: stream(`${name} live`, columns, filter.stream) };
+  const live = Object.fromEntries(Object.entries(set).filter(([, panel]) => tables.has(panel.table)));
+  return { live, layout: split(Object.keys(live).map((id) => [id]), Object.keys(live).map(() => 1 / Object.keys(live).length)) };
+}
+
+const PAUSE_MS = 8000;
+const touched = new WeakMap();
+for (const type of ["wheel", "pointerdown", "keydown"]) {
+  addEventListener(type, (event) => {
+    const grid = event.composedPath().find((node) => node.tagName === "REGULAR-TABLE");
+    if (grid) touched.set(grid, performance.now());
+  }, { capture: true, passive: true });
+}
+
+function grids(root, found = []) {
+  for (const node of root.querySelectorAll("*")) {
+    if (node.tagName === "REGULAR-TABLE") found.push(node);
+    if (node.shadowRoot) grids(node.shadowRoot, found);
+  }
+  return found;
+}
+
+function follow() {
+  const now = performance.now();
+  for (const grid of grids(document)) {
+    if (grid.scrollTop > 0 && now - (touched.get(grid) ?? 0) > PAUSE_MS) grid.scrollTop = 0;
+  }
+}
+
+let arranged = "";
+async function arrange() {
+  const { live, layout } = panels();
+  const signature = JSON.stringify(live);
+  if (signature === arranged || !Object.keys(live).length) return;
+  arranged = signature;
+  await viewer.restoreWorkspace({ panels: live, layout }, { wait_for_table: true });
+}
+
+async function refresh() {
+  remember();
+  if (tables.has("sources")) for (const source of await rows("sources")) sources.set(source.service, source);
+  if (tables.has("edges")) {
+    current = model(await rows("edges"));
+    const shape = JSON.stringify([current.links.map((link) => link.id).sort(), [...expanded].sort(), selected, [...sources.keys()].sort()]);
+    if (shape !== topology) {
+      topology = shape;
+      bounds = await layout(current);
+      draw(bounds);
+      if (!steered) fit();
+    }
+    weigh();
+  }
+  await arrange();
+  follow();
+}
+
+function toggle(id) {
+  const { children } = current;
+  const opening = !expanded.has(id) && children.get(id)?.size > 0;
+  if (opening) {
+    expanded.add(id);
+  } else if (expanded.has(id)) {
+    for (const open of [...expanded]) if (open === id || inside(open, id)) expanded.delete(open);
+  }
+  selected = id;
+  steered = false;
+  queue = queue.then(refresh);
+}
+
+surface.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  steered = true;
+  const box = surface.getBoundingClientRect();
+  const factor = Math.exp(-event.deltaY * 0.0015);
+  const x = event.clientX - box.left;
+  const y = event.clientY - box.top;
+  camera.x = x - (x - camera.x) * factor;
+  camera.y = y - (y - camera.y) * factor;
+  camera.k *= factor;
+  motion += 1;
+  transform();
+}, { passive: false });
+surface.addEventListener("pointerdown", (start) => {
+  const origin = { x: camera.x - start.clientX, y: camera.y - start.clientY };
+  let moved = false;
+  const move = (event) => {
+    moved ||= Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) > 4;
+    if (!moved) return;
+    steered = true;
+    motion += 1;
+    camera.x = origin.x + event.clientX;
+    camera.y = origin.y + event.clientY;
+    transform();
+  };
+  surface.addEventListener("pointermove", move);
+  surface.addEventListener("pointerup", (end) => {
+    surface.removeEventListener("pointermove", move);
+    if (moved) return;
+    const hit = end.target.closest?.("[data-id]");
+    if (hit) {
+      toggle(hit.dataset.id);
+    } else {
+      selected = null;
+      steered = false;
+      queue = queue.then(refresh);
+    }
+  }, { once: true });
+});
+surface.addEventListener("dblclick", (event) => {
+  if (event.target.closest?.("[data-id]")) return;
+  expanded.clear();
+  selected = null;
+  steered = false;
+  queue = queue.then(refresh);
+});
+new ResizeObserver(() => { if (!steered) fit(); }).observe(surface);
+
+const divider = document.getElementById("divider");
+divider.addEventListener("pointerdown", (start) => {
+  divider.setPointerCapture(start.pointerId);
+  const move = (event) => document.body.style.setProperty("--split", `${Math.min(90, Math.max(10, (event.clientY / innerHeight) * 100))}%`);
+  divider.addEventListener("pointermove", move);
+  divider.addEventListener("pointerup", () => divider.removeEventListener("pointermove", move), { once: true });
+});
+
+let queue = Promise.resolve();
+let connected = false;
+const events = new EventSource("events");
+events.onopen = () => (connected ? location.reload() : (connected = true));
+events.onmessage = ({ data }) => { queue = queue.then(() => ingest(JSON.parse(data))).catch(console.error); };
+setInterval(() => { queue = queue.then(refresh); }, 1000);
+</script>
+</body>
+</html>

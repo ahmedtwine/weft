@@ -128,7 +128,20 @@ flowchart TB
 
 ## Dashboard
 
-`weft --ui [<file>…]` serves the dashboard at http://127.0.0.1:7357.
+`weft --ui [<file>…]` serves the test runner dashboard at http://127.0.0.1:7357.
+
+## Collector
+
+`weft collect [<source>]` receives OTLP/HTTP traces and logs at http://127.0.0.1:4318 and serves the collector dashboard at the same address:
+
+```sh
+weft collect ../app
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+```
+
+The dashboard shows the service map over two panes: the call graph and one live stream of spans and logs (`in`, `out`, `work`, `log`) with the linked code. Click a service, path or operation to narrow both panes.
+
+With `<source>`, weft runs [`hairball map`](https://github.com/ahmedtwine/hairball) on that codebase and links each span to its code by `http.route`, `code.stacktrace` (with source maps) or `code.file.path` and `code.line.number`. Received exports are kept in `~/.cache/weft/collect.otlp` and replay on restart.
 
 ## License
 

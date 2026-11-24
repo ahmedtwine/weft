@@ -19,9 +19,13 @@ use weft_parse::{Config, Diagram};
 
 use spans::{Ended, Spans};
 
-const USAGE: &str = "usage: weft [--ui] [<file>…] | weft --parent <adapter> <file>";
+const USAGE: &str =
+    "usage: weft [--ui] [<file>…] | weft collect [<source>] | weft --parent <adapter> <file>";
 const PARENT: &str = "--parent";
 const UI: &str = "--ui";
+const COLLECT: &str = "collect";
+const COLLECTOR: &str = "127.0.0.1:4318";
+const SPOOL: &str = ".cache/weft/collect.otlp";
 const ORPHANED: i32 = 2;
 const PASS: &str = "pass";
 const FAIL: &str = "fail";
@@ -199,7 +203,27 @@ fn serve(only: &[String]) -> Result<(), String> {
             thread::sleep(WATCH);
         }
     });
-    weft_dashboard::serve(ADDRESS, || rerun(only))
+    weft_dashboard::serve(ADDRESS, &weft_dashboard::Runs(|| rerun(only)))
+}
+
+fn collect(source: Option<&String>) -> Result<(), String> {
+    let spool = env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(SPOOL))
+        .ok_or("HOME is not set")?;
+    let linker = source
+        .map(|source| weft_collector::Linker::new(Path::new(source)))
+        .transpose()?;
+    let (collector, replayed) = weft_collector::Collector::open(spool.clone(), linker)?;
+    println!("Kept: {} ({replayed} exports replayed)", spool.display());
+    thread::scope(|s| {
+        s.spawn(|| {
+            loop {
+                collector.sweep();
+                thread::sleep(WATCH);
+            }
+        });
+        weft_dashboard::serve(COLLECTOR, &collector)
+    })
 }
 
 fn check(only: &[String], parent: Option<&str>) -> Result<bool, String> {
@@ -229,6 +253,9 @@ fn main() -> ExitCode {
     }
     let run = weft_orchestrator::guard().and_then(|()| match args.as_slice() {
         [flag, adapter, file] if flag == PARENT => joined(adapter, file),
+        [command, source @ ..] if command == COLLECT && source.len() < 2 => {
+            collect(source.first()).map(|()| false)
+        }
         [ui, only @ ..] if ui == UI && only.iter().all(|named| !named.starts_with('-')) => {
             serve(only).map(|_| false)
         }

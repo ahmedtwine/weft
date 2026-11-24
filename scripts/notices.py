@@ -10,6 +10,7 @@ OTHERS = [
     ("zod", "MIT", "https://zod.dev", None),
     ("Perspective", "Apache-2.0", "https://perspective-dev.github.io", ROOT / "crates/weft-dashboard/site/vendor/client/LICENSE.md"),
     ("pele", "MIT", "https://pele.run", ROOT / "crates/weft-dashboard/site/vendor/pele/LICENSE"),
+    ("ELK", "EPL-2.0", "https://eclipse.dev/elk", ROOT / "crates/weft-dashboard/site/vendor/elk/LICENSE.md"),
 ]
 
 
