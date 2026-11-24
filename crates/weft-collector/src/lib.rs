@@ -20,8 +20,8 @@ use weft_dashboard::{Board, Reply};
 use crate::graph::Graph;
 pub use crate::link::Linker;
 use crate::link::Resolved;
-use crate::otlp::{Export, Format};
-use crate::source::{Signal, Sources};
+use crate::otlp::{Export, Format, Signal};
+use crate::source::Sources;
 use crate::spool::Spool;
 use crate::trace::Traces;
 
@@ -31,8 +31,8 @@ const BAD: &str = "400 Bad Request";
 const UNSUPPORTED: &str = "415 Unsupported Media Type";
 const SCHEMA: &str = r#"{
   "stream": {"time": "datetime", "service": "string", "kind": "string", "what": "string", "peer": "string", "code": "string", "status": "string", "duration_ms": "float", "trace_id": "string"},
-  "traces": {"key": "string", "trace": "string", "root": "string", "span_id": "string", "parent": "string", "service": "string", "operation": "string", "kind": "string", "status": "string", "link": "string", "depth": "integer", "time": "datetime", "offset_ms": "float", "duration_ms": "float", "self_ms": "float", "skew_ms": "float", "attributes": "string", "events": "string", "symbol": "string", "source": "string", "via": "string", "chain": "string"},
-  "sources": {"service": "string", "language": "string", "runtime": "string", "sdk": "string", "scopes": "string", "spans": "integer", "logs": "integer"},
+  "traces": {"key": "string", "trace": "string", "span_id": "string", "parent": "string", "service": "string", "operation": "string", "kind": "string", "status": "string", "link": "string", "offset_ms": "float", "duration_ms": "float", "self_ms": "float", "skew_ms": "float", "attributes": "string", "events": "string", "symbol": "string", "source": "string", "via": "string", "chain": "string"},
+  "sources": {"service": "string", "language": "string", "runtime": "string", "sdk": "string", "scopes": "string"},
   "edges": {"edge": "string", "from_service": "string", "from": "string", "to_service": "string", "to": "string", "calls": "integer", "errors": "integer", "duration_ms": "float"}
 }"#;
 
@@ -110,8 +110,8 @@ impl Collector {
             .map(|(trace, linker)| link::resolve(linker, trace))
             .unwrap_or_default();
         let mut state = lock(&self.state);
-        for (resource, scope, count) in request.origins() {
-            state.sources.record(resource, scope, T::SIGNAL, count);
+        for (resource, scope) in request.origins() {
+            state.sources.record(resource, scope);
         }
         if let Some(trace) = request.trace() {
             state.graph.observe(trace);

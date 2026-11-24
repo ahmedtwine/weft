@@ -8,7 +8,13 @@ use serde_json::Value as Json;
 
 use crate::link::Resolved;
 use crate::rows;
-use crate::source::Signal;
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub(crate) enum Signal {
+    Spans,
+    Logs,
+}
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -56,11 +62,7 @@ impl Format {
     }
 }
 
-pub(crate) type Origins<'a> = Vec<(
-    Option<&'a Resource>,
-    Option<&'a InstrumentationScope>,
-    usize,
-)>;
+pub(crate) type Origins<'a> = Vec<(Option<&'a Resource>, Option<&'a InstrumentationScope>)>;
 
 pub(crate) trait Export: Message + Default + DeserializeOwned {
     const SIGNAL: Signal;
@@ -77,13 +79,10 @@ impl Export for ExportTraceServiceRequest {
         self.resource_spans
             .iter()
             .flat_map(|resource| {
-                resource.scope_spans.iter().map(|scope| {
-                    (
-                        resource.resource.as_ref(),
-                        scope.scope.as_ref(),
-                        scope.spans.len(),
-                    )
-                })
+                resource
+                    .scope_spans
+                    .iter()
+                    .map(|scope| (resource.resource.as_ref(), scope.scope.as_ref()))
             })
             .collect()
     }
@@ -101,13 +100,10 @@ impl Export for ExportLogsServiceRequest {
         self.resource_logs
             .iter()
             .flat_map(|resource| {
-                resource.scope_logs.iter().map(|scope| {
-                    (
-                        resource.resource.as_ref(),
-                        scope.scope.as_ref(),
-                        scope.log_records.len(),
-                    )
-                })
+                resource
+                    .scope_logs
+                    .iter()
+                    .map(|scope| (resource.resource.as_ref(), scope.scope.as_ref()))
             })
             .collect()
     }

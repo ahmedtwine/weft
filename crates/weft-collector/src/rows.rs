@@ -121,7 +121,7 @@ pub(crate) fn log_stream(request: &ExportLogsServiceRequest) -> Vec<Json> {
         .collect()
 }
 
-pub(crate) fn millis(nanos: u64) -> u64 {
+fn millis(nanos: u64) -> u64 {
     nanos / 1_000_000
 }
 

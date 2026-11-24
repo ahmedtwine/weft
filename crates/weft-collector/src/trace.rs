@@ -50,10 +50,8 @@ struct Record {
 struct Row {
     key: Key,
     trace: TraceId,
-    root: Arc<str>,
     parent: Option<SpanId>,
     link: &'static str,
-    depth: i64,
     start: i64,
     end: i64,
     skew: i64,
@@ -310,15 +308,8 @@ impl Traces {
             list.sort_by_key(|(key, _)| start(key));
         }
         let origin = roots.first().map_or(0, |key| nanos(start(key)));
-        let root = roots
-            .first()
-            .and_then(|key| self.spans.get(key))
-            .map_or_else(
-                || Arc::from(""),
-                |record| Arc::from(format!("{} {}", record.service, record.operation)),
-            );
         let mut rows = Vec::with_capacity(keys.len());
-        let mut stack: Vec<(Key, Option<SpanId>, &'static str, i64, i64)> = roots
+        let mut stack: Vec<(Key, Option<SpanId>, &'static str, i64)> = roots
             .iter()
             .rev()
             .map(|key| {
@@ -333,11 +324,10 @@ impl Traces {
                         }
                     }),
                     0,
-                    0,
                 )
             })
             .collect();
-        while let Some((key, parent, link, depth, shift)) = stack.pop() {
+        while let Some((key, parent, link, shift)) = stack.pop() {
             let Some(record) = self.spans.get(&key) else {
                 continue;
             };
@@ -356,15 +346,13 @@ impl Traces {
                         0
                     }
                 });
-                stack.push((*child, Some(key.1), how, depth + 1, shift + delta));
+                stack.push((*child, Some(key.1), how, shift + delta));
             }
             rows.push(Row {
                 key,
                 trace: host,
-                root: Arc::clone(&root),
                 parent,
                 link,
-                depth,
                 start: begin,
                 end,
                 skew: shift,
@@ -401,7 +389,6 @@ impl Traces {
                 Some(json!({
                     "key": format!("{}{}", rows::hex(&row.key.0), rows::hex(&row.key.1)),
                     "trace": rows::hex(&row.trace),
-                    "root": &*row.root,
                     "span_id": rows::hex(&row.key.1),
                     "parent": row.parent.map(|parent| rows::hex(&parent)).unwrap_or_default(),
                     "service": &*record.service,
@@ -409,8 +396,6 @@ impl Traces {
                     "kind": rows::kind(record.kind),
                     "status": record.status,
                     "link": row.link,
-                    "depth": row.depth,
-                    "time": rows::millis(record.start),
                     "offset_ms": millis(row.start - row.origin),
                     "duration_ms": millis(row.end - row.start),
                     "self_ms": millis(row.exclusive),

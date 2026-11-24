@@ -6,21 +6,12 @@ use serde_json::{Value as Json, json};
 
 use crate::rows::{self, Origin};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum Signal {
-    Spans,
-    Logs,
-}
-
 #[derive(Default)]
 struct Source {
     language: String,
     runtime: String,
     sdk: String,
     scopes: BTreeSet<String>,
-    spans: usize,
-    logs: usize,
 }
 
 #[derive(Default)]
@@ -34,8 +25,6 @@ impl Sources {
         &mut self,
         resource: Option<&Resource>,
         scope: Option<&InstrumentationScope>,
-        signal: Signal,
-        count: usize,
     ) {
         let origin = Origin::new(resource, scope);
         let source = self.entries.entry(origin.service.to_owned()).or_default();
@@ -51,10 +40,6 @@ impl Sources {
         source.sdk = read(&["telemetry.sdk.name", "telemetry.sdk.version"]);
         if !origin.scope.is_empty() {
             source.scopes.insert(origin.scope.to_owned());
-        }
-        match signal {
-            Signal::Spans => source.spans += count,
-            Signal::Logs => source.logs += count,
         }
         self.touched.insert(origin.service.to_owned());
     }
@@ -78,8 +63,6 @@ impl Sources {
                     "runtime": source.runtime,
                     "sdk": source.sdk,
                     "scopes": source.scopes.iter().map(String::as_str).collect::<Vec<_>>().join(", "),
-                    "spans": source.spans,
-                    "logs": source.logs,
                 }))
             })
             .collect()
