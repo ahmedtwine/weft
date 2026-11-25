@@ -141,7 +141,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 
 The page shows the service map over two panes: the call graph of each trace and one live stream of spans and logs (`in`, `out`, `work`, `log`) with the linked code. Each client call joins the backend route that served it. Click a service, path or operation to narrow both panes.
 
-With `<source>`, weft runs [`hairball map`](https://github.com/ahmedtwine/hairball) on that codebase and links each span to its code by `http.route`, `code.stacktrace` (with source maps) or `code.file.path` and `code.line.number`. Logs show `code.file.path` or `log.file` as their code. `hairball` must be on `PATH`, and the port opens only after the map is read, so start the collector before the services that export to it.
+With `<source>`, weft runs [`spool map`](https://github.com/ahmedtwine/spool) on that codebase and links each span to its code by `http.route`, `code.stacktrace` (with source maps) or `code.file.path` and `code.line.number`. Logs show `code.file.path` or `log.file` as their code. `spool` must be on `PATH`, and the port opens only after the map is read, so start the collector before the services that export to it.
 
 Received exports are kept in `~/.cache/weft/collect.otlp` and replay on restart.
 

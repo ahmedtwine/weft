@@ -11,7 +11,7 @@ use crate::link::route::Template;
 use crate::link::{Evidence, Resolution, Site};
 use crate::lock;
 
-const MAPPER: &str = "hairball";
+const MAPPER: &str = "spool";
 const ROUTE: &str = "route";
 const STACK: &str = "stack";
 const CODE: &str = "code";
