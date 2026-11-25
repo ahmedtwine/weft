@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+chunked_transfer = "1.5"
 include_dir = "0.7"
 opentelemetry = { version = "0.33", features = ["trace"] }
 opentelemetry_sdk = { version = "0.33", features = ["trace"] }

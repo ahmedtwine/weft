@@ -159,7 +159,7 @@ fn kind(path: &str) -> &'static str {
     }
 }
 
-fn read(stream: &TcpStream) -> io::Result<Request> {
+fn read(stream: impl Read) -> io::Result<Request> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -170,7 +170,7 @@ fn read(stream: &TcpStream) -> io::Result<Request> {
         .unwrap_or_default()
         .trim_start_matches('/')
         .to_string();
-    let (mut length, mut kind) = (0, String::new());
+    let (mut length, mut kind, mut chunked) = (0, String::new(), false);
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
@@ -180,12 +180,17 @@ fn read(stream: &TcpStream) -> io::Result<Request> {
             match name.trim().to_ascii_lowercase().as_str() {
                 "content-length" => length = value.trim().parse().unwrap_or(0),
                 "content-type" => kind = value.trim().to_string(),
+                "transfer-encoding" => chunked = value.to_ascii_lowercase().contains("chunked"),
                 _ => {}
             }
         }
     }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body)?;
+    let mut body = Vec::with_capacity(length);
+    if chunked {
+        chunked_transfer::Decoder::new(reader).read_to_end(&mut body)?;
+    } else {
+        reader.take(length as u64).read_to_end(&mut body)?;
+    }
     Ok(Request {
         method,
         path,
@@ -281,4 +286,22 @@ pub fn serve(address: &str, board: &impl Board) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read;
+
+    #[test]
+    fn reads_sized_and_chunked_bodies() {
+        let sized = read(&b"POST /v1/traces HTTP/1.1\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}"[..]).unwrap();
+        let chunked = read(&b"POST /v1/traces HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n{\r\n1\r\n}\r\n0\r\n\r\n"[..]).unwrap();
+        for request in [sized, chunked] {
+            assert_eq!(
+                (request.path.as_str(), request.kind.as_str()),
+                ("v1/traces", "application/json")
+            );
+            assert_eq!(request.body, b"{}");
+        }
+    }
 }

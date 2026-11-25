@@ -4,6 +4,8 @@ import { version } from "../package.json";
 const target = `${process.platform}-${process.arch}`;
 
 export const dist = async () => {
+  const built = join(import.meta.dir, "..", "target", "release");
+  if (await Bun.file(join(built, "weft")).exists()) return built;
   const dir = join(import.meta.dir, "..", "dist", `v${version}`, target);
   if (await Bun.file(join(dir, "weft")).exists()) return dir;
   const token = process.env.GH_TOKEN;
